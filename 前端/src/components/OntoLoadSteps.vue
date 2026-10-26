@@ -118,14 +118,14 @@ onMounted(loadGate)
     <table v-if="gate?.checks.length" style="margin-top: 10px">
       <thead>
         <tr>
-          <th style="width: 44px">档</th>
+          <th class="c" style="width: 44px">档</th>
           <th style="width: 210px">装载前检查</th>
           <th>结论</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="c in gate.checks" :key="c.check">
-          <td><span class="tag" :class="level(c)">{{ levelText(c) }}</span></td>
+          <td class="c"><span class="tag" :class="level(c)">{{ levelText(c) }}</span></td>
           <td>{{ c.check }}</td>
           <td style="font-size: 12px"><MarkText :text="c.detail" /></td>
         </tr>
@@ -143,3 +143,8 @@ onMounted(loadGate)
          仍然返回这四条，tests/test_asset_gate.py 还钉着「该说的要说到」。 -->
   </div>
 </template>
+
+<style scoped>
+/* 「档」列是一个状态标签（通过/警告/失败），居中；检查项与结论是文本，左对齐 */
+.c { text-align: center; }
+</style>

@@ -663,8 +663,14 @@ def stats():
 
 
 def review(detail_id, state, reviewer, reason=None):
+    # 「待审」＝撤回（误点补救，与草稿同一套口径：改判直接覆盖、撤回清痕回待审）
+    if state == "待审":
+        n = db.execute("""UPDATE doclib_rule_detail SET review_state='待审',
+                                   reviewer=NULL, reviewed_at=NULL, reject_reason=NULL
+                           WHERE detail_id=%s AND review_state <> '待审'""", (detail_id,))
+        return n > 0
     if state not in ("采纳", "驳回"):
-        raise ValueError("只能是「采纳」或「驳回」")
+        raise ValueError("只能是「采纳」「驳回」或「待审」（撤回）")
     if not (reviewer or "").strip():
         raise ValueError("采纳/驳回必须署名：没有署名的审定在审计上等于没发生")
     if state == "驳回" and not (reason or "").strip():

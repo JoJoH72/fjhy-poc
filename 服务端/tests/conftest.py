@@ -27,6 +27,10 @@ import sys
 
 import pytest
 
+# **在导入 app 之前**把鉴权开关关掉：几百条用例验的是业务逻辑，
+# 不该每条都先登一次录。鉴权本身由 tests/test_iam.py 单独覆盖（它会把开关打回 on）。
+os.environ.setdefault("FJHY_AUTH_MODE", "off")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

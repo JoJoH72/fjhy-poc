@@ -24,9 +24,12 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AgentRuntime from '../components/AgentRuntime.vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
 import type {
   ExMeta, ExProgress, OntoCandidate, ProcBuild, ProcGraph, StorageRow,
 } from '../api'
+
+const candList = useCollapse(), driftList = useCollapse()
 
 type Tab = 'build' | 'show' | 'graph'
 const tab = ref<Tab>('build')
@@ -161,9 +164,10 @@ onUnmounted(stopPoll)
 </script>
 
 <template>
+  <div class="v2">
   <h2>流程本体</h2>
 
-  <div class="row">
+  <div class="tabs">
     <button :class="{ on: tab === 'build' }" @click="pickTab('build')">建立</button>
     <button :class="{ on: tab === 'show' }" @click="pickTab('show')">展示</button>
     <button :class="{ on: tab === 'graph' }" @click="pickTab('graph')">图谱</button>
@@ -190,11 +194,11 @@ onUnmounted(stopPoll)
           <tr>
             <th style="width: 68px">类型</th><th style="width: 190px">候选</th>
             <th style="width: 76px">判定</th><th class="num" style="width: 46px">次数</th>
-            <th>出处与依据</th><th style="width: 100px"></th>
+            <th style="width: 360px">出处与依据</th><th style="width: 100px"></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in cands" :key="c.cand_id">
+          <tr v-for="c in candList.view(cands)" :key="c.cand_id">
             <td><span class="tag t-na">{{ c.kind }}</span></td>
             <td><b>{{ c.cand_name }}</b></td>
             <td><span class="tag" :class="vTag(c.verdict)">{{ c.verdict }}</span></td>
@@ -206,12 +210,33 @@ onUnmounted(stopPoll)
             <td>
               <span v-if="c.last_action" class="tag t-na">已{{ c.last_action }}</span>
               <template v-else>
-                <button class="mini" :disabled="!!busy" @click="dispose(c, '暂缓')">暂缓</button>
-                <button class="mini" :disabled="!!busy" @click="dispose(c, '驳回')">驳回</button>
+                <!-- **采纳不在这一页做**，但入口要在这里。
+                     采纳会真的改 本体_v0.1.yaml，所以必须先看 YAML 补丁预览，
+                     而那套预览 UI 只有「业务本体 · 建立」那页有（两页读的是同一批
+                     候选，那页不带 kind 过滤，流程候选也在里面）。
+                     写两份采纳 UI 等于把一条会改源文件的写入路径复制一遍——不干。
+                     所以这里给直达链接，带上 cand_id 过去直接展开那一条，
+                     不用在 300 条里自己找。
+
+                     原来这事只写在表格上方一行小字里，一滚就看不见了，
+                     于是「有已采纳状态、却没有采纳按钮」看着就是功能缺了。 -->
+                <router-link :to="`/asset/biz?cand=${encodeURIComponent(c.cand_id)}`"
+                             class="goadopt" title="采纳要先看 YAML 补丁预览，在业务本体页做">
+                  去采纳 →
+                </router-link>
+                <div class="acts2">
+                  <button class="mini" :disabled="!!busy" @click="dispose(c, '暂缓')">暂缓</button>
+                  <button class="mini" :disabled="!!busy" @click="dispose(c, '驳回')">驳回</button>
+                </div>
               </template>
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="candList.more(cands).show">
+                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="candList.more(cands).toggle()">
+                  {{ candList.more(cands).rest === -1 ? '收起' : `展开剩余 ${candList.more(cands).rest} 条` }}（共 {{ cands.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
     </div>
 
@@ -244,12 +269,12 @@ onUnmounted(stopPoll)
         <thead>
           <tr>
             <th style="width: 150px">审批记录里的节点名</th><th class="num" style="width: 70px">出现</th>
-            <th class="num" style="width: 62px">涉及单据</th><th style="width: 80px">匹配</th>
+            <th class="num" style="width: 80px">涉及单据</th><th style="width: 80px">匹配</th>
             <th style="width: 60px">节点</th><th>本体里的名字</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="d in build.drift" :key="d.measured_node"
+          <tr v-for="d in driftList.view(build.drift)" :key="d.measured_node"
               :class="{ warn: d.match === '未匹配' || d.match === '多个候选' }">
             <td><b>{{ d.measured_node }}</b></td>
             <td class="num">{{ d.n }}</td>
@@ -269,7 +294,12 @@ onUnmounted(stopPoll)
               </span>
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="driftList.more(build.drift).show">
+                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="driftList.more(build.drift).toggle()">
+                  {{ driftList.more(build.drift).rest === -1 ? '收起' : `展开剩余 ${driftList.more(build.drift).rest} 条` }}（共 {{ build.drift.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div v-if="build.unseen_nodes.length" class="note">
         本体里有、而 {{ build.source['审批记录'] }} 条记录里<b>一次都没见过</b>的节点：
@@ -368,12 +398,23 @@ onUnmounted(stopPoll)
 
   <div v-if="err" class="err">{{ err }}</div>
   <div v-if="msg" class="note">{{ msg }}</div>
+  </div>
 </template>
 
 <style scoped>
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 button.mini { padding: 2px 7px; font-size: 12px; }
-tr.warn td { background: #fffafa; }
+/* 「去采纳」单独一行、排在暂缓/驳回上面：它是这一行最常要做的动作，
+   和两个处置按钮挤在一排会被当成第三个同级按钮。 */
+.goadopt {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+.acts2 { display: flex; gap: 4px; }
+tr.warn td { background: var(--panel)afa; }
 .g { width: 100%; height: 360px; }
 .g .nid { font-size: 11px; text-anchor: middle; fill: var(--ink); font-weight: 600; }
 .g .nlb { font-size: 10px; text-anchor: middle; fill: var(--muted); }

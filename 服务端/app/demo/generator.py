@@ -26,6 +26,9 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from app import config, db  # noqa: E402
+# 演示附件的 stored_path 也存相对值（与真实附件同一约定，见
+# app/perception/attachment_extract.py 的 to_rel 注释）——绝对路径跨环境即失效。
+from app.perception.attachment_extract import to_rel  # noqa: E402
 
 PREFIX = config.DEMO_BILL_PREFIX
 D0 = datetime.date(2026, 9, 1)
@@ -430,12 +433,18 @@ def _add_attachments(cur, bill_no, case, day):
         # 页面上的 _attachment_note 会如实说出来，而不是静默留一个 404。
         stored_path = content_type = byte_size = None
         try:
-            from . import demo_attachment_image as dai
+            # 绝对导入，不用相对导入：entrypoint.sh 和 start.ps1 都是
+            # `python -I app/demo/generator.py` 当**脚本**跑的，脚本模式下
+            # __package__ is None，`from . import` 永远抛
+            # ImportError: attempted relative import with no known parent package，
+            # 于是整段画图被下面的 except 吞掉，只留「有类型没有图」。
+            # 本体头部那段 sys.path.insert 保证了 app 包在脚本模式下也能导。
+            from app.demo import demo_attachment_image as dai
             r = dai.render(
                 os.path.join(config.ATTACH_DEMO_DIR, bill_no,
                              "%02d_%s.png" % (seq, suffix)),
                 bill_no, attach_type, seq)
-            stored_path = r["path"]
+            stored_path = to_rel(r["path"])
             content_type = r["content_type"]
             byte_size = r["byte_size"]
         except Exception as e:

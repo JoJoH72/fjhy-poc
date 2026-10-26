@@ -118,11 +118,11 @@ describe('导航树', () => {
     expect(all.length).toBeGreaterThan(0)
   })
 
-  // 顺序也钉住：AI智能审核是入口（触发三层审核），工作台是出口（不合格单流进来），
-  // 再往后才是追溯与回流。加页面时顺序排错，审核岗会从出口开始找入口。
-  it('审核端的四个页面都在而且顺序没乱', () => {
+  // 顺序也钉住（2026-10-24 demo 契约）：AI 智能审核是入口，工作台是出口，
+  // 审核报告是一级菜单（审核岗的日常动线），再往后追溯与回流。
+  it('审核端的五个页面都在而且顺序没乱', () => {
     expect(REVIEW_NAV.map((x) => x.key)).toEqual([
-      'ai-review', 'workbench', 'trace', 'deviation',
+      'ai-review', 'workbench', 'report', 'trace', 'deviation',
     ])
   })
 })
@@ -467,6 +467,11 @@ describe('规则本体 · 统一口径', () => {
     // 进度条样式也只许有一份：两份会各自调，然后两条链的条看起来不一样
     expect(ex).not.toContain('.pano .bus')
     expect(page).not.toContain('.pano .bus')
+    // 草稿台账必须有审定入口（演示待办④）：后端 /drafts/{id}/review 一直都在，
+    // 前端曾经整整没接——端点空转等于「专家确认」不存在。审定的署名也不许
+    // 退回手工输入（ReviewerSelect 从账号清单选）。
+    expect(ex).toContain('exReview')
+    expect(ex).toContain('ReviewerSelect')
   })
 })
 

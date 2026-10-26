@@ -29,10 +29,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AgentRuntime from '../components/AgentRuntime.vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
 import type {
   ExConflict, ExMeta, ExProgress, OntoAdoption, OntoAlign, OntoCover, OntoGraph,
   OntoRelations, OntoSummary, Page, Rule, StorageRow,
 } from '../api'
+
+const ruleList = useCollapse(), adoptList = useCollapse()
 
 type Tab = 'build' | 'show' | 'rel' | 'graph'
 const tab = ref<Tab>('build')
@@ -238,9 +241,10 @@ onUnmounted(stopPoll)
 </script>
 
 <template>
+  <div class="v2">
   <h2>规则本体</h2>
 
-  <div class="row">
+  <div class="tabs">
     <button :class="{ on: tab === 'build' }" @click="pickTab('build')">建立</button>
     <button :class="{ on: tab === 'show' }" @click="pickTab('show')">展示</button>
     <button :class="{ on: tab === 'rel' }" @click="pickTab('rel')">关系</button>
@@ -281,11 +285,32 @@ onUnmounted(stopPoll)
           <code class="muted" style="font-size: 11px">{{ c.conflict_id }}</code>
         </div>
         <div style="font-size: 12px; margin: 4px 0"><MarkText :text="c.detail" /></div>
-        <div v-if="c.state === '待裁决'" class="row" style="margin: 0">
-          <input v-model="form['r_' + c.conflict_id]" placeholder="裁决结论（已裁决时必填）"
+        <!-- 按钮是**动作**，不是状态。原来两个按钮叫「已裁决」「忽略」——
+             「已裁决」是 doclib_conflict.state 的取值，点之前它还没裁决，
+             拿状态词当按钮，看的人只能猜这一下到底会发生什么
+             （实测被问到「已裁决是啥意思？采纳还是拒绝？」）。
+             库里的状态取值不动（已裁决 / 已忽略），动的只是按钮上的字。
+
+             **也没有改成「采纳/驳回」去和候选区统一**：那两个词的宾语是
+             「一条建议」，接受或拒绝；而冲突没有建议可接受——裁决结论是人
+             自己写的文本，不是在 A/B 里选一个。套上去会让人以为是二选一，
+             那是比用词不一致更深的误导。 -->
+        <div v-if="c.state === '待裁决'" class="cfact">
+          <input v-model="form['r_' + c.conflict_id]"
+                 placeholder="裁决结论：按哪一方的口径算，为什么（提交裁决必填）"
                  style="flex: 1" />
-          <button :disabled="!!busy" @click="resolveConflict(c, '已裁决')">已裁决</button>
-          <button :disabled="!!busy" @click="resolveConflict(c, '已忽略')">忽略</button>
+          <button :disabled="!!busy" @click="resolveConflict(c, '已裁决')"
+                  title="把结论写进本体：这条冲突会落成规则关系，后续按你写的口径算">
+            提交裁决</button>
+          <button :disabled="!!busy" @click="resolveConflict(c, '已忽略')"
+                  title="不写结论，也不再提示这条——重算口径时它不会复活">
+            忽略此条</button>
+        </div>
+        <!-- 两个按钮的后果差别要写在手边，不能只写在 title 里：
+             title 要悬停才看得见，而这是个一次性、会写进本体的决定。 -->
+        <div v-if="c.state === '待裁决'" class="muted cfhint">
+          <b>提交裁决</b>＝结论写进本体（落成规则关系，后续按它算）·
+          <b>忽略此条</b>＝不写结论、重算后也不再提示
         </div>
         <div v-else class="muted" style="font-size: 12px">
           {{ c.resolved_by }} · {{ c.resolution || '（忽略，未写结论）' }}
@@ -301,7 +326,7 @@ onUnmounted(stopPoll)
           <tr>
             <th style="width: 150px">归并组</th><th style="width: 62px">判定</th>
             <th style="width: 48px">出处</th><th style="width: 70px">证据</th>
-            <th>依据</th><th style="width: 86px"></th>
+            <th style="width: 260px">依据</th><th style="width: 86px"></th>
           </tr>
         </thead>
         <tbody>
@@ -393,7 +418,7 @@ onUnmounted(stopPoll)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="a in adoptions" :key="a.adoption_id">
+          <tr v-for="a in adoptList.view(adoptions)" :key="a.adoption_id">
             <td><span class="tag" :class="a.action === '采纳' ? 't-pass'
               : a.action === '驳回' ? 't-hit' : 't-pend'">{{ a.action }}</span></td>
             <td>{{ a.group_key }}</td>
@@ -408,7 +433,12 @@ onUnmounted(stopPoll)
               <MarkText :text="a.reason || (a.rule_name ? a.rule_name + '（' + a.rule_status + '）' : '')" />
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="adoptList.more(adoptions).show">
+                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="adoptList.more(adoptions).toggle()">
+                  {{ adoptList.more(adoptions).rest === -1 ? '收起' : `展开剩余 ${adoptList.more(adoptions).rest} 条` }}（共 {{ adoptions.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
     </div>
   </template>
@@ -514,7 +544,7 @@ onUnmounted(stopPoll)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in data.items" :key="r.rule_id">
+              <tr v-for="r in ruleList.view(data.items)" :key="r.rule_id">
                 <td class="mono">
                   <router-link :to="`/asset/rules/${r.rule_id}`">{{ r.rule_id }}</router-link>
                 </td>
@@ -538,7 +568,12 @@ onUnmounted(stopPoll)
                         class="tag" :class="stateTag(c.state)">{{ c.state }}</span>
                 </td>
               </tr>
-            </tbody>
+                          <tr v-if="ruleList.more(data.items).show">
+                <td :colspan="7" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="ruleList.more(data.items).toggle()">
+                  {{ ruleList.more(data.items).rest === -1 ? '收起' : `展开剩余 ${ruleList.more(data.items).rest} 条` }}（共 {{ data.items.length }} 条）
+                </td>
+              </tr>
+</tbody>
           </table>
         </div>
       </template>
@@ -697,6 +732,7 @@ onUnmounted(stopPoll)
 
   <div v-if="err" class="err">{{ err }}</div>
   <div v-if="msg" class="note">{{ msg }}</div>
+  </div>
 </template>
 
 <style scoped>
@@ -712,16 +748,20 @@ onUnmounted(stopPoll)
   line-height: 1.6;
 }
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
-.bar3 { display: flex; height: 10px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
+.bar3 { display: flex; height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
 .bar3 > i { display: block; height: 100%; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .two h4 { margin: 6px 0 4px; font-size: 13px; }
 .cf { border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px; margin-top: 8px; }
-.cf.待裁决 { border-color: var(--hit); background: #fffafa; }
-.formcell { background: #fafbfc; }
+.cf.待裁决 { border-color: var(--hit); background: var(--panel)afa; }
+.cfact { display: flex; gap: 6px; align-items: center; margin: 0; }
+/* 后果说明贴着按钮下方：这是个一次性、会写进本体的决定，
+   把差别只放在 title 里等于要悬停才看得见。 */
+.cfhint { font-size: 11px; margin-top: 4px; line-height: 1.5; }
+.formcell { background: var(--panel-2); }
 .srcs { margin: 6px 0; }
 .src { border-left: 2px solid var(--line); padding: 2px 0 2px 8px; margin-bottom: 5px; }
-tr.warn td { background: #fffafa; }
+tr.warn td { background: var(--panel)afa; }
 .g { width: 100%; height: 420px; }
 .g .nid { font-size: 11px; text-anchor: middle; fill: var(--ink); font-weight: 600; }
 .g .nlb { font-size: 10px; text-anchor: middle; fill: var(--muted); }

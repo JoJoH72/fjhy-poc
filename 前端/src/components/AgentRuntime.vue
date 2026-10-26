@@ -157,12 +157,12 @@ function fmt(s?: number | null) {
 </template>
 
 <style scoped>
-.bar { height: 10px; background: #eef1f5; border-radius: 5px; overflow: hidden; }
+.bar { height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--brand); transition: width .4s; }
 .bar > i.done { background: var(--pass); }
 .bar > i.failed { background: var(--hit); }
-.bar2 { height: 4px; background: #f3f5f8; border-radius: 2px; margin-top: 3px; overflow: hidden; }
-.bar2 > i { display: block; height: 100%; background: #9bb7d4; transition: width .4s; }
+.bar2 { height: 4px; background: var(--panel-2); border-radius: 2px; margin-top: 3px; overflow: hidden; }
+.bar2 > i { display: block; height: 100%; background: var(--brand-line); transition: width .4s; }
 .bar2 > i.indet { width: 32%; animation: slide 1.1s ease-in-out infinite; }
 @keyframes slide { 0% { margin-left: -32%; } 100% { margin-left: 100%; } }
 
@@ -182,7 +182,7 @@ function fmt(s?: number | null) {
    三条链共用这个组件，一条链改名不该让另外两条的图错位。 */
 .pano .node .stem {
   position: absolute; top: 74px; left: 50%; width: 2px; height: 22px;
-  margin-left: -1px; background: #cfdcea;
+  margin-left: -1px; background: var(--brand-line);
 }
 .pano .node .keys { position: absolute; top: 108px; left: 0; right: 0; }
 .pano .node .keys code { display: block; font-size: 10px; color: var(--muted); line-height: 1.5; }
@@ -195,7 +195,7 @@ function fmt(s?: number | null) {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 .pano .sig {
   position: absolute; top: 108px; transform: translateX(-50%);
-  font-size: 10px; color: var(--brand); background: #fff; padding: 0 4px;
+  font-size: 10px; color: var(--brand); background: var(--panel); padding: 0 4px;
 }
 
 .acard { border: 1px solid var(--line); border-radius: 4px; padding: 9px 11px; margin-top: 9px; }
@@ -205,10 +205,10 @@ function fmt(s?: number | null) {
 .phases { display: flex; gap: 6px; }
 .phases .ph {
   flex: 1; border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
-  font-size: 11px; color: var(--muted); background: #fafbfc;
+  font-size: 11px; color: var(--muted); background: var(--panel-2);
 }
 .phases .ph b { color: var(--ink); margin-right: 4px; }
 .phases .ph i { float: right; font-style: normal; }
-.phases .ph.done { background: #f1f8f2; border-color: #cfe6d3; }
+.phases .ph.done { background: var(--ok-bg); border-color: #cfe6d3; }
 .phases .ph.cur { background: #eef4fb; border-color: var(--brand); }
 </style>

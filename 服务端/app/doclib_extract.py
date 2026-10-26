@@ -34,7 +34,10 @@ from .llm import client as llmc
 
 # ── 条款切分 ────────────────────────────────────────────────────────────────
 # 「第X条」后面常跟（标题），正文到下一个「第Y条」为止。
-CLAUSE_HEAD = re.compile(r"第[一二三四五六七八九十百零〇\d]{1,8}条")
+# 2026-10-26 容忍词间空格：tesseract 生成的 PDF 文字层在词与词之间插空格
+# （实测「第 一 条 为规范…」），原正则 0 命中、《通讯费管理办法》文字版
+# 切出 0 条条款。加 \s* 后对原生文本无影响（没空格时匹配结果完全一致）。
+CLAUSE_HEAD = re.compile(r"第\s*(?:[一二三四五六七八九十百零〇\d]\s*){1,8}条")
 TITLE_AFTER = re.compile(r"^\s*[（(]([^）)]{2,30})[）)]")
 
 MIN_TEXT = 12          # 太短的（只有标题）不计入候选
@@ -69,6 +72,10 @@ FEATURES = [
 ]
 # 「可能成为规则」的门槛：光有「数值」不够（页码、条款序号都是数字），
 # 必须带阈值、禁止、强制、例外、名单制中的任意一项。
+# 候选特征是花钱的门禁（自动只买带这些特征的条款），**不许为演示放宽**——
+# 2026-10-25 曾把「数值」加进来让某份措辞温和的测试文件出草稿，用户明确
+# 否决：门禁是产品规则，测试文件应该改得像真制度，而不是改规则迁就测试。
+# 想让某条非候选条款出草稿，用条款底账的「跑草稿」手动买单（不改门禁）。
 CANDIDATE_FEATURES = {"阈值", "禁止", "强制", "例外", "名单制"}
 
 # 候选只排除**范本**，不是只收「制度」。
@@ -139,13 +146,20 @@ def split_clauses(body):
         text = (rest[tm.end():] if tm else rest).strip("　：:。\n\t")
         if len(text) < MIN_TEXT:
             continue
-        out.append({"clause_no": m.group(0), "title": title,
+        # 条款号去掉 OCR 文字层带进来的空格：「第 一 条」→「第一条」，否则
+        # 后续按 clause_no 对账、AI 草稿回挂全都对不上。
+        out.append({"clause_no": re.sub(r"\s+", "", m.group(0)), "title": title,
                     "body": text, "pos": start})
     return out
 
 
 def features_of(text):
-    return [name for name, rx in FEATURES if rx.search(text or "")]
+    # 双探：原文 + 去空格版。OCR 文字层词间空格会把「不得超过」拆成
+    # 「不 得 超过」，只搜原文时阈值/禁止等特征全部漏判 → 候选为零。
+    # （2026-10-26 通讯费办法实测踩到；原生文本两版一致，无副作用。）
+    compact = (text or "").replace(" ", "").replace("　", "")
+    return [name for name, rx in FEATURES
+            if rx.search(text or "") or rx.search(compact)]
 
 
 def numbers_in(text):
@@ -847,7 +861,11 @@ def ai_draft_one(clause_row, cfg, send_limit=SEND_CHAR_LIMIT):
     user = ("文件：%s\n条款：%s %s%s\n\n条款原文：\n%s"
             % (clause_row.get("file_name") or "", clause_row["clause_no"],
                clause_row.get("title") or "", caveat, sent))
-    res, content = llmc.chat_json(cfg, SYSTEM, user)
+    # max_tokens 必须透传配置值：glm-5.3 会先输出 reasoning 再出 JSON，默认 1500
+    # 会被思考花光、正文为空（2026-10-25 实测 4 条全空）。此前不传参数，
+    # 「高级参数 → 最大输出」在页面上调了也不生效——界面承诺了就必须算数。
+    res, content = llmc.chat_json(cfg, SYSTEM, user,
+                                  max_tokens=int(cfg.get("max_tokens") or 4000))
     if not res.ok:
         return ({"错误": res.message, "err_kind": res.err_kind}, res, sent)
     raw = (content or "").strip()
@@ -917,8 +935,20 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
     made, failed, suspect = 0, 0, 0
     items = []
     try:
-        for c in rows:
-            draft, res, sent = ai_draft_one(c, cfg)
+        # ── 并发调模型、串行写库（2026-10-26）：时延大头在模型调用——实测
+        # glm-5.3-flash 单条 6~17 秒（智谱侧波动），5 条串行 48 秒、客户不能忍。
+        # llm_config.concurrency 字段一直存着没人用，现在真正用它。
+        # 只并发 HTTP 调用（chat_json 每次新建会话，线程安全；ai_draft_one
+        # 不碰库），DB 写回收回来串行做——psycopg2 连接不跨线程共享，
+        # 稳妥比快那半秒重要。
+        workers = max(1, min(int(cfg.get("concurrency") or 1), len(rows) or 1))
+        if workers > 1 and len(rows) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(lambda c: ai_draft_one(c, cfg), rows))
+        else:
+            results = [ai_draft_one(c, cfg) for c in rows]
+        for c, (draft, res, sent) in zip(rows, results):
             ok = "错误" not in draft
             chk = check_numbers(draft, sent) if ok else {"ok": None, "suspect": [],
                                                          "note": "调用失败，未做数值核对"}
@@ -979,14 +1009,25 @@ def list_drafts(task_id=None, state=None, limit=200):
 
 
 def review_draft(draft_id, state, reviewer, reason=None):
-    """采纳 / 驳回。**采纳只是标记草稿，不自动写 rule 表**——
+    """采纳 / 驳回 / 撤回（回待审）。**采纳只是标记草稿，不自动写 rule 表**——
     写规则要填八要素里模型给不全的那几项（维度编号、优先级、绑定节点），
     那是下一页「规则本体」的事。这里自动写进去，等于让没人填过的字段
-    带着默认值进了规则清单。"""
-    if state not in ("采纳", "驳回"):
-        raise ValueError("只能是「采纳」或「驳回」")
+    带着默认值进了规则清单。
+
+    误点的补救有两条路（2026-10-25 补）：**改判**＝直接再点另一个按钮，
+    重复提交后端不拦、最新一次为准；**撤回**＝state='待审'，清掉审定痕迹
+    回到待审。撤回这一版不留历史（doclib_draft 没有审定历史表，加表属于
+    生产化改造）——边界说清楚：撤回后这次审定视为未发生。
+    """
+    if state not in ("采纳", "驳回", "待审"):
+        raise ValueError("只能是「采纳」「驳回」或「待审」（撤回）")
     if state == "驳回" and not (reason or "").strip():
         raise ValueError("驳回必须写原因——不写原因的驳回，下次还会抽出同一条")
+    if state == "待审":
+        n = db.execute("""UPDATE doclib_draft SET review_state='待审', reviewer=NULL,
+                                   reviewed_at=NULL, reject_reason=NULL
+                           WHERE draft_id=%s AND review_state <> '待审'""", (draft_id,))
+        return n > 0
     n = db.execute("""UPDATE doclib_draft SET review_state=%s, reviewer=%s,
                              reviewed_at=%s, reject_reason=%s WHERE draft_id=%s""",
                    (state, reviewer or "未署名", datetime.datetime.now(), reason, draft_id))

@@ -26,17 +26,22 @@
  * **边界也要写在页面上，不含糊**：这条链能从素材里数出有硬证据的东西，
  * 但替代不了人读制度划实体、定概念语义。产出叫候选，采纳是人的动作。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import AgentRuntime from '../components/AgentRuntime.vue'
 import OntoLoadSteps from '../components/OntoLoadSteps.vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
 import type {
   ExMeta, ExProgress, OntoBuildSummary, OntoCandAction, OntoCandidate, OntoGraph,
   OntoPatchPreview, OntoRelations, OntoSourceFile, StorageRow,
 } from '../api'
 
+const entList = useCollapse()
+
 type Tab = 'build' | 'show' | 'rel' | 'graph'
+const route = useRoute()
 const tab = ref<Tab>('build')
 
 const prog = ref<ExProgress | null>(null)
@@ -183,19 +188,47 @@ const REL_COLOR: Record<string, string> = {
   包含: '#2f6fb5', 关联: '#7a9ec4', 流转: '#2e8b57', 归属: '#8e6fb5',
 }
 
+/**
+ * 被高亮的那条候选（从别的页面带 ?cand= 跳过来的）。
+ *
+ * **为什么要有这个**：采纳会真的改 本体_v0.1.yaml，所以采纳 UI（插入目标 +
+ * 补丁预览）只做了这一份、只在这一页。流程本体那页看的是同一批候选的
+ * 流程切片，它那里没有采纳按钮——于是「看得到已采纳状态，却没有采纳按钮」。
+ * 那页现在给「去采纳 →」直达链接，这里负责接住：切到建立页、清掉判定过滤
+ * （否则目标可能被过滤掉，跳过来是一片空白）、展开它、滚到它、高亮两秒。
+ */
+const highlight = ref('')
+
+async function focusCand(id: string) {
+  const c = cands.value.find((x) => x.cand_id === id)
+  if (!c) return
+  tab.value = 'build'
+  verdictFilter.value = ''          // 不清过滤的话，跳过来可能根本看不到这一行
+  highlight.value = id
+  await nextTick()
+  document.getElementById('cand-' + id)
+    ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  if (openCand.value !== id) openPreview(c)
+  // 高亮只是「我在这儿」，不是状态，所以过一会儿自己退掉
+  setTimeout(() => { if (highlight.value === id) highlight.value = '' }, 2500)
+}
+
 onMounted(async () => {
   meta.value = await api.ontoBuildMeta().catch(() => null)
   await poll()
   if (prog.value?.status === 'running') startPoll()
   await reload()
+  const id = route.query.cand
+  if (typeof id === 'string' && id) await focusCand(id)
 })
 onUnmounted(stopPoll)
 </script>
 
 <template>
+  <div class="v2">
   <h2>业务本体</h2>
 
-  <div class="row">
+  <div class="tabs">
     <button :class="{ on: tab === 'build' }" @click="pickTab('build')">建立</button>
     <button :class="{ on: tab === 'show' }" @click="pickTab('show')">展示</button>
     <button :class="{ on: tab === 'rel' }" @click="pickTab('rel')">关系</button>
@@ -237,12 +270,12 @@ onUnmounted(stopPoll)
           <tr>
             <th style="width: 68px">类型</th><th style="width: 150px">候选</th>
             <th style="width: 76px">判定</th><th style="width: 46px">次数</th>
-            <th>出处与依据</th><th style="width: 76px"></th>
+            <th style="width: 360px">出处与依据</th><th style="width: 76px"></th>
           </tr>
         </thead>
         <tbody>
           <template v-for="c in shown" :key="c.cand_id">
-            <tr :class="{ dim: c.verdict === '已在本体' }">
+            <tr :id="'cand-' + c.cand_id" :class="{ dim: c.verdict === '已在本体', hl: c.cand_id === highlight }">
               <td><span class="tag t-na">{{ c.kind }}</span></td>
               <td><b>{{ c.cand_name }}</b></td>
               <td><span class="tag" :class="vTag(c.verdict)">{{ c.verdict }}</span></td>
@@ -347,13 +380,19 @@ onUnmounted(stopPoll)
                 <th style="width: 80px">来源</th><th class="num" style="width: 60px">概念数</th></tr>
             </thead>
             <tbody>
-              <tr v-for="e in (data as any).entities" :key="e.entity_id">
+              <tr v-for="e in entList.view<any>((data as any).entities)" :key="e.entity_id">
                 <td class="mono">{{ e.entity_id }}</td>
                 <td>{{ e.entity_name }}</td>
                 <td class="muted" style="font-size: 12px">{{ e.source }}</td>
                 <td class="num">{{ e.concepts }}</td>
               </tr>
-            </tbody>
+                          <tr v-if="entList.more((data as any).entities).show">
+                <td :colspan="4" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px"
+                    @click="entList.more((data as any).entities).toggle()">
+                  {{ entList.more((data as any).entities).rest === -1 ? '收起' : `展开剩余 ${entList.more((data as any).entities).rest} 条` }}（共 {{ (data as any).entities.length }} 条）
+                </td>
+              </tr>
+</tbody>
           </table>
         </div>
 
@@ -480,22 +519,34 @@ onUnmounted(stopPoll)
 
   <div v-if="err" class="err">{{ err }}</div>
   <div v-if="msg" class="note">{{ msg }}</div>
+  </div>
 </template>
 
 <style scoped>
+/* 从流程本体「去采纳」跳过来时高亮那一行。**只是「我在这儿」，不是状态**，
+   所以两秒多之后自己退掉——留着会被当成某种标记。 */
+tr.hl td {
+  background: var(--panel)be6;
+  box-shadow: inset 0 0 0 1px var(--pend, #d48806);
+}
+@media (prefers-reduced-motion: reduce) {
+  tr.hl td { box-shadow: inset 0 0 0 2px var(--pend, #d48806); }
+}
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
 button.mini { padding: 2px 7px; font-size: 12px; }
 tr.dim td { opacity: .62; }
-tr.srcrow td { background: #fffdf5; }
-.formcell { background: #fafbfc; }
+tr.srcrow td { background: var(--warn-bg); }
+.formcell { background: var(--panel-2); }
 .diffbox { margin: 6px 0; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .diffbox pre { margin: 0; padding: 3px 8px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
-pre.ctx { background: #fafbfc; color: var(--muted); }
-pre.add { background: #f1f8f2; border-left: 3px solid var(--pass); }
+pre.ctx { background: var(--panel-2); color: var(--muted); }
+pre.add { background: var(--ok-bg); border-left: 3px solid var(--pass); }
 pre.add.small { font-size: 10px; max-height: 60px; overflow: auto; }
 .g { width: 100%; height: 420px; }
 .g .nid { font-size: 11px; text-anchor: middle; fill: var(--ink); font-weight: 600; }
 .g .nlb { font-size: 10px; text-anchor: middle; fill: var(--muted); }
 .g .el { font-size: 9px; text-anchor: middle; fill: var(--muted); }
 .sw { display: inline-block; width: 16px; height: 3px; margin-right: 4px; vertical-align: middle; }
+/* 装载检查表：结论列（第 3 列）是状态，居中 */
+table th:nth-child(3), table td:nth-child(3) { text-align: center; }
 </style>

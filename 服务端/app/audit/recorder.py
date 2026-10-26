@@ -30,6 +30,7 @@ BUSINESS_TABLES = {
     "hotel_invoice", "transport_voucher", "authority_approval", "meeting_notice",
     "expense_allocation", "employee", "org", "budget", "org_special_rule",
     "agent_signal", "review_run", "review_finding", "manual_review",
+    "review_assignment",   # 工单认领留痕（2026-10-26 个人工作台）；A 阶段随人工复核写
 }
 AUDIT_TABLES = {"data_pool_snapshot", "cycle_log", "agent_signal_log",
                 "feedback_log", "improve_log"}

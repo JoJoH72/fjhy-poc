@@ -1,0 +1,1655 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>差旅费智能审核平台</title>
+<style>
+/* ── 令牌 ─────────────────────────────────────────── */
+:root{
+  --bg:#F4F6F9; --panel:#FFFFFF; --panel-2:#FAFBFD;
+  --ink:#1B2532; --ink-2:#5B6675; --ink-3:#8A94A3;
+  --line:#E4E9F0; --line-2:#EEF2F7;
+  --brand:#0E4DA4; --brand-hi:#1560C8; --brand-bg:#EEF4FC; --brand-line:#C9DBF4;
+  --gold:#B9912F; --gold-bg:#FAF3E1;
+  --ok:#1E7E4E; --ok-bg:#E9F5EE;
+  --bad:#C0351F; --bad-bg:#FBECE8;
+  --warn:#8A6410; --warn-bg:#FBF3DC;
+  --r-s:6px; --r-m:10px;
+  --shadow:0 1px 2px rgba(16,24,40,.05);
+  --shadow-lg:0 10px 30px rgba(16,24,40,.16);
+  --ring:0 0 0 3px rgba(14,77,164,.22);
+  /* 图表 categorical（已过验证器 light 全绿，gold 对比度 WARN→用直接标注补偿） */
+  --c1:#0E4DA4; --c2:#1E7E4E; --c3:#B9912F; --c4:#C0351F;
+}
+[data-theme=dark]{
+  --bg:#0F141B; --panel:#151C26; --panel-2:#1A2230;
+  --ink:#E6EBF2; --ink-2:#9AA6B5; --ink-3:#66717F;
+  --line:#26303C; --line-2:#1E2836;
+  --brand:#5B9BE8; --brand-hi:#7CB2F0; --brand-bg:#17253C; --brand-line:#2C4368;
+  --gold:#D2AC55; --gold-bg:#2B2412;
+  --ok:#4CB982; --ok-bg:#122A1E;
+  --bad:#E8705A; --bad-bg:#361912;
+  --warn:#D9B25C; --warn-bg:#2F2714;
+  --shadow:0 1px 2px rgba(0,0,0,.4);
+  --shadow-lg:0 10px 30px rgba(0,0,0,.5);
+  --ring:0 0 0 3px rgba(91,155,232,.3);
+  /* dark 组（四项全 PASS） */
+  --c1:#4C86D9; --c2:#2FA98B; --c3:#B08D26; --c4:#E85D82;
+}
+/* ── 基座 ─────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:var(--ink)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,select,textarea{font:inherit;color:inherit}
+a{color:var(--brand)}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}
+input:focus-visible,textarea:focus-visible,select:focus-visible{outline:none;box-shadow:var(--ring);border-color:var(--brand)}
+.num{font-variant-numeric:tabular-nums}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
+
+/* ── 登录页 ──────────────────────────────────────── */
+.login{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:
+  radial-gradient(1200px 500px at 20% -10%, var(--brand-bg), transparent 60%), var(--bg)}
+.login.show{display:flex}
+.login-card{width:400px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);padding:36px 36px 28px}
+.login-brand{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.login-brand .mark{width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,var(--brand),var(--brand-hi));display:grid;place-items:center;color:#fff}
+.login-brand h1{font-size:17px}
+.login-brand .sub{font-size:12px;color:var(--ink-3)}
+.login-card label{display:block;font-size:13px;color:var(--ink-2);margin:12px 0 6px}
+.login-card .input{width:100%;height:38px}
+.pwd-wrap{position:relative}
+.pwd-wrap .input{padding-right:40px;width:100%}
+.pwd-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:28px;height:28px;border-radius:4px;display:grid;place-items:center;color:var(--ink-3)}
+.pwd-eye:hover{background:var(--line-2);color:var(--ink-2)}
+.login-roles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
+.role-pick{border:1px solid var(--line);border-radius:var(--r-s);padding:8px 4px;text-align:center;font-size:12px;color:var(--ink-2);background:var(--panel)}
+.role-pick.on{border-color:var(--brand);color:var(--brand);background:var(--brand-bg);font-weight:600}
+.role-pick .ic{display:block;margin:0 auto 4px;width:22px;height:22px;color:currentColor}
+.login-note{font-size:12px;color:var(--ink-3);margin-top:12px;text-align:center}
+.login-btn{width:100%;height:40px;margin-top:16px;font-size:14px}
+
+/* ── 外壳 ─────────────────────────────────────────── */
+.app{display:flex;height:100vh;overflow:hidden}
+.app.hidden{display:none}
+.side{width:216px;flex:none;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;padding:20px 16px}
+.brand-mark{width:36px;height:36px;flex:none;border-radius:var(--r-s);background:linear-gradient(135deg,var(--brand),var(--brand-hi));display:grid;place-items:center;color:#fff}
+.brand-name{font-size:14px;font-weight:600;line-height:1.3}
+.brand-sub{font-size:12px;color:var(--ink-3)}
+.nav{padding:8px;flex:1;overflow:auto}
+.nav-group{font-size:12px;color:var(--ink-3);padding:12px 8px 4px}
+.nav-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 12px;border-radius:var(--r-s);color:var(--ink-2);position:relative}
+.nav-item svg{flex:none}
+.nav-item:hover{background:var(--line-2);color:var(--ink)}
+.nav-item.on{background:var(--brand-bg);color:var(--brand);font-weight:600}
+.nav-item.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--brand)}
+.nav-sub{padding-left:20px}
+.nav-item .ro{margin-left:auto;font-size:11px;color:var(--gold);border:1px solid var(--gold);border-radius:4px;padding:0 5px;line-height:16px}
+.side-user{margin-top:auto;display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--line)}
+.avatar{width:30px;height:30px;border-radius:50%;flex:none;background:var(--brand-bg);color:var(--brand);display:grid;place-items:center;font-size:13px;font-weight:600}
+.side-user .who{font-size:13px}
+.side-user .role{font-size:12px;color:var(--ink-3)}
+.side-user .out{margin-left:auto;color:var(--ink-3);font-size:12px;padding:4px 8px;border-radius:4px}
+.side-user .out:hover{background:var(--line-2);color:var(--bad)}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{flex:none;height:52px;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+.topbar h1{font-size:16px;font-weight:600}
+.topbar .grow{flex:1}
+.data-pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);padding:4px 12px;border-radius:999px;background:var(--panel-2);border:1px solid var(--line)}
+.data-pill i{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.icon-btn{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:var(--ink-2)}
+.icon-btn:hover{background:var(--line-2);color:var(--ink)}
+.content{flex:1;overflow:auto;padding:24px 24px 48px}
+
+/* ── 通用件 ───────────────────────────────────────── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-m);box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line-2)}
+.card-head h2{font-size:15px;font-weight:600}
+.card-head .grow{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 16px;border-radius:var(--r-s);font-size:13px;border:1px solid transparent;transition:background .15s,border-color .15s,color .15s}
+.btn.primary{background:var(--brand);color:#fff}
+.btn.primary:hover{background:var(--brand-hi)}
+.btn.ghost{border-color:var(--line);color:var(--ink-2);background:var(--panel)}
+.btn.ghost:hover{border-color:var(--brand);color:var(--brand)}
+.btn.danger{border-color:var(--line);color:var(--bad);background:var(--panel)}
+.btn.danger:hover{border-color:var(--bad)}
+.btn.pass{background:var(--ok);color:#fff}
+.btn.pass:hover{filter:brightness(1.1)}
+.btn.reject{background:var(--bad);color:#fff}
+.btn.reject:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.lg{height:36px;padding:0 20px;font-size:14px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 10px;border-radius:999px;white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.ok{color:var(--ok);background:var(--ok-bg)}
+.pill.bad{color:var(--bad);background:var(--bad-bg)}
+.pill.warn{color:var(--warn);background:var(--warn-bg)}
+.pill.brand{color:var(--brand);background:var(--brand-bg)}
+.tag-demo{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;color:var(--gold);background:var(--gold-bg);border:1px solid var(--gold);margin-left:6px;vertical-align:1px}
+.seg{display:inline-flex;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-s);padding:2px}
+.seg button{padding:4px 12px;font-size:13px;color:var(--ink-2);border-radius:4px}
+.seg button.on{background:var(--panel);color:var(--brand);font-weight:600;box-shadow:var(--shadow)}
+.input,.select{height:32px;padding:0 12px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--panel);font-size:13px;color:var(--ink)}
+.input::placeholder{color:var(--ink-3)}
+
+/* ── 统计卡 ─────────────────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-m);padding:16px 20px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.stat::before{content:"";position:absolute;left:0;top:0;right:0;height:2px;background:var(--brand-line)}
+.stat .k{font-size:12px;color:var(--ink-2)}
+.stat .v{font-size:26px;font-weight:600;margin:2px 0;line-height:1.2}
+.stat .v small{font-size:13px;font-weight:400;color:var(--ink-3)}
+.stat .d{font-size:12px;color:var(--ink-3)}
+.stat.alert::before{background:var(--gold)}
+.stat.alert .v{color:var(--brand)}
+
+/* ── 表格 ───────────────────────────────────────── */
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;font-weight:500;color:var(--ink-3);font-size:12px;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;background:var(--panel-2)}
+.tbl td{padding:10px 12px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+.tbl tbody tr:hover{background:var(--panel-2)}
+.tbl .c{width:36px;text-align:center}
+.tbl .amt{text-align:right;white-space:nowrap}
+.tbl a{color:var(--brand);text-decoration:none}
+.tbl a:hover{text-decoration:underline}
+.rowcheck{width:15px;height:15px;accent-color:var(--brand);cursor:pointer}
+.empty-row td{text-align:center;color:var(--ink-3);padding:32px 0}
+.batchbar{position:fixed;left:50%;bottom:24px;transform:translate(-50%,80px);display:flex;align-items:center;gap:12px;background:var(--ink);color:#fff;padding:10px 12px 10px 20px;border-radius:var(--r-m);box-shadow:var(--shadow-lg);transition:transform .2s ease,opacity .2s ease;opacity:0;z-index:30}
+[data-theme=dark] .batchbar{background:#26313F;border:1px solid var(--line)}
+.batchbar.show{transform:translate(-50%,0);opacity:1}
+.batchbar .cnt{font-size:13px}
+.batchbar .cnt b{color:#FFD98A;margin:0 2px}
+.batchbar .btn{background:transparent;color:#fff;border-color:rgba(255,255,255,.3);height:30px}
+.batchbar .btn:hover{border-color:#fff}
+.batchbar .btn.primary{background:var(--brand-hi);border-color:transparent}
+
+/* ── 图表 ───────────────────────────────────────── */
+.chart-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:16px;margin-bottom:16px}
+.hbar{display:grid;grid-template-columns:88px 1fr 64px;align-items:center;gap:10px;font-size:13px;padding:5px 0}
+.hbar .lb{color:var(--ink-2);text-align:right;white-space:nowrap}
+.hbar .track{height:14px;background:var(--panel-2);border-radius:3px;overflow:hidden;display:flex}
+.hbar .track i{display:block;height:100%}
+.hbar .val{color:var(--ink-2);white-space:nowrap}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--ink-2);margin-bottom:12px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:2px}
+.ring-wrap{display:flex;align-items:center;gap:20px;justify-content:center;padding:8px 0}
+.ring-legend{font-size:13px}
+.ring-legend div{display:flex;align-items:center;gap:8px;padding:4px 0}
+.ring-legend i{width:10px;height:10px;border-radius:2px}
+.funnel{padding:6px 0}
+.funnel .fr{display:grid;grid-template-columns:96px 1fr 92px;align-items:center;gap:10px;font-size:13px;padding:6px 0}
+.funnel .fl{color:var(--ink-2);text-align:right;white-space:nowrap}
+.funnel .ft{height:18px;background:var(--panel-2);border-radius:3px;overflow:hidden}
+.funnel .ft i{display:block;height:100%;background:var(--c1);border-radius:3px 0 0 3px}
+.funnel .fv{color:var(--ink-2)}
+
+/* ── 报告页 ──────────────────────────────────────── */
+.gate{display:flex;gap:20px;align-items:stretch;background:var(--brand-bg);border:1px solid var(--brand-line);border-left:3px solid var(--brand);border-radius:var(--r-m);padding:20px 24px;margin-bottom:16px}
+.gate .info{flex:1;min-width:0}
+.gate .bill-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.gate .bill-line b{font-size:15px}
+.gate .meta{font-size:13px;color:var(--ink-2);display:flex;gap:16px;flex-wrap:wrap}
+.gate .meta span{white-space:nowrap}
+.gate .ai-line{margin-top:12px;font-size:13px;color:var(--ink-2);display:flex;align-items:center;gap:8px}
+.gate .note{font-size:12px;color:var(--ink-3);margin-top:4px}
+.gate .ops{flex:none;display:grid;grid-template-columns:132px 132px;gap:8px;align-content:center}
+.gate .ops .btn.lg{width:auto}
+.gate .field{margin-top:12px;display:flex;gap:8px;max-width:520px}
+.gate .field input{flex:1}
+.kv{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-bottom:16px}
+.kv div{padding:10px 20px;border-right:1px solid var(--line-2)}
+.kv div:nth-child(4n){border-right:0}
+.kv dt{font-size:12px;color:var(--ink-3)}
+.kv dd{font-size:13px;margin-top:2px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:12px;padding:3px 12px;border-radius:999px;border:1px solid var(--line);color:var(--ink-2);background:var(--panel)}
+.chip.on{border-color:var(--brand);color:var(--brand);background:var(--brand-bg);font-weight:600}
+.rule-row{cursor:pointer}
+.rule-row .chev{transition:transform .15s;color:var(--ink-3)}
+.rule-row.open .chev{transform:rotate(180deg)}
+.ev-row td{background:var(--panel-2);padding:16px 20px 20px}
+.ev-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:24px}
+.ev-grid h4{font-size:12px;color:var(--ink-3);font-weight:500;margin-bottom:8px}
+.ev dl{display:grid;grid-template-columns:96px 1fr;gap:6px 12px;font-size:13px}
+.ev dt{color:var(--ink-3)}
+.quote{font-size:12px;color:var(--ink-2);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px}
+.atts{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:16px 20px 20px}
+.att{border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden;background:var(--panel)}
+.att .thumb{aspect-ratio:4/3;display:grid;place-items:center;color:var(--ink-3);background:linear-gradient(135deg,var(--panel-2),var(--brand-bg))}
+.att .meta{padding:8px 12px;display:flex;align-items:center;gap:8px}
+.att .meta .n{font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att .meta .t{font-size:11px;color:var(--brand);white-space:nowrap}
+
+/* ── 追溯页 ──────────────────────────────────────── */
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+.step{border:1px solid var(--line);border-radius:var(--r-m);background:var(--panel);padding:12px 16px;position:relative;box-shadow:var(--shadow)}
+.step .s-tag{font-size:12px;font-weight:600;color:var(--brand)}
+.step .s-name{font-size:13px;margin:2px 0 6px}
+.step .s-ms{font-size:20px;font-weight:600}
+.step .s-tbl{font-size:12px;color:var(--ink-3);margin-top:2px}
+.step::after{content:"";position:absolute;right:-9px;top:50%;width:8px;height:8px;border-top:1.5px solid var(--ink-3);border-right:1.5px solid var(--ink-3);transform:translateY(-50%) rotate(45deg)}
+.step:last-child::after{display:none}
+
+/* ── 管理页（知识资产/系统）──────────────────────── */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.plain-list{padding:8px 0}
+.plain-row{display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--line-2);font-size:13px}
+.plain-row:last-child{border-bottom:0}
+.plain-row .grow{flex:1;min-width:0}
+.plain-row .t{color:var(--ink-3);font-size:12px;white-space:nowrap}
+/* ── 智能体架构图 ─────────────────────────────── */
+.arch{padding:20px 20px 8px}
+.lane{display:grid;grid-template-columns:72px 1fr;gap:16px;align-items:stretch}
+.lane-head{
+  border-right:2px solid var(--brand-line);display:flex;align-items:center;justify-content:center;
+}
+.lane-head .lt{font-size:20px;font-weight:700;color:var(--brand);letter-spacing:1px}
+.lane-body{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:12px;padding:4px 0}
+.node{
+  position:relative;border:1px solid var(--line);border-radius:var(--r-s);
+  background:var(--panel);padding:12px 12px 10px;cursor:pointer;text-align:left;
+  transition:border-color .15s, box-shadow .15s;min-width:0;
+}
+.node:hover{border-color:var(--brand)}
+.node.on{border-color:var(--brand);box-shadow:var(--ring)}
+.node .top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.node .chain{font-size:10px;color:var(--brand);background:var(--brand-bg);border-radius:3px;padding:0 5px;line-height:15px;white-space:nowrap}
+.node .chain.k2{color:var(--gold);background:var(--gold-bg)}
+.node .dot{width:8px;height:8px;border-radius:50%;flex:none;margin-left:auto}
+.node .dot.run{background:var(--ok);animation:pulse 2s ease-out infinite}
+.node .dot.idle{background:var(--ink-3)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(30,126,78,.45)}70%{box-shadow:0 0 0 7px rgba(30,126,78,0)}100%{box-shadow:0 0 0 0 rgba(30,126,78,0)}}
+[data-theme=dark] .node .dot.run{background:var(--ok)}
+.node .nm{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .ds{font-size:11px;color:var(--ink-3);margin-top:3px;line-height:1.45}
+.node .io{display:flex;gap:10px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line-2);font-size:11px;color:var(--ink-3)}
+.node .io b{color:var(--ink-2);font-weight:600}
+.flow{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  padding:6px 0 6px 88px;color:var(--ink-3);font-size:11px;
+}
+.flow .wire{width:1.5px;height:18px;background:linear-gradient(var(--brand-line),var(--brand));position:relative;margin:0 24px}
+.flow .wire::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);border:4px solid transparent;border-top:5px solid var(--brand)}
+.flow .sig{border:1px dashed var(--brand-line);border-radius:999px;padding:1px 10px;color:var(--brand);background:var(--brand-bg)}
+/* 节点详情浮层：贴节点弹出 */
+.pop{
+  position:fixed;z-index:35;width:360px;background:var(--panel);
+  border:1px solid var(--brand-line);border-radius:var(--r-m);box-shadow:var(--shadow-lg);
+  animation:popin .14s ease-out;
+}
+@keyframes popin{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.pop .p-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line-2)}
+.pop .p-head b{font-size:14px}
+.pop .p-head .x{margin-left:auto;color:var(--ink-3);width:24px;height:24px;border-radius:4px;display:grid;place-items:center}
+.pop .p-head .x:hover{background:var(--line-2);color:var(--ink)}
+.pop table td{border-bottom:1px solid var(--line-2);font-size:12.5px}
+.pop table td:first-child{color:var(--ink-3);width:84px}
+.pop .p-foot{padding:8px 16px 12px;font-size:11px;color:var(--ink-3)}
+
+/* ── 大模型配置 ─────────────────────────────────── */
+.llm-uses{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.use{padding:16px 20px;display:flex;flex-direction:column}
+.use .u-top{display:flex;align-items:center;gap:8px}
+.use .u-name{font-size:15px;font-weight:600}
+.use .u-model{font-size:17px;font-weight:600;margin:8px 0 2px;font-variant-numeric:tabular-nums}
+.use .u-vendor{font-size:12px;color:var(--ink-3)}
+.use .u-desc{font-size:12px;color:var(--ink-2);margin:8px 0 12px;flex:1}
+.use .u-ops{display:flex;gap:8px}
+.use.add{border-style:dashed;background:transparent;box-shadow:none;justify-content:center}
+.llm-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px}
+.trend{display:flex;align-items:flex-end;gap:4px;height:120px}
+.day{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end;position:relative;min-width:0}
+.day i{width:100%;max-width:16px;border-radius:2px 2px 0 0;display:block}
+.day i.o{background:var(--ok)}
+.day i.f{background:var(--bad)}
+.day .dl{font-size:9px;color:var(--ink-3);height:12px;line-height:12px;visibility:hidden}
+.day:nth-child(1) .dl,.day:nth-last-child(2) .dl,.day:last-child .dl{visibility:visible}
+.day .tip{display:none;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
+  background:var(--ink);color:#fff;font-size:11px;padding:4px 10px;border-radius:6px;white-space:nowrap;z-index:5}
+[data-theme=dark] .day .tip{background:#33404F}
+.day:hover .tip{display:block}
+
+/* ── 运行面板（AI 审核·参照部署流水线）────────── */
+.runpanel{border:1px solid var(--brand-line);border-radius:var(--r-m);background:var(--brand-bg);padding:20px 24px;margin-bottom:16px}
+.runpanel.done{border-color:var(--line);background:var(--panel)}
+.runpanel.idle{background:var(--panel)}
+.run-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.run-head .rt{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.run-head .spin{width:15px;height:15px;border:2px solid var(--brand-line);border-top-color:var(--brand);border-radius:50%;animation:rot .8s linear infinite;flex:none}
+@keyframes rot{to{transform:rotate(360deg)}}
+.run-head .el{font-size:13px;color:var(--ink-2)}
+.runbar{height:6px;border-radius:3px;background:var(--line-2);overflow:hidden;margin-bottom:16px}
+.runbar i{display:block;height:100%;background:var(--brand);border-radius:3px;transition:width .4s ease}
+.runsteps{list-style:none}
+.rs{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13.5px;color:var(--ink-3)}
+.rs .ic{width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:50%}
+.rs.done{color:var(--ink)}
+.rs.done .ic{background:var(--ok-bg);color:var(--ok)}
+.rs.run{color:var(--ink);font-weight:500}
+.rs.run .ic{border:2px solid var(--brand-line);border-top-color:var(--brand);border-radius:50%;width:14px;height:14px;animation:rot .8s linear infinite}
+.rs .t{margin-left:auto;color:var(--ink-3);font-size:12px}
+.res-row{display:flex;gap:12px;margin-top:4px}
+.res{flex:1;border:1px solid var(--line);border-radius:var(--r-s);padding:12px 16px;background:var(--panel)}
+.res b{font-size:22px;margin-right:8px}
+.res.ok b{color:var(--ok)}.res.warn b{color:var(--warn)}.res.bad b{color:var(--bad)}
+
+/* ── 堆叠条 / 环形 ─────────────────────────────── */
+.stack-row{display:grid;grid-template-columns:64px 1fr 110px;align-items:center;gap:12px;padding:8px 0;font-size:13px}
+.stack-lb{color:var(--ink-2);text-align:right}
+.stack-track{display:flex;height:16px;border-radius:4px;overflow:hidden;gap:2px}
+.stack-track i{display:block;height:100%;min-width:0}
+.stack-note{color:var(--ink-3);font-size:12px}
+.donut-wrap{display:flex;align-items:center;gap:24px;padding:12px 20px}
+.donut{width:104px;height:104px;border-radius:50%;position:relative;flex:none}
+.donut::after{content:"";position:absolute;inset:12px;border-radius:50%;background:var(--panel)}
+.donut .c{position:absolute;inset:0;display:grid;place-items:center;z-index:1;text-align:center}
+.donut .c b{font-size:20px;display:block;line-height:1.1}
+.donut .c span{font-size:10px;color:var(--ink-3)}
+
+/* ── 竖向时间线（审计·参照流水线日志）────────── */
+.tl{padding:20px 24px 4px}
+.tl-item{display:grid;grid-template-columns:24px 1fr;gap:0 16px;position:relative;padding-bottom:24px}
+.tl-item::before{content:"";position:absolute;left:10px;top:22px;bottom:0;width:1.5px;background:var(--line)}
+.tl-item:last-child{padding-bottom:8px}
+.tl-item:last-child::before{display:none}
+.tl-dot{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);background:var(--panel);position:relative;z-index:1}
+.tl-item.done .tl-dot{border-color:var(--ok);background:var(--ok-bg)}
+.tl-item.wait .tl-dot{border-style:dashed}
+.tl-body .l1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.tl-body .l1 b{font-size:14px}
+.tl-body .l1 .ms{font-weight:600}
+.tl-body .l1 .tm{color:var(--ink-3);font-size:12px;margin-left:auto}
+.tl-body .desc{font-size:13px;color:var(--ink-2);margin:4px 0 4px;max-width:640px}
+.tl-body .tag{font-size:11px;color:var(--brand);background:var(--brand-bg);border-radius:4px;padding:1px 8px;display:inline-block}
+
+/* ── 八步步骤器（本体工场）────────────────────── */
+.steps8{display:grid;grid-template-columns:repeat(8,1fr);padding:24px 20px 8px}
+.st8{position:relative;text-align:center;padding:0 4px}
+.st8::before{content:"";position:absolute;top:14px;left:calc(-50% + 14px);right:calc(50% + 14px);height:2px;background:var(--line)}
+.st8:first-child::before{display:none}
+.st8.done::before{background:var(--brand)}
+.st8 .n{width:28px;height:28px;border-radius:50%;border:2px solid var(--line);background:var(--panel);color:var(--ink-3);display:grid;place-items:center;margin:0 auto 8px;font-size:12px;position:relative;z-index:1}
+.st8.done .n{border-color:var(--brand);background:var(--brand);color:#fff}
+.st8.cur .n{border-color:var(--brand);color:var(--brand);box-shadow:var(--ring)}
+.st8 .nm{font-size:12px;color:var(--ink-2)}
+.st8.done .nm{color:var(--ink);font-weight:500}
+.st8.cur .nm{color:var(--brand);font-weight:600}
+
+/* ── 抽取流水线 / 文件卡 / 自检章 ─────────────── */
+.pipe{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr 28px 1fr;align-items:stretch;padding:20px}
+.pstep{border:1px solid var(--line);border-radius:var(--r-s);padding:12px 16px;background:var(--panel)}
+.pstep.hot{border-color:var(--brand-line);background:var(--brand-bg)}
+.parrow{display:grid;place-items:center;color:var(--ink-3)}
+.pstep .pn{font-size:13px;font-weight:600}
+.pstep .pd{font-size:12px;color:var(--ink-3);margin-top:4px;min-height:34px}
+.pstep .pv{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line-2);font-size:12px;color:var(--ink-2);display:flex;gap:12px;flex-wrap:wrap}
+.pstep .pv b{color:var(--ink);font-weight:600}
+.dropzone{border:1.5px dashed var(--line);border-radius:var(--r-m);display:grid;place-items:center;padding:24px;color:var(--ink-3);cursor:pointer;transition:border-color .15s,color .15s;margin:16px 20px 4px}
+.dropzone:hover{border-color:var(--brand);color:var(--brand)}
+.dz-ic{display:block;margin:0 auto 8px}
+.filegrid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:16px 20px 20px}
+.fcard{display:flex;gap:12px;border:1px solid var(--line);border-radius:var(--r-s);padding:12px 12px;background:var(--panel);align-items:flex-start}
+.ftype{width:36px;height:36px;border-radius:6px;flex:none;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff}
+.ftype.pdf{background:#C0351F}.ftype.xlsx{background:#1E7E4E}
+[data-theme=dark] .ftype.pdf{background:#8A3A2C}
+[data-theme=dark] .ftype.xlsx{background:#2C5A42}
+.fcard .fn{font-size:13px;line-height:1.45;flex:1;min-width:0}
+.fcard .fm{font-size:11px;color:var(--ink-3);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap}
+.cihero{display:flex;align-items:center;gap:12px;padding:20px 24px}
+.cihero .b{width:40px;height:40px;border-radius:50%;background:var(--ok-bg);color:var(--ok);display:grid;place-items:center;flex:none}
+
+/* 复核队列标签：选中=品牌色（Ant Design selected 模式），语义只上角标数字 */
+.qtab{display:inline-flex;align-items:center;gap:6px;flex:none;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink-2);font-size:12px;cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.qtab:hover{border-color:var(--brand-line);color:var(--ink)}
+.qtab.cur{border-color:var(--brand);color:var(--brand);background:var(--brand-bg);font-weight:600}
+.qtab.cur::before{content:"";width:3px;height:14px;border-radius:2px;background:var(--brand)}
+.qtab b{font-weight:600;color:var(--bad)}
+.qtab:not(.on) b{color:var(--warn)}
+/* ── 偏差与回流：四象限 + 成因卡 ─────────────── */
+.quad{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.qcard{position:relative;border:1px solid var(--line);border-radius:var(--r-m);background:var(--panel);box-shadow:var(--shadow);padding:16px 20px;overflow:hidden}
+.qcard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.qcard.ok::before{background:var(--ok)} .qcard.bad::before{background:var(--bad)} .qcard.warn::before{background:var(--warn)}
+.qcard .q-pos{font-size:11px;color:var(--ink-3);white-space:nowrap}
+.qcard .q-v{font-size:30px;font-weight:700;line-height:1.15;margin:4px 0 0}
+.qcard .q-v small{font-size:13px;font-weight:400;color:var(--ink-3)}
+.qcard .q-n{font-size:14px;font-weight:600;margin-top:2px}
+.qcard .q-d{font-size:11.5px;color:var(--ink-3);margin-top:4px;line-height:1.5}
+.qcard .q-zero{position:absolute;right:12px;top:12px;font-size:10px;color:var(--ok);border:1px solid var(--ok);border-radius:4px;padding:0 5px;line-height:15px}
+.cause{padding:12px 0;border-bottom:1px solid var(--line-2)}
+.cause:last-child{border-bottom:0}
+.cause .c-line1{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.cause .c-n{font-size:13.5px;font-weight:600}
+.cause .c-g{font-size:11px;color:var(--warn);background:var(--warn-bg);border-radius:4px;padding:0 6px;line-height:17px}
+.cause .c-v{margin-left:auto;font-size:16px}
+.cause .c-fix{font-size:11.5px;color:var(--ink-3);margin-top:4px}
+/* ── 用户与角色 ─────────────────────────────── */
+.rolegrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px 20px 20px}
+.rolecard{border:1px solid var(--line);border-radius:var(--r-s);padding:12px 16px;background:var(--panel);display:flex;flex-direction:column}
+.rolecard .r-top{display:flex;align-items:center;gap:8px}
+.rolecard .r-name{font-size:14px;font-weight:600}
+.rolecard .r-cnt{margin-left:auto;font-size:12px;color:var(--ink-3)}
+.rolecard .r-perm{font-size:11.5px;color:var(--brand);background:var(--brand-bg);border-radius:4px;padding:3px 8px;margin:8px 0 6px;line-height:1.5}
+.rolecard .r-desc{font-size:12px;color:var(--ink-3);flex:1}
+.rolecard .r-ops{margin-top:10px}
+.switch{width:34px;height:19px;border-radius:10px;background:var(--line);position:relative;transition:background .15s;flex:none}
+.switch i{position:absolute;left:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.switch.on{background:var(--ok)}
+.switch.on i{transform:translateX(15px)}
+/* 附件大图查看 */
+.lb{position:fixed;inset:0;background:rgba(10,16,24,.62);z-index:60;display:none;align-items:center;justify-content:center}
+.lb.show{display:flex}
+.lb-card{width:min(760px,88vw);background:var(--panel);border-radius:var(--r-m);box-shadow:var(--shadow-lg);overflow:hidden}
+.lb-img{aspect-ratio:4/3;display:grid;place-items:center;color:var(--ink-3);background:linear-gradient(135deg,var(--panel-2),var(--brand-bg));cursor:zoom-in}
+.lb-bar{display:flex;align-items:center;gap:12px;padding:12px 20px}
+.lb-bar .n{font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-bar .t{font-size:12px;color:var(--brand)}
+/* ── 弹窗 / 提示 ────────────────────────────────── */
+.mask{position:fixed;inset:0;background:rgba(10,16,24,.45);z-index:40;display:none;align-items:center;justify-content:center}
+.mask.show{display:flex}
+.modal{width:440px;background:var(--panel);border-radius:var(--r-m);box-shadow:var(--shadow-lg);padding:24px}
+.modal h3{font-size:15px;margin-bottom:4px}
+.modal .sub{font-size:13px;color:var(--ink-2);margin-bottom:16px}
+.modal textarea{width:100%;min-height:88px;padding:10px 12px;resize:vertical;border:1px solid var(--line);border-radius:var(--r-s);background:var(--panel)}
+.modal .hint{font-size:12px;color:var(--ink-3);margin-top:6px}
+.modal .ops{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.toast{position:fixed;top:64px;left:50%;transform:translate(-50%,-12px);background:var(--ink);color:#fff;font-size:13px;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:50;box-shadow:var(--shadow-lg)}
+[data-theme=dark] .toast{background:#33404F}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media (max-width:1180px){
+  .stats{grid-template-columns:repeat(3,1fr)}
+  .kv{grid-template-columns:repeat(2,1fr)}
+  .kv div:nth-child(2n){border-right:0}
+  .atts{grid-template-columns:repeat(2,1fr)}
+  .steps{grid-template-columns:repeat(2,1fr)}
+  .step::after{display:none}
+  .chart-grid,.two-col,.llm-grid{grid-template-columns:1fr}
+  .llm-uses{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ 登录页 ═══ -->
+<div class="login show" id="login">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 15c2 0 3-1.4 5-1.4S10.6 15 12 15s3-1.4 5-1.4 2.6 1.4 4 1.4"/><path d="M3 19c2 0 3-1.4 5-1.4S10.6 19 12 19s3-1.4 5-1.4 2.6 1.4 4 1.4"/><path d="M12 4v8"/><path d="M8 8l4-4 4 4"/></svg>
+      </div>
+      <div>
+        <h1>差旅费智能审核平台</h1>
+        <div class="sub">福建省港口集团 · 财务共享中心</div>
+      </div>
+    </div>
+    <label for="loginUser">账号</label>
+    <input class="input" id="loginUser" value="linjia" autocomplete="username">
+    <label for="loginPwd">密码</label>
+    <div class="pwd-wrap">
+      <input class="input" id="loginPwd" type="password" value="demo-1234" autocomplete="current-password">
+      <button type="button" class="pwd-eye" id="pwdEye" aria-label="显示密码">
+        <svg id="eyeOpen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        <svg id="eyeOff" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="display:none"><path d="M2 12s3.5-7 10-7c2 0 3.7.7 5.2 1.7M22 12s-3.5 7-10 7c-2 0-3.7-.7-5.2-1.7"/><path d="M4 4l16 16"/></svg>
+      </button>
+    </div>
+    <label>登录角色</label>
+    <div class="login-roles" role="group" aria-label="选择角色">
+      <button class="role-pick on" data-role="auditor">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+        审核岗
+      </button>
+      <button class="role-pick" data-role="engineer">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20l6-6"/><path d="M14.5 3.5l6 6L15 15l-6-6z"/><path d="M12 12l-8.5 8.5"/></svg>
+        知识工程师
+      </button>
+      <button class="role-pick" data-role="admin">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+        系统管理员
+      </button>
+      <button class="role-pick" data-role="leader">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-5 4 3 5-6 4 4"/><path d="M3 21h18"/></svg>
+        领导查询
+      </button>
+    </div>
+    <button class="btn primary login-btn" id="loginBtn">登 录</button>
+    
+  </div>
+</div>
+
+<!-- ═══ 主应用 ═══ -->
+<div class="app hidden" id="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 15c2 0 3-1.4 5-1.4S10.6 15 12 15s3-1.4 5-1.4 2.6 1.4 4 1.4"/><path d="M3 19c2 0 3-1.4 5-1.4S10.6 19 12 19s3-1.4 5-1.4 2.6 1.4 4 1.4"/><path d="M12 4v8"/><path d="M8 8l4-4 4 4"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">福建海运集团</div>
+        <div class="brand-sub">差旅费智能审核</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav" aria-label="主导航"></nav>
+    <div class="side-user">
+      <div class="avatar" id="uAv" aria-hidden="true">林</div>
+      <div>
+        <div class="who" id="uName">林嘉</div>
+        <div class="role" id="uRole">审核岗</div>
+      </div>
+      <button class="out" id="btnLogout">退出</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="pageTitle">审核工作台</h1>
+      <div class="grow"></div>
+      <span class="data-pill"><i aria-hidden="true"></i>真实单据 40 · 演示 29</span>
+      <button class="icon-btn" id="themeBtn" aria-label="切换深浅主题">
+        <svg id="iconMoon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z"/></svg>
+        <svg id="iconSun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </header>
+    <div class="content" id="view"></div>
+  </main>
+</div>
+
+<div class="mask" id="mask" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="modal">
+    <h3 id="mTitle">退回报账人</h3>
+    <div class="sub" id="mSub"></div>
+    <textarea id="mReason" placeholder="退回原因（必填），填写缺少的材料或需修正的内容，将通知报账人修改后重新提交"></textarea>
+    <div class="hint">填写理由后方可提交；理由将进入偏差统计</div>
+    <div class="ops">
+      <button class="btn ghost" id="mCancel">取消</button>
+      <button class="btn primary" id="mOk" disabled>确认退回</button>
+    </div>
+  </div>
+</div>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="附件预览">
+  <div class="lb-card">
+    <div class="lb-img" id="lbImg" aria-hidden="true">
+      <svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M3 17l5-4 4 3 4-4 5 5"/></svg>
+    </div>
+    <div class="lb-bar">
+      <span class="n" id="lbName">—</span><span class="t" id="lbType">—</span>
+      <button class="btn ghost" id="lbClose">关闭</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ═══ 角色与菜单（与《功能与角色规划_v0.1.md》矩阵一致）═══ */
+const ICONS = {
+  dash:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+  ai:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>',
+  bench:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>',
+  report:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h7M9 17h7"/></svg>',
+  trace:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+  dev:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l6-6-6-6"/><path d="M11 19h10"/></svg>',
+  doc:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 19V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>',
+  extract:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 3v5h5"/><path d="M6 3h8l5 5v13H6z"/><path d="M9 13l2 2 4-4"/></svg>',
+  workshop:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>',
+  publish:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/></svg>',
+  agent:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M12 7V3M9 3h6"/><circle cx="10" cy="13" r="1"/><circle cx="14" cy="13" r="1"/></svg>',
+  llm:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 21h8M12 17v4"/><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 9h8M8 12h5"/></svg>',
+  check:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>',
+  users:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 2.9-5.5 6.5-5.5s6.5 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M17.5 14.7c2.4.6 4 2.3 4 5.3"/></svg>',
+};
+const MENUS = {
+  dash:    {k:'dash',   label:'总览看板',   ic:'dash'},
+  ai:      {k:'ai',     label:'AI 智能审核', ic:'ai'},
+  bench:   {k:'bench',  label:'审核工作台', ic:'bench'},
+  report:  {k:'report', label:'审核报告',   ic:'report'},
+  trace:   {k:'trace',  label:'审计追溯',   ic:'trace'},
+  dev:     {k:'dev',    label:'偏差与回流', ic:'dev'},
+  doc:     {k:'doc',    label:'制度文件库', ic:'doc'},
+  extract: {k:'extract',label:'规则抽取',   ic:'extract'},
+  workshop:{k:'workshop',label:'本体工场',  ic:'workshop'},
+  publish: {k:'publish',label:'发布管理',   ic:'publish'},
+  agent:   {k:'agent',  label:'智能体工作台',ic:'agent'},
+  llm:     {k:'llm',    label:'大模型配置', ic:'llm'},
+  check:   {k:'check',  label:'系统自检',   ic:'check'},
+  users:   {k:'users',  label:'用户与角色', ic:'users'},
+};
+const ROLES = {
+  auditor:  {name:'审核岗', user:'林嘉', av:'林', home:'bench', groups:[
+    {g:'报账单审核', items:['ai','bench','report','trace']}]},
+  engineer: {name:'知识工程师', user:'何工', av:'何', home:'doc', groups:[
+    {g:'领域知识资产', items:['doc','extract','workshop','publish']},
+    {g:'报账单审核', items:['trace'], ro:true}]},
+  admin:    {name:'系统管理员', user:'系统管理', av:'管', home:'check', groups:[
+    {g:'系统', items:['agent','llm','check','users']}]},
+  leader:   {name:'领导查询', user:'王总', av:'王', home:'dash', groups:[
+    {g:'总览', items:['dash']},
+    {g:'报账单审核', items:['bench','trace','dev'], ro:true}]},
+};
+
+/* ═══ 数据 ═══ */
+const BILLS = [
+  {no:'FJPG-BX2610132121', org:'财智分公司', amt:3518.50, concl:'pass',   hit:0, pend:0, att:4,  time:'10-13 17:32', demo:false},
+  {no:'FJPG-BX2610120271', org:'财智分公司', amt:12960.00,concl:'review', hit:0, pend:2, att:10, time:'10-12 16:05', demo:false},
+  {no:'FJPG-BX2610083206', org:'财智分公司', amt:8742.00, concl:'pass',   hit:0, pend:0, att:4,  time:'10-08 11:47', demo:false},
+  {no:'FJPG-BX2610090441', org:'财智分公司', amt:6420.00, concl:'review', hit:0, pend:1, att:4,  time:'10-09 09:21', demo:false},
+  {no:'FJHY-DEMO-004-HIT-HOTEL-01', org:'财智分公司', amt:2600.00, concl:'reject', hit:2, pend:1, att:2, time:'— 待复核', demo:true},
+  {no:'FJPG-BX2609170949', org:'财智分公司', amt:6430.00, concl:'pass',   hit:0, pend:0, att:20, time:'09-17 15:40', demo:false},
+  {no:'FJPG-BX2609182393', org:'财智分公司', amt:1288.00, concl:'pass',   hit:0, pend:0, att:6,  time:'09-18 10:03', demo:false},
+  {no:'FJHY-DEMO-008-HIT-SPLIT-A', org:'福州港务', amt:1200000.00, concl:'reject', hit:2, pend:0, att:2, time:'— 待复核', demo:true},
+  {no:'FJPG-BX2608210053', org:'财智分公司', amt:15307.00,concl:'review', hit:0, pend:2, att:21, time:'08-21 14:22', demo:false},
+  {no:'FJPG-BX2609201952', org:'财智分公司', amt:4976.00, concl:'pass',   hit:0, pend:0, att:6,  time:'09-20 16:38', demo:false},
+  {no:'FJHY-DEMO-020-HIT-TITLE-01', org:'财智分公司', amt:600.00, concl:'reject', hit:1, pend:0, att:2, time:'— 待复核', demo:true},
+  {no:'FJPG-BX2608122088', org:'财智分公司', amt:3215.00, concl:'pass',   hit:0, pend:0, att:4,  time:'08-12 09:55', demo:false},
+];
+const CONCL = {pass:['通过','ok'], review:['待人工复核','warn'], reject:['不通过','bad']};
+const RULES = [
+  {id:'TR-D4-02', name:'住宿费标准控制', basis:'细则第十二条 · 附件1', out:'hit',
+   ev:[['费用项','住宿费 2,400.00 元'],['出差地/天数','北京 · 2 天'],['标准档','其他人员 750 元/天'],['日均','1,200.00 元']],
+   quote:'出差人员住宿限额标准，按附件1明细表执行；分公司人员按"其他人员"标准执行。', att:'02_住宿发票.png'},
+  {id:'TR-D4-06', name:'超标准住宿需书面说明', basis:'细则第十五条', out:'hit',
+   ev:[['补充说明','（空）'],['超标金额','900.00 元'],['例外情形','未附分管领导审批']], quote:'超标需提供书面说明并经分管领导和总经理审批后报销。', att:''},
+  {id:'TR-D9-01', name:'补充说明充分性研判', basis:'审核要点 2.1.6', out:'pend',
+   ev:[['模型辅助','说明缺失，无法研判例外情形是否成立'],['建议','人工核实超标原因']], quote:'', att:''},
+  {id:'TR-D1-02', name:'发票抬头与核算主体一致', basis:'规则表第2条', out:'pass', ev:[['抬头','福建省港口集团财智分公司（一致）']]},
+  {id:'TR-D3-01', name:'开票单位敏感词核查', basis:'规则表第3条', out:'pass', ev:[['结果','未命中 15 个敏感词']]},
+  {id:'TR-D3-02', name:'发票明细消费项核查', basis:'规则表第4条', out:'pass', ev:[['结果','明细仅"住宿费"，无敏感消费项']]},
+  {id:'TR-D4-04', name:'伙食补助标准', basis:'细则第十七条', out:'pass', ev:[['金额','200 元 ÷ 2 天 = 100 元/人日（省内档）']]},
+  {id:'TR-D5-10', name:'不得列支范围', basis:'审核要点 2.1.8', out:'pass', ev:[['摘要','未出现疗休养等排除用途']]},
+  {id:'TR-D6-03', name:'出差2天以上需住宿发票', basis:'细则第十九条', out:'pass', ev:[['附件','已附住宿费发票 1 张']]},
+  {id:'TR-D10-06', name:'大额与拆单校验', basis:'阈值表 TH-04', out:'pass', ev:[['金额','2,600 元，远低于 200 万阈值']]},
+  {id:'TR-D4-09', name:'闽运市内交通包干', basis:'单位特殊标准', out:'na', ev:[['范围','核算主体不适用']]},
+];
+const OUT_PILL = {hit:['命中','bad'], pend:['待人工','warn'], pass:['通过','ok'], na:['不适用','brand']};
+const ATTS = [
+  {n:'01_出差审批单.png', t:'A01 出差审批单'},
+  {n:'02_住宿发票.png',   t:'A04 住宿费发票'},
+  {n:'03_差旅费明细表.png',t:'A02 差旅费明细表'},
+  {n:'04_交通票据.png',   t:'A03 交通凭证'},
+];
+const DETAILS = {
+  'FJHY-DEMO-004-HIT-HOTEL-01':{trip:'09-07 至 09-08',place:'北京',dept:'财务部',tv:[['演示甲','其他员工']],
+    items:[['伙食补助费',200,'09-07 至 09-08','2 天 × 100 元/人日'],['住宿费',2400,'09-07 至 09-08','北京 · 其他人员档 750 元/天']],
+    apr:[['提单','演示甲','—','10-24 09:30'],['部门负责人','王五','同意','10-24 09:31'],['AI 预审','系统','不通过 · 命中 2 条','10-24 09:31'],['共享审核','林嘉','待复核','—']]},
+  'FJHY-DEMO-020-HIT-TITLE-01':{trip:'09-01 至 09-02',place:'福州',dept:'财务部',tv:[['演示甲','其他员工']],
+    items:[['住宿费',600,'09-01 至 09-02','发票抬头非本核算主体']],
+    apr:[['提单','演示甲','—','10-24 09:30'],['部门负责人','王五','同意','10-24 09:31'],['AI 预审','系统','不通过 · 命中 1 条','10-24 09:31'],['共享审核','林嘉','待复核','—']]},
+  'FJHY-DEMO-008-HIT-SPLIT-A':{trip:'09-20 至 09-21',place:'福州',dept:'港务部',tv:[['演示丙','总经理']],
+    items:[['其他差旅费',1200000,'09-20 至 09-21','与次日单合计 230 万，达大额审批线']],
+    apr:[['提单','演示丙','—','10-24 09:30'],['部门负责人','赵六','同意','10-24 09:31'],['AI 预审','系统','不通过 · 拆单命中','10-24 09:31'],['共享审核','林嘉','待复核','—']]},
+  'FJPG-BX2610120271':{trip:'06-11 至 06-13',place:'厦门',dept:'运营部',tv:[['陈芳','其他员工']],
+    items:[['伙食补助费',300,'06-11 至 06-13','3 天 × 100 元/人日'],['市内交通费补贴',240,'06-11 至 06-13','3 天 × 80 元/人日'],['交通费',12420,'06-11 / 06-13','往返动车']],
+    apr:[['提单','陈芳','—','10-12 15:58'],['部门负责人','—','同意','10-12 16:02'],['AI 预审','系统','待人工 2 项','10-12 16:05'],['共享审核','林嘉','待复核','—']]},
+  'FJPG-BX2610090441':{trip:'09-03 至 09-04',place:'泉州',dept:'运营部',tv:[['陈芳','其他员工']],
+    items:[['伙食补助费',200,'09-03 至 09-04','2 天 × 100 元/人日'],['交通费',6220,'09-03 / 09-04','往返']],
+    apr:[['提单','陈芳','—','10-09 09:18'],['部门负责人','—','同意','10-09 09:20'],['AI 预审','系统','待人工 1 项','10-09 09:21'],['共享审核','林嘉','待复核','—']]},
+  'FJPG-BX2608210053':{trip:'08-19 至 08-21',place:'省内',dept:'运营部',tv:[['陈芳','其他员工'],['周敏','其他员工']],
+    items:[['伙食补助费',300,'08-19 至 08-21','3 天 × 100 元/人日'],['市内交通费补贴',240,'08-19 至 08-21','3 天 × 80 元/人日'],['住宿费',14767,'08-19 至 08-21','2 晚']],
+    apr:[['提单','陈芳','—','08-21 14:18'],['部门负责人','—','同意','08-21 14:20'],['AI 预审','系统','待人工 2 项','08-21 14:22'],['共享审核','林嘉','待复核','—']]},
+};
+const detailsOf = b => DETAILS[b.no] || {trip:'—',place:'—',dept:'财务部',tv:[['报账人','—']],
+  items:[['伙食补助费',100,'—',''],['交通费',b.amt-100,'—','']],
+  apr:[['提单','报账人','—',b.time],['部门负责人','—','同意',b.time],['AI 预审','系统',CONCL[b.concl][0],b.time],['共享审核','林嘉','待复核','—']]};
+const DOCS = [
+  ['关于印发《差旅管理实施细则》的通知（闽港财智〔2025〕20号）','PDF · 27页','已解析'],
+  ['2.3 差旅费共享审核要点','PDF · 14页','已解析'],
+  ['差旅费审核规则.xlsx','XLSX · 29条','已切分'],
+  ['财务共享业务场景核算及审核规则.xlsx','XLSX · 3608行','已切分'],
+  ['2.1差旅费解答六（国资委未转发）','PDF · 8页','已解析'],
+  ['关于印发《业务接待管理办法》的通知','PDF · 12页','已解析'],
+  ['2.5 系统审核算法.xlsx','XLSX · 6条','已解析'],
+];
+const AGENTS = [
+  ['L0','报账单感知','扫描未审核单据，投递信号','运行中 · 心跳 30s'],
+  ['L0','文件库感知','发现待抽取文件，投递信号','运行中'],
+  ['L0','本体口径感知','比对抽取产出与本体现状','运行中'],
+  ['L0','素材感知','盘点源文件与装载现状','运行中'],
+  ['L1','差旅费审核','规则引擎跑执行集，输出结论与证据','运行中 · 昨日 69 周期'],
+  ['L1','条款切分','按文件形态条款切分，不调模型','空闲'],
+  ['L1','规则草稿','候选条款调模型产八要素草稿','运行中 · 累计 94 草稿'],
+  ['L1','字段与枚举候选','列头抽概念、真值印证枚举','空闲'],
+  ['L1','流程候选','审批记录数节点与迁移','空闲'],
+  ['L1','规则明细成形','表头映射 + 场景表拆条','运行中'],
+  ['L2','抽取协同','多来源归并，标口径冲突','空闲'],
+  ['L2','本体对齐','归并组与规则本体双向对账','空闲'],
+  ['L2','本体候选对齐','候选汇总去重、三档判定','空闲'],
+];
+
+/* ═══ 状态与工具 ═══ */
+const S = {role:null, view:null, src:'all', concl:'all', q:'', sel:new Set(), ruleFilter:'all', openRule:null, aiBusy:false, aiSec:0, aiStep:4, pickAgent:null, reportBill:null, sort:'risk', hist:{}, modalBill:null};
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = n => n.toLocaleString('zh-CN',{minimumFractionDigits:2});
+const pill = (txt, cls) => `<span class="pill ${cls}">${txt}</span>`;
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+const readOnly = () => {const r = ROLES[S.role]; return r.groups.some(g=>g.ro) && !['ai','dev','doc','extract','workshop','publish','agent','llm','check','users','dash'].includes(S.view);};
+
+/* ═══ 登录 ═══ */
+let pickRole = 'auditor';
+document.querySelectorAll('.role-pick').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.role-pick').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); pickRole = b.dataset.role;
+});
+$('#pwdEye').onclick = () => {
+  const inp = $('#loginPwd');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  $('#eyeOpen').style.display = show ? 'none' : '';
+  $('#eyeOff').style.display = show ? '' : 'none';
+  $('#pwdEye').setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+};
+$('#loginBtn').onclick = () => {
+  S.role = pickRole;
+  const r = ROLES[S.role];
+  $('#uName').textContent = r.user; $('#uRole').textContent = r.name; $('#uAv').textContent = r.av;
+  $('#login').classList.remove('show'); $('#app').classList.remove('hidden');
+  buildNav(); go(r.home);
+};
+$('#btnLogout').onclick = () => {
+  $('#app').classList.add('hidden'); $('#login').classList.add('show');
+  $('#loginPwd').value='demo-1234';
+};
+
+/* ═══ 导航 ═══ */
+function buildNav(){
+  const r = ROLES[S.role];
+  $('#nav').innerHTML = r.groups.map(g => `
+    <div class="nav-group">${g.g}${g.ro?'': ''}</div>
+    ${g.items.map(k => {
+      const m = MENUS[k];
+      return `<button class="nav-item" data-view="${k}">${ICONS[m.ic]}${m.label}${g.ro?'<span class="ro">只读</span>':''}</button>`;
+    }).join('')}
+  `).join('');
+  document.querySelectorAll('.nav-item').forEach(b => b.onclick = () => go(b.dataset.view));
+}
+
+/* ═══ 页面：总览看板（领导 · 重做）═══ */
+function renderDash(){
+  const stats = [
+    {k:'单据总量', v:'69', d:'真实 40 · 演示 29'},
+    {k:'AI 预审通过率', v:'54<small>%</small>', d:'真实单 0 误拦'},
+    {k:'待人工率', v:'33<small>%</small>', d:'缺取数字段为主', alert:true},
+    {k:'误报 / 漏报', v:'0 / 0', d:'真实 40 张全量核对'},
+    {k:'单均耗时', v:'0.39<small> s</small>', d:'规则链路 p50'},
+  ].map(s => `<div class="stat${s.alert?' alert':''}"><div class="k">${s.k}</div><div class="v num">${s.v}</div><div class="d">${s.d}</div></div>`).join('');
+
+  /* 堆叠条：真实/演示各一行，三色分段 */
+  const stack = (lb, ok, warn, bad, note) => {
+    const total = ok+warn+bad || 1;
+    return `<div class="stack-row">
+      <span class="stack-lb">${lb}</span>
+      <span class="stack-track" title="通过 ${ok} · 待复核 ${warn} · 不通过 ${bad}">
+        ${ok?`<i style="width:${ok/total*100}%;background:var(--ok)"></i>`:''}
+        ${warn?`<i style="width:${warn/total*100}%;background:var(--warn)"></i>`:''}
+        ${bad?`<i style="width:${bad/total*100}%;background:var(--bad)"></i>`:''}
+      </span>
+      <span class="stack-note num">${note}</span></div>`;
+  };
+  /* 环形图：28/54 规则执行占比（conic-gradient） */
+  const pct = 28/82*100;
+  const donut = `<div class="donut" style="background:conic-gradient(var(--c1) 0 ${pct}%, var(--line) ${pct}% 100%)">
+    <div class="c"><b class="num">34%</b><span>规则在跑</span></div></div>`;
+
+  $('#view').innerHTML = `
+    <div class="stats" style="grid-template-columns:repeat(5,1fr)">${stats}</div>
+    <div class="chart-grid">
+      <div class="card">
+        <div class="card-head"><h2>预审结论分布</h2><div class="grow"></div>
+          <div class="legend"><span><i style="background:var(--ok)"></i>通过</span><span><i style="background:var(--warn)"></i>待复核</span><span><i style="background:var(--bad)"></i>不通过</span></div></div>
+        <div style="padding:12px 20px 20px">
+          ${stack('真实单', 31, 9, 0, '40 张 · 0 拦错')}
+          ${stack('演示单', 6, 14, 9, '29 张 · 含已知缺陷')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>规则覆盖</h2></div>
+        <div class="donut-wrap">
+          ${donut}
+          <div style="font-size:13px;flex:1">
+            <div style="display:flex;justify-content:space-between;padding:3px 0"><span>执行中</span><b class="num" style="color:var(--c1)">28 条</b></div>
+            <div style="display:flex;justify-content:space-between;padding:3px 0"><span>待数据接入</span><b class="num">54 条</b></div>
+            <div style="font-size:12px;color:var(--ink-3);margin-top:6px">每条未执行规则都标了原因，点「规则覆盖」看明细</div>
+            <button class="btn ghost" style="margin-top:10px" data-go2="dev">查看明细</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>附件识别</h2><div class="grow"></div>${pill('全部完成','ok')}</div>
+        <div style="padding:16px 20px 20px;font-size:13px;color:var(--ink-2)">
+          <div class="hbar"><span class="lb">判类型</span><span class="track"><i style="width:100%;background:var(--ok)"></i></span><span class="val num">219/219</span></div>
+          <div class="hbar"><span class="lb">抽字段</span><span class="track"><i style="width:100%;background:var(--ok)"></i></span><span class="val num">197/197</span></div>
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2);display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+            <div><div class="num" style="font-size:18px;font-weight:600">597</div><div style="font-size:11px;color:var(--ink-3)">模型调用</div></div>
+            <div><div class="num" style="font-size:18px;font-weight:600;color:var(--bad)">49</div><div style="font-size:11px;color:var(--ink-3)">失败·可查明细</div></div>
+            <div><div class="num" style="font-size:18px;font-weight:600">55.1万</div><div style="font-size:11px;color:var(--ink-3)">累计 token</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>最近审核</h2><div class="grow"></div><button class="btn ghost" data-go2="bench">进入工作台</button></div>
+      <table class="tbl"><thead><tr><th>单据</th><th>主体</th><th style="text-align:right">金额</th><th>结论</th><th>完成时间</th></tr></thead>
+      <tbody>${BILLS.slice(0,6).map(b=>{const[t,c]=CONCL[b.concl];return `<tr><td>${b.no}${b.demo?'<span class="tag-demo">演示</span>':''}</td><td>${b.org}</td><td class="amt num">${fmt(b.amt)}</td><td>${pill(t,c)}</td><td style="color:var(--ink-3)">${b.time}</td></tr>`}).join('')}</tbody></table>
+    </div>`;
+  $('#view').querySelectorAll('[data-go2]').forEach(b => b.onclick = () => { if(b.dataset.go2==='dev'){toast('明细在「偏差与回流」页，当前角色若无入口请联系管理员');} else go(b.dataset.go2); });
+}
+
+/* ═══ 页面：AI 智能审核（重做：部署流水线式运行面板）═══ */
+function renderAI(){
+  const PHASES = [
+    ['感知 · 取单据快照','S', S.aiStep>0?'0.2 s':'', S.aiStep===0],
+    ['研判 · 28 条规则逐条判定','D', S.aiStep>1?'11.9 s':'', S.aiStep===1],
+    ['落库 · 结论与证据','A', S.aiStep>2?'0.6 s':'', S.aiStep===2],
+    ['模型补判 · 待人工项','F', S.aiStep>3?'5 m 30 s':'', S.aiStep===3],
+  ];
+  if(S.aiStep===undefined) S.aiStep = 4;
+  const idle = !S.aiBusy && S.aiStep>=4;
+  const resHtml = idle ? `
+    <div class="res-row">
+      <div class="res bad"><b>9</b>不通过</div>
+      <div class="res warn"><b>14</b>待复核</div>
+      <div class="res ok"><b>6</b>通过</div>
+      <div class="res"><b>25</b>模型补判 · 全成功</div>
+    </div>` : '';
+  $('#view').innerHTML = `
+    <div class="runpanel ${idle?'done':(S.aiStep===0?'idle':'')}">
+      <div class="run-head">
+        <span class="rt">${S.aiBusy?'<span class="spin" aria-hidden="true"></span>':''}${S.aiBusy?`正在审核 · ${S.aiSec}s`:idle?'上一轮 · 10-24 09:31 · 0.64 s/单':''}</span>
+        <span class="pill ok" style="margin-left:4px">自动预审开启</span>
+        <span style="font-size:12px;color:var(--ink-3)">新单自动进入审核，无需手动触发</span>
+        <div class="grow"></div>
+        ${S.aiBusy?'<button class="btn ghost" id="aiBg">转入后台</button>':`<button class="btn primary lg" id="aiRun">开始智能审核</button>`}
+      </div>
+      ${S.aiBusy?`<div class="runbar"><i style="width:${S.aiStep/4*100}%"></i></div>
+      <ul class="runsteps">
+        ${PHASES.map(([n,t,ms,run])=>`
+        <li class="rs ${run?'run':ms?'done':''}">
+          <span class="ic">${run?'':ms?'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg>':''}</span>
+          ${n}<span class="t">${run?'进行中…':ms}</span>
+        </li>`).join('')}
+      </ul>`:resHtml}
+    </div>
+    ${idle?`
+    <div class="card">
+      <div class="card-head"><h2>结果明细</h2><div class="grow"></div>
+        <button class="btn ghost" data-csv>导出结果</button>
+        <button class="btn primary" data-go="bench">去工作台复核</button></div>
+      <table class="tbl">
+        <thead><tr><th>单据</th><th style="text-align:right">金额（元）</th><th>结论</th><th>命中</th><th>待人工</th><th></th></tr></thead>
+        <tbody>${BILLS.filter(b=>b.demo).map(b=>{const[t,c]=CONCL[b.concl];return `<tr>
+          <td>${b.no}</td><td class="amt num">${fmt(b.amt)}</td><td>${pill(t,c)}</td>
+          <td class="num">${b.hit?`<b style="color:var(--bad)">${b.hit}</b>`:0}</td><td class="num">${b.pend||0}</td>
+          <td><a href="#" data-go="bench">复核</a></td></tr>`}).join('')}</tbody>
+      </table>
+    </div>`:`
+    <div class="card"><div style="padding:40px;text-align:center;color:var(--ink-3)">
+      ${S.aiBusy?'':'尚未执行审核'}</div></div>`}`;
+  const run = $('#aiRun'); if(run) run.onclick = startRun;
+  const bg = $('#aiBg'); if(bg) bg.onclick = () => {toast('任务已转入后台执行，完成后通知；期间可浏览其他页面');};
+  $('#view').querySelectorAll('[data-go]').forEach(a => a.onclick = e => {e.preventDefault(); go(a.dataset.go);});
+}
+function startRun(){
+  S.aiBusy = true; S.aiSec = 0; S.aiStep = 0; renderAI();
+  const iv = setInterval(()=>{S.aiSec++; if(S.view==='ai') renderAI();}, 1000);
+  const steps = [
+    [900, 1],   // S 完成 → D
+    [2400, 2],  // D 完成 → A
+    [3200, 3],  // A 完成 → 模型补判
+    [5200, 4],  // 全部完成
+  ];
+  steps.forEach(([t, step]) => setTimeout(()=>{
+    S.aiStep = step;
+    if(step===4){
+      clearInterval(iv); S.aiBusy = false;
+      if(S.view==='ai') renderAI();
+      toast('审核完成：不通过 9 · 待复核 14 · 通过 6');
+    } else if(S.view==='ai') renderAI();
+  }, t));
+}
+
+/* ═══ 页面：工作台 ═══ */
+function renderBench(){
+  const ro = ROLES[S.role].groups.some(g=>g.ro && g.items.includes('bench'));
+  const stats = [
+    {k:'待我复核', v:'23', d:'真实 9 · 演示 14', alert:true},
+    {k:'今日已复核', v:'12', d:'通过 5 · 退回 4 · 不通过 3'},
+    {k:'今日新进', v:'8', d:'均已 AI 预审'},
+    {k:'大额待审', v:'1', d:'≥ 1 万元 · 优先处理'},
+    {k:'AI 预审通过率', v:'54<small>%</small>', d:'真实单 0 误拦'},
+    {k:'误报 / 漏报', v:'0 / 0', d:'真实 40 张对账'},
+  ].map(s => `<div class="stat${s.alert?' alert':''}"><div class="k">${s.k}</div><div class="v num">${s.v}</div><div class="d">${s.d}</div></div>`).join('');
+
+  const rows = BILLS.filter(b =>
+    (S.src==='all' || (S.src==='real')===!b.demo) &&
+    (S.concl==='all' || b.concl===S.concl) &&
+    (!S.q || b.no.toLowerCase().includes(S.q.toLowerCase()) || b.org.includes(S.q)));
+  const RANK = {reject:0, review:1, pass:2};
+  if(S.sort==='risk') rows.sort((a,b)=> RANK[a.concl]-RANK[b.concl] || b.amt-a.amt);
+  else if(S.sort==='amt') rows.sort((a,b)=> b.amt-a.amt);
+  else rows.sort((a,b)=> String(b.time).localeCompare(String(a.time)));
+  const trs = rows.length ? rows.map(b => {
+    const [txt, cls] = CONCL[b.concl];
+    return `<tr>
+      <td class="c">${ro?'':`<input type="checkbox" class="rowcheck" data-no="${b.no}" ${S.sel.has(b.no)?'checked':''} aria-label="选择 ${b.no}">`}</td>
+      <td><a href="#" data-go="report">${b.no}</a>${b.demo?'<span class="tag-demo">演示</span>':''}</td>
+      <td>${b.org}</td><td class="amt num">${fmt(b.amt)}</td><td>${pill(txt,cls)}</td>
+      <td class="num">${b.hit ? `<b style="color:var(--bad)">${b.hit}</b>` : '0'} / ${b.pend||0}</td>
+      <td class="num">${b.att} 张</td><td style="color:var(--ink-3)">${b.time}</td>
+      <td><a href="#" data-go="report">查看报告</a></td></tr>`;
+  }).join('') : `<tr class="empty-row"><td colspan="9">没有匹配的单据</td></tr>`;
+
+  $('#view').innerHTML = `
+    <div class="stats">${stats}</div>
+    <div class="card">
+      <div class="card-head"><h2>单据清单</h2><div class="grow"></div>
+        <div class="seg" role="group" aria-label="数据范围">${[['all','全部'],['real','仅真实'],['demo','仅演示']].map(([v,t])=>`<button class="${S.src===v?'on':''}" data-src="${v}">${t}</button>`).join('')}</div>
+        <select class="select" id="fConcl" aria-label="结论筛选">${[['all','全部结论'],['pass','通过'],['review','待人工复核'],['reject','不通过']].map(([v,t])=>`<option value="${v}" ${S.concl===v?'selected':''}>${t}</option>`).join('')}</select>
+        <input class="input" id="fQ" style="width:180px" placeholder="搜索单据号 / 主体" value="${esc(S.q)}" aria-label="搜索">
+        <div class="seg" role="group" aria-label="排序">${[['risk','风险优先'],['amt','金额↓'],['time','时间↓']].map(([v,t])=>`<button class="${S.sort===v?'on':''}" data-sort="${v}">${t}</button>`).join('')}</div>
+      </div>
+      <div style="overflow:auto">
+      <table class="tbl"><thead><tr><th class="c">${ro?'':`<input type="checkbox" class="rowcheck" id="chkAll" aria-label="全选">`}</th><th>单据编号</th><th>核算主体</th><th style="text-align:right">金额（元）</th><th>AI 预审结论</th><th>命中 / 待人工</th><th>附件</th><th>完成时间</th><th></th></tr></thead>
+      <tbody>${trs}</tbody></table>
+      </div>
+    </div>
+    ${ro?'':`<div class="batchbar" id="batchbar">
+      <span class="cnt">已选 <b class="num" id="selCnt">0</b> 张单据</span>
+      <button class="btn primary" id="bPass">批量通过</button>
+      <button class="btn" id="bBack">批量退回</button>
+      <button class="btn" id="bClear">取消选择</button>
+    </div>`}`;
+
+  $('#view').querySelectorAll('[data-src]').forEach(b => b.onclick = () => {S.src = b.dataset.src; renderBench();});
+  $('#view').querySelectorAll('[data-sort]').forEach(b => b.onclick = () => {S.sort = b.dataset.sort; renderBench();});
+  $('#fConcl').onchange = e => {S.concl = e.target.value; renderBench();};
+  let deb; const q = $('#fQ'); q.oninput = e => {clearTimeout(deb); deb = setTimeout(()=>{S.q = e.target.value.trim(); renderBench(); const nq=$('#fQ'); nq.focus(); nq.setSelectionRange(nq.value.length,nq.value.length);}, 250);};
+  $('#view').querySelectorAll('[data-go]').forEach(a => a.onclick = e => {e.preventDefault(); go(a.dataset.go);});
+  const syncBar = () => {const bar = $('#batchbar'); if(!bar) return; const n = S.sel.size; bar.classList.toggle('show', n>0); if($('#selCnt')) $('#selCnt').textContent = n;};
+  $('#view').querySelectorAll('.rowcheck[data-no]').forEach(c => c.onchange = () => {c.checked ? S.sel.add(c.dataset.no) : S.sel.delete(c.dataset.no); syncBar();});
+  const all = $('#chkAll'); if(all) all.onchange = e => {e.target.checked ? rows.forEach(b=>S.sel.add(b.no)) : rows.forEach(b=>S.sel.delete(b.no)); renderBench();};
+  const bp = $('#bPass'); if(bp) bp.onclick = () => {
+    const bad = [...S.sel].filter(no => BILLS.find(b => b.no===no && b.concl==='reject'));
+    if(bad.length){ toast(`选中含 AI 不通过的 ${bad.length} 张，需逐张复核，不可批量通过`); return; }
+    toast(`已复核通过 ${S.sel.size} 张单据`); S.sel.clear(); renderBench();
+  };
+  const bb = $('#bBack'); if(bb) bb.onclick = () => openModal(`批量退回 ${S.sel.size} 张单据`);
+  const bc = $('#bClear'); if(bc) bc.onclick = () => {S.sel.clear(); renderBench();};
+  syncBar();
+}
+
+/* ═══ 页面：审核报告 ═══ */
+function renderReport(){
+  const ro = ROLES[S.role].groups.find(g=>g.ro);
+  /* 多单据：待复核队列 + 当前单 */
+  if(!S.reportBill) S.reportBill = BILLS.find(b=>b.concl!=='pass') || BILLS[0];
+  const queue = BILLS.filter(b=>b.concl!=='pass');
+  const qi = queue.findIndex(b=>b.no===S.reportBill.no);
+  const cur = S.reportBill;
+  const [curTxt, curCls] = CONCL[cur.concl];
+  const HIT_NAME = {'TR-D4-02':'住宿费超标','TR-D4-06':'超标无书面说明','TR-D1-02':'发票抬头错误'};
+  const isHotel = cur.no.includes('HOTEL') || cur.no.includes('TITLE');
+  const d = detailsOf(cur);
+  const RULESET = isHotel ? RULES : RULES.filter(r=>r.out!=='hit' || r.id==='TR-D1-02');
+
+  const counts = {all:RULESET.length}; ['hit','pend','pass','na'].forEach(k => counts[k] = RULESET.filter(r=>r.out===k).length);
+  const list = RULESET.filter(r => S.ruleFilter==='all' || r.out===S.ruleFilter);
+  const chips = [['all','全部'],['hit','命中'],['pend','待人工'],['pass','通过'],['na','不适用']]
+    .map(([v,t]) => `<button class="chip ${S.ruleFilter===v?'on':''}" data-f="${v}">${t} <span class="num">${counts[v]}</span></button>`).join('');
+  const trs = list.map(r => {
+    const [txt, cls] = OUT_PILL[r.out];
+    const open = S.openRule===r.id;
+    const main = `<tr class="rule-row ${open?'open':''}" data-id="${r.id}">
+      <td style="white-space:nowrap">${r.id}</td><td>${r.name}</td>
+      <td style="color:var(--ink-3);font-size:12px;white-space:nowrap">${r.basis}</td>
+      <td>${pill(txt,cls)}</td><td style="color:var(--ink-2);font-size:12px">${esc(r.ev[0][1])}</td>
+      <td>${(r.out==='hit'||r.out==='pend') ? `<svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>` : ''}</td></tr>`;
+    const detail = (r.out==='hit'||r.out==='pend') && open ? `<tr class="ev-row"><td colspan="6">
+      <div class="ev-grid ev"><div><h4>判定证据</h4><dl>${r.ev.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl></div>
+      <div><h4>制度依据</h4>${r.quote ? `<div class="quote">《差旅管理实施细则》（闽港财智〔2025〕20号）${r.quote}</div>` : `<div class="quote">软规则：由大模型辅助研判，结论仅供人工参考。</div>`}
+      ${r.att ? `<div style="margin-top:8px"><a href="#">查看依据附件：${r.att}</a></div>` : ''}</div></div></td></tr>` : '';
+    return main + detail;
+  }).join('');
+
+  $('#view').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <h2>待复核队列</h2><span class="pill warn num">${queue.length} 张</span>
+        <div class="grow"></div>
+        <span style="font-size:12px;color:var(--ink-3)">${qi+1} / ${queue.length}</span>
+        <button class="btn ghost" id="qPrev" ${qi<=0?'disabled':''}>上一张</button>
+        <button class="btn ghost" id="qNext" ${qi>=queue.length-1?'disabled':''}>下一张</button>
+      </div>
+      <div style="display:flex;gap:8px;padding:12px 16px;overflow:auto">
+        ${queue.map((b,i)=>{
+          const [t2,c2] = CONCL[b.concl];
+          return `<button class="qtab${b.no===cur.no?' on':''}${i===qi?' cur':''}" data-no="${b.no}" title="${b.no}">
+            ${t2 === '不通过' ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>' : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>'}
+            <span class="num">${b.no.replace(/^(FJPG-BX|FJHY-DEMO-)/,'')}</span>
+            <b class="num">${b.hit||b.pend||''}</b>
+          </button>`;}).join('')}
+      </div>
+    </div>
+
+    <div class="gate">
+      <div class="info">
+        <div class="bill-line"><b>${cur.no}</b>${cur.demo?'<span class="tag-demo">演示</span>':''}${pill(curTxt+(cur.concl==='reject'?' · 待人工裁决':''),curCls)}</div>
+        <div class="meta"><span>报账人：${d.tv[0][0]}</span><span>核算主体：${cur.org}</span><span>出差：${d.trip}${d.place!=='—'?' · '+d.place:''}</span><span>金额：<span class="num">${fmt(cur.amt)}</span> 元</span></div>
+        <div class="ai-line">${cur.hit?`命中 <b>${cur.hit}</b> 条规则${isHotel ? '（住宿费超标等）' : ''} `:''}${cur.pend?`<span style="color:var(--ink-3);font-size:12px">${cur.pend} 项待人工</span>`:''}</div>
+        ${ro?'':`<div class="field"><input class="input" value="林嘉" aria-label="复核人"><input class="input" placeholder="复核意见（选填）" aria-label="复核意见"></div>`}
+      </div>
+      ${ro?`<div class="ops"><button class="btn ghost lg" onclick="toast('只读账号：复核动作需审核岗账号')">只读模式</button></div>`
+          :`<div class="ops">
+            <button class="btn pass lg" id="gPass">复核通过</button>
+            <button class="btn reject lg" id="gBack">退回报账人</button>
+            <button class="btn ghost lg" style="grid-column:1 / -1" id="gNext2" ${qi>=queue.length-1?'disabled':''}>下一张</button>
+          </div>`}
+    </div>
+    <div class="card kv" style="margin-bottom:16px">
+      <div><dt>执行规则</dt><dd class="num">${counts.all} / 82</dd></div>
+      <div><dt>命中 / 待人工</dt><dd class="num">${counts.hit} / ${counts.pend}</dd></div>
+      <div><dt>规则集版本</dt><dd>rs-20261021-01</dd></div>
+      <div><dt>审核耗时</dt><dd class="num">0.4 s</dd></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>单据信息</h2><div class="grow"></div>
+        <span style="font-size:12px;color:var(--ink-3)">数据来源：报账系统导出 + OA 审批记录</span></div>
+      <div class="kv" style="margin:0;border-bottom:1px solid var(--line-2)">
+        <div><dt>出差期间</dt><dd>${d.trip}</dd></div>
+        <div><dt>出差地</dt><dd>${d.place}</dd></div>
+        <div><dt>报账部门</dt><dd>${d.dept}</dd></div>
+        <div><dt>出行人员</dt><dd>${d.tv.map(t=>t[0]).join('、')}</dd></div>
+      </div>
+      <table class="tbl">
+        <thead><tr><th>费用项目</th><th style="text-align:right">金额（元）</th><th>发生期间</th><th>说明</th></tr></thead>
+        <tbody>${d.items.map(([it,am,pr,nt])=>`<tr><td>${it}</td><td class="amt num">${fmt(am)}</td><td style="color:var(--ink-3)">${pr}</td><td style="color:var(--ink-2);font-size:12px">${nt}</td></tr>`).join('')}
+          <tr><td style="font-weight:600">合计</td><td class="amt num" style="font-weight:600">${fmt(cur.amt)}</td><td></td><td></td></tr>
+        </tbody>
+      </table>
+      <table class="tbl">
+        <thead><tr><th>审批环节</th><th>处理人</th><th>意见</th><th>时间</th></tr></thead>
+        <tbody>${d.apr.map(([st,who,op,tm])=>`<tr><td>${st}</td><td>${who}</td><td>${op.startsWith('不通过')||op.startsWith('待')?op:`<span style="color:var(--ok)">${op}</span>`}</td><td class="num" style="color:var(--ink-3)">${tm}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>复核记录</h2></div>
+      <table class="tbl">
+        <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>意见</th></tr></thead>
+        <tbody>${(S.hist[cur.no]||[]).map(([tm,who,act,note])=>`<tr><td class="num" style="color:var(--ink-3)">${tm}</td><td>${who}</td><td>${act}</td><td style="color:var(--ink-2)">${esc(note)}</td></tr>`).join('')
+          || '<tr class="empty-row"><td colspan="4">本单尚无复核记录</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>规则判定明细</h2><div class="grow"></div><div class="chips">${chips}</div></div>
+      <div style="overflow:auto"><table class="tbl"><thead><tr><th>规则</th><th>名称</th><th>制度依据</th><th>结论</th><th style="min-width:260px">证据摘要</th><th></th></tr></thead><tbody>${trs}</tbody></table></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>单据附件</h2><div class="grow"></div><span style="font-size:12px;color:var(--ink-3)">${cur.att} 张</span></div>
+      <div class="atts">${ATTS.slice(0,Math.min(cur.att,4)).map(a => `<button class="att" data-lb="${a.n}|${a.t}" style="cursor:zoom-in;text-align:left"><div class="thumb" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M3 17l5-4 4 3 4-4 5 5"/></svg></div><div class="meta"><span class="n">${a.n}</span><span class="t">${a.t}</span></div></button>`).join('')}</div>
+    </div>`;
+  $('#view').querySelectorAll('.qtab').forEach(t => t.onclick = () => {
+    S.reportBill = BILLS.find(b=>b.no===t.dataset.no); S.openRule=null; renderReport();
+  });
+  const nav = d => {const j = qi+d; if(j>=0 && j<queue.length){S.reportBill = queue[j]; S.openRule=null; renderReport();}};
+  const pv=$('#qPrev'); if(pv) pv.onclick = () => nav(-1);
+  const nx=$('#qNext'); if(nx) nx.onclick = () => nav(1);
+  const nx2=$('#gNext2'); if(nx2) nx2.onclick = () => {toast('已记录：复核不通过（示例）'); nav(1);};
+  $('#view').querySelectorAll('[data-f]').forEach(c => c.onclick = () => {S.ruleFilter = c.dataset.f; renderReport();});
+  $('#view').querySelectorAll('.rule-row').forEach(tr => tr.onclick = e => {
+    if(e.target.closest('a')) return;
+    const r = RULESET.find(x=>x.id===tr.dataset.id);
+    if(r.out!=='hit' && r.out!=='pend') return;
+    S.openRule = S.openRule===r.id ? null : r.id; renderReport();
+  });
+  const gp=$('#gPass'); if(gp) gp.onclick = () => {pushHist(cur.no,'复核通过'); toast('已记录：复核通过'); nav(1);};
+  const gb=$('#gBack'); if(gb) gb.onclick = () => openModal(cur.no);
+  const gr=$('#gReject'); if(gr) gr.onclick = () => {pushHist(cur.no,'复核不通过'); toast('已记录：复核不通过'); nav(1);};
+  $('#view').querySelectorAll('[data-lb]').forEach(a => a.onclick = () => {
+    const [n,t] = a.dataset.lb.split('|');
+    $('#lbName').textContent = n; $('#lbType').textContent = t;
+    $('#lb').classList.add('show');
+  });
+}
+
+/* ═══ 页面：审计追溯（重做：流水线日志时间线）═══ */
+function renderTrace(){
+  const TL = [
+    ['done','感知','取单据全量快照，脱敏校验通过','data_pool_snapshot','229 ms','10-24 09:31:05.112'],
+    ['done','研判','28 条规则逐条判定 · 规则集 rs-20261021-01','cycle_log','0 ms（内存）','10-24 09:31:05.341'],
+    ['done','落库','写入结论 11 条 + 证据 + 任务分发信号','review_run · finding · signal','243 ms','10-24 09:31:05.584'],
+    ['done','比对','与人工复核结论对账，回写偏差','feedback_log','166 ms','待复核后'],
+    ['wait','改进','按批次评估，无越界调参','improve_log','—','按批次'],
+  ];
+  $('#view').innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <select class="select" aria-label="选择单据">
+          <option>FJHY-DEMO-004-HIT-HOTEL-01（演示）</option>
+          <option>FJPG-BX2610132121</option>
+          <option>FJPG-BX2610120271</option>
+        </select>
+        <div class="grow"></div>
+        <span style="font-size:12px;color:var(--ink-3)">周期 cyc-8f3d21 · 快照 snap-21acecae · 全程 0.64 s</span>
+        <button class="btn ghost">导出审计包</button>
+      </div>
+      <div class="tl">
+        ${TL.map(([st,nm,desc,tbl,ms,tm])=>`
+        <div class="tl-item ${st}">
+          <div class="tl-dot" aria-hidden="true"></div>
+          <div class="tl-body">
+            <div class="l1"><b>${nm}</b><span class="ms num">${ms}</span><span class="tm num">${tm}</span></div>
+            <div class="desc">${desc}</div>
+            <span class="tag">${tbl}</span>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+}
+
+/* ═══ 页面：偏差与回流 ═══ */
+function renderDev(){
+  const ro = !!ROLES[S.role].groups.find(g=>g.ro);
+  /* 四象限矩阵：AI 判定 × 人工判定 —— 数据质量报告的标准形态 */
+  const QUAD = [
+    {n:'完全一致', v:31, cls:'ok',   pos:'AI 通过 · 人工通过', desc:'双方一致放行'},
+    {n:'误报', v:0, cls:'bad',  pos:'AI 命中 · 人工放行', desc:'AI 判重了，记入误报统计'},
+    {n:'漏报', v:0, cls:'bad',  pos:'AI 放行 · 人工退回', desc:'AI 放过、人工拦住，记入漏报统计'},
+    {n:'仅待人工', v:9, cls:'warn', pos:'AI 待人工 · 人工放行', desc:'AI 无把握转人工，不计误报'},
+  ];
+  const total = 40;
+  const CAUSE = [
+    ['缺 OA 出差起止日期', 6, 'G-04', 'OA 接口同步后消除', 14],
+    ['住宿费落在标准档位之间', 2, 'G-31', '常驻地口径确认后消除', 3],
+    ['代提单授权记录不可得', 1, 'G-05', '授权库接入后消除', 2],
+  ];
+  const bar = (v, max, color) => `
+    <div class="hbar" style="grid-template-columns:1fr 36px">
+      <span class="track"><i style="width:${v/max*100}%;background:var(--${color})"></i></span>
+      <span class="val num">${v}</span>
+    </div>`;
+  $('#view').innerHTML = `
+    <div class="quad">
+      ${QUAD.map(q=>`
+      <div class="qcard ${q.cls}">
+        <div class="q-pos">${q.pos}</div>
+        <div class="q-v num">${q.v}<small> / ${total}</small></div>
+        <div class="q-n">${q.n}</div>
+        <div class="q-d">${q.desc}</div>
+        ${q.v? '' : '<span class="q-zero">零</span>'}
+      </div>`).join('')}
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>待人工成因 · 全部为数据缺口</h2><div class="grow"></div>
+        ${ro?'':'<button class="btn ghost">导出数据需求清单</button>'}</div>
+      <div style="padding:8px 20px 20px">
+        ${CAUSE.map(([n,v,g,fix,unlock])=>`
+        <div class="cause">
+          <div class="c-line1">
+            <span class="c-n">${n}</span>
+            <span class="c-g">缺口 ${g}</span>
+            <b class="num c-v">${v}</b>
+          </div>
+          ${bar(v, 9, 'c1')}
+          <div class="c-fix">→ ${fix} · 该数据到位后另解锁 ${unlock} 条规则</div>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>偏差台账</h2><div class="grow"></div>
+        </div>
+      <table class="tbl">
+        <thead><tr><th>时间</th><th>单据</th><th>规则</th><th>类型</th><th>处理</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td class="num">10-24 09:40</td><td>FJHY-DEMO-004-HIT-HOTEL-01</td><td>TR-D4-02 住宿费标准</td><td>待复核</td><td>—</td><td>${pill('处理中','warn')}</td></tr>
+          <tr><td class="num">10-23 16:12</td><td>FJPG-BX2609041860</td><td>TR-D4-04 伙食补助</td><td>仅待人工</td><td>数据缺口 G-04</td><td>${pill('已归因','brand')}</td></tr>
+          <tr class="empty-row"><td colspan="6">真实 40 张：误报 0 · 漏报 0 —— 无需处理</td></tr>
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ═══ 页面：知识资产（工程师 · 重做）═══ */
+function renderDoc(){
+  $('#view').innerHTML = `
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat"><div class="k">库内文件</div><div class="v num">14</div><div class="d">7 制度 + 7 规则表</div></div>
+      <div class="stat"><div class="k">已条款切分</div><div class="v num">193</div><div class="d">仅重新切分变更文件</div></div>
+      <div class="stat"><div class="k">规则明细</div><div class="v num">125</div><div class="d">来自表格映射</div></div>
+      <div class="stat alert"><div class="k">待确认草稿</div><div class="v num">94</div><div class="d">AI 生成，待人工确认</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>制度文件库</h2><div class="grow"></div>
+        <button class="btn ghost">重新扫描引用目录</button></div>
+      <div class="dropzone" role="button" tabindex="0" id="dz">
+        <div style="text-align:center">
+          <svg class="dz-ic" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 20h16"/></svg>
+          <div style="font-size:13px">拖拽文件至此处，或点击选择（支持 PDF / Word / Excel）</div>
+          <div style="font-size:11px;margin-top:2px">同名文件内容不同时保存为新版本，原文件保留</div>
+        </div>
+      </div>
+      <div class="filegrid">
+        ${DOCS.map(([n,meta,st])=>{
+          const ext = n.includes('.xlsx')?'xlsx':'pdf';
+          return `<div class="fcard">
+          <div class="ftype ${ext}">${ext.toUpperCase()}</div>
+          <div class="fn">${n}
+            <div class="fm"><span>${meta}</span><span>${st}</span></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">${pill(st==='已解析'?'可用':'排队', st==='已解析'?'ok':'brand')}
+          </div></div>`;}).join('')}
+      </div>
+    </div>`;
+  $('#dz').onclick = () => toast('演示环境：真环境这里打开文件选择器');
+}
+
+function renderExtract(){
+  $('#view').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>增量抽取</h2><div class="grow"></div>
+        <button class="btn ghost">预览范围（不计费）</button>
+        <button class="btn primary">开始抽取（出网计费）</button></div>
+      <div style="padding:16px 20px;font-size:13px;color:var(--ink-2)">
+        本次处理范围： <b class="num" style="color:var(--brand)">1</b> 份新文件：预计切 3 条条款、起草 2 条规则、调模型 2 次（约 4,000 token）
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>四步流水线 · 最近一轮</h2><div class="grow"></div>
+        ${pill('全部成功','ok')}</div>
+      <div class="pipe">
+        <div class="pstep"><div class="pn">① 识别变更文件</div><div class="pd">按内容指纹识别新增与变更文件</div>
+          <div class="pv"><span>待处理 <b>1</b> 份</span></div></div>
+        <div class="parrow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="pstep"><div class="pn">② 条款切分</div><div class="pd">按文件形态选择切分策略，确定性执行</div>
+          <div class="pv"><span><b>3</b> 条</span><span>候选 <b>2</b></span></div></div>
+        <div class="parrow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="pstep"><div class="pn">③ 明细成形</div><div class="pd">表格规则按表头落行</div>
+          <div class="pv"><span>明细 <b>+0</b></span></div></div>
+        <div class="parrow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div>
+        <div class="pstep hot"><div class="pn">④ AI 起草</div><div class="pd">唯一出网计费环节，前三步本地执行</div>
+          <div class="pv"><span>成稿 <b>2</b></span><span>存疑 <b>0</b></span><span>花费 <b>约 4k token</b></span></div></div>
+      </div>
+    </div>`;
+}
+
+function renderWorkshop(){
+  const ST = [
+    ['素材盘点','done'],['装载本体','done'],['装载规则','done'],['口径统一','done'],
+    ['候选汇总','done'],['双向对账','done'],['人工采纳','cur'],['签字发布','todo'],
+  ];
+  $('#view').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>搭建进度</h2><div class="grow"></div>
+        <button class="btn primary">继续跑到第 ⑦ 步（不出网）</button></div>
+      <div class="steps8">
+        ${ST.map(([nm,st],i)=>`<div class="st8 ${st}"><div class="n">${i+1}</div><div class="nm">${nm}</div></div>`).join('')}
+      </div>
+      <div style="padding:8px 20px 20px;font-size:13px;color:var(--ink-2)">
+        步骤 1-6 由系统执行；步骤 7-8 需人工确认：采纳须逐条审核，发布须签字生效
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="card"><div class="card-head"><h2>业务本体</h2><div class="grow"></div><span style="font-size:12px;color:var(--ink-3)">17 实体 · 121 概念 · 21 枚举</span></div>
+        <div style="padding:16px 20px;font-size:13px;color:var(--ink-2)">每个概念均标注来源：对应的数据表、制度文件或审批记录；无来源的概念不予收录。</div>
+        <div style="padding:0 20px 16px"><button class="btn ghost">查看本体关系图谱</button></div></div>
+      <div class="card"><div class="card-head"><h2>流程本体</h2><div class="grow"></div><span style="font-size:12px;color:var(--ink-3)">8 节点 · 12 迁移</span></div>
+        <div style="padding:16px 20px;font-size:13px;color:var(--ink-2)">流程节点由 330 条真实审批记录统计分析生成，非人工绘制。</div>
+        <div style="padding:0 20px 16px"><button class="btn ghost">查看流程图</button></div></div>
+    </div>`;
+}
+
+function renderPublish(){
+  $('#view').innerHTML = `
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat"><div class="k">当前生效版本</div><div class="v" style="font-size:18px">rs-20261021-01</div><div class="d">10-21 何工签字</div></div>
+      <div class="stat"><div class="k">历史版本</div><div class="v num">3</div><div class="d">随时可回滚</div></div>
+      <div class="stat"><div class="k">待发布变更</div><div class="v num">0</div><div class="d">与生效版一致</div></div>
+      <div class="stat"><div class="k">对外调用</div><div class="v num">128</div><div class="d">资产包已下载 5 次</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>版本记录</h2><div class="grow"></div><button class="btn ghost">导出资产包</button></div>
+      <table class="tbl"><thead><tr><th>版本</th><th>发布时间</th><th>签字人</th><th>规则数</th><th>状态</th><th></th></tr></thead><tbody>
+        <tr><td>rs-20261021-01</td><td class="num">10-21 14:30</td><td>何工</td><td class="num">82</td><td>${pill('生效中','ok')}</td><td><a href="#">回滚至此</a></td></tr>
+        <tr><td>rs-20261020-02</td><td class="num">10-20 09:12</td><td>何工</td><td class="num">82</td><td>${pill('已归档','brand')}</td><td><a href="#">回滚至此</a></td></tr>
+        <tr><td>rs-20261019-01</td><td class="num">10-19 17:40</td><td>何工</td><td class="num">80</td><td>${pill('已归档','brand')}</td><td><a href="#">回滚至此</a></td></tr>
+      </tbody></table>
+    </div>`;
+}
+
+/* ═══ 页面：系统（管理员）═══ */
+function renderAgent(){
+  /* [层, 链, 名称, 职责, 触发机制, 读, 写, 今日周期, 平均耗时, 累计产出, 运行中] */
+  const N = [
+    ['L0','审核链','报账单感知','监听报账单，自动创建审核任务','事件驱动 + 定时补偿','2','0','69','—','派审 69 张',true],
+    ['L0','抽取链','文件库感知','监听文件库，新文件自动进入抽取队列','文件事件驱动','1','0','12','—','排入 12 份',true],
+    ['L0','本体链','本体口径感知','比对抽取结果与本体口径差异','产出事件驱动','5','0','3','—','报 3 轮差额',true],
+    ['L0','本体链','素材感知','核对源材料与库内资产数量','每日定时','6','0','1','—','盘点 1 次',true],
+    ['L1','审核链','差旅费审核','执行规则集判定，输出结论与证据','任务触发','7','2','69','0.39 s','判定 667 条',true],
+    ['L1','抽取链','条款切分','对制度文件进行条款级切分','任务触发','2','1','—','—','切出 193 条',false],
+    ['L1','抽取链','规则草稿','生成规则草稿，标记待核实的数值','任务触发','2','1','8','46 s','草稿 94 份',true],
+    ['L1','本体链','字段与枚举候选','从真实数据提取字段与枚举候选','任务触发','3','1','—','—','候选 36 条',false],
+    ['L1','本体链','流程候选','从审批记录提取流程节点与迁移','任务触发','2','1','—','—','候选 20 条',false],
+    ['L1','抽取链','规则明细成形','将表格类规则解析为明细行','任务触发','3','1','5','1.2 s','明细 125 行',true],
+    ['L2','抽取链','抽取协同','归并多来源规则，标记口径冲突','任务触发','3','1','—','—','冲突 9 处',false],
+    ['L2','本体链','本体对齐','执行规则与本体的双向一致性核对','任务触发','3','1','—','—','对账 41 组',false],
+    ['L2','本体链','本体候选对齐','候选去重，输出三档判定建议','任务触发','2','1','—','—','判定 56 条',false],
+  ];
+  const CHAIN_C = {'审核链':'','抽取链':'k2','本体链':''};
+  const running = N.filter(n=>n[10]).length;
+  const node = (n) => `
+    <button class="node${S.pickAgent===n[2]?' on':''}" data-n="${n[2]}">
+      <div class="top"><span class="chain ${CHAIN_C[n[1]]}">${n[1]}</span><span class="dot ${n[10]?'run':'idle'}" title="${n[10]?'运行中':'待命'}"></span></div>
+      <div class="nm">${n[2]}</div>
+      <div class="ds">${n[3]}</div>
+      <div class="io"><span>今日 <b>${n[7]}</b></span><span>产出 <b>${n[9].replace(/^\S+\s/,'')}</b></span></div>
+    </button>`;
+  const lane = (L) => N.filter(n=>n[0]===L).map(node).join('');
+
+  $('#view').innerHTML = `
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat"><div class="k">运行中</div><div class="v num">${running}<small> / 13</small></div><div class="d">其余按需调度</div></div>
+      <div class="stat"><div class="k">今日周期</div><div class="v num">97</div><div class="d">全链累计</div></div>
+      <div class="stat"><div class="k">审核单均</div><div class="v num">0.39<small> s</small></div><div class="d">规则链路</div></div>
+      <div class="stat"><div class="k">失败</div><div class="v num">0</div><div class="d">今日</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>运行拓扑</h2><div class="grow"></div>
+        </div>
+      <div class="arch">
+        <div class="lane"><div class="lane-head"><span class="lt">感知层</span></div>
+          <div class="lane-body">${lane('L0')}</div></div>
+        <div class="flow"><span class="wire"></span><span class="sig">任务分发</span><span class="wire"></span></div>
+        <div class="lane"><div class="lane-head"><span class="lt">执行层</span></div>
+          <div class="lane-body">${lane('L1')}</div></div>
+        <div class="flow"><span class="wire"></span><span class="sig">产出移交</span><span class="wire"></span></div>
+        <div class="lane"><div class="lane-head"><span class="lt">协同层</span></div>
+          <div class="lane-body">${lane('L2')}</div></div>
+      </div>
+    </div>
+    <div id="agentPop"></div>`;
+  document.querySelectorAll('.node').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    if(S.pickAgent===b.dataset.n){closePop(); return;}
+    document.querySelectorAll('.node').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    S.pickAgent = b.dataset.n;
+    showAgentPop(b, N.find(n=>n[2]===b.dataset.n));
+  });
+}
+function closePop(){
+  S.pickAgent = null;
+  const p = $('#agentPop'); if(p) p.innerHTML='';
+  document.querySelectorAll('.node').forEach(x=>x.classList.remove('on'));
+}
+function showAgentPop(anchor, n){
+  $('#agentPop').innerHTML = `
+    <div class="pop" id="thePop" role="dialog" aria-label="${n[2]}运行情况">
+      <div class="p-head"><b>${n[2]}</b><span class="chain ${n[1]==='抽取链'?'k2':''}">${n[1]}</span>
+        ${pill(n[10]?'运行中':'待命', n[10]?'ok':'brand')}
+        <button class="x" aria-label="关闭" onclick="closePop()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button></div>
+      <table class="tbl">
+        <tbody>
+          <tr><td>职责</td><td>${n[3]}</td></tr>
+          <tr><td>触发机制</td><td>${n[4]}</td></tr>
+          <tr><td>今日周期</td><td class="num">${n[7]}</td></tr>
+          <tr><td>平均耗时</td><td class="num">${n[8]}</td></tr>
+          <tr><td>累计产出</td><td>${n[9]}</td></tr>
+        </tbody>
+      </table>
+      <div class="p-foot">读 ${n[5]} 张表 · 写 ${n[6]} 张表 · 写库仅限授权窗口</div>
+    </div>`;
+  const el = $('#thePop'), r = anchor.getBoundingClientRect();
+  const W = 360, H = el.offsetHeight;
+  let left = Math.min(Math.max(8, r.left + r.width/2 - W/2), innerWidth - W - 8);
+  let top = r.bottom + 8;
+  if(top + H > innerHeight - 8) top = Math.max(8, r.top - H - 8);
+  el.style.left = left + 'px'; el.style.top = top + 'px';
+}
+document.addEventListener('click', e => {
+  if(S.pickAgent && !e.target.closest('.pop') && !e.target.closest('.node')) closePop();
+});
+
+function renderLLM(){
+  /* 三档用途 × 当前默认模型（对应真实 llm_config 表） */
+  const PURPOSES = [
+    ['规则研判','审核单里判不了的项，交给模型给参考意见','qwen3.7-max','阿里云百炼',true],
+    ['制度抽取','从制度条款起草规则八要素','qwen3.8-max','阿里云百炼',true],
+    ['读图','识别发票、审批单等附件内容','qwen3-vl-plus','阿里云百炼',true],
+  ];
+  /* 近 17 天调用（ok/fail），口径对齐 llm_call_log */
+  const TREND = [
+    ['10-08',12,0],['10-09',9,1],['10-10',0,0],['10-11',6,0],['10-12',8,0],
+    ['10-13',11,2],['10-14',0,0],['10-15',5,0],['10-16',7,0],['10-17',4,0],
+    ['10-18',13,1],['10-19',6,0],['10-20',9,2],['10-21',62,39],['10-22',98,4],
+    ['10-23',186,0],['10-24',262,0],
+  ];
+  const MAXD = Math.max(...TREND.map(d=>d[1]+d[2]));
+  const bars = TREND.map(([d,ok,fail])=>`
+    <div class="day" title="${d} · 成功 ${ok} · 失败 ${fail}">
+      <span class="tip">${d}　成功 ${ok}${fail?` · <b style="color:var(--bad)">失败 ${fail}</b>`:''}</span>
+      ${fail?`<i class="f" style="height:${Math.max(fail/MAXD*100,4)}%"></i>`:''}
+      <i class="o" style="height:${ok/MAXD*100}%"></i>
+      <span class="dl">${d.slice(5)}</span>
+    </div>`).join('');
+  const ERRS = [['TLS 握手',35],['超时',8],['返回解析',3],['配额',2],['其他',1]];
+
+  $('#view').innerHTML = `
+    <div class="llm-uses">
+      ${PURPOSES.map(([p,d,m,v,on])=>`
+      <div class="card use">
+        <div class="u-top"><span class="u-name">${p}</span>${pill(on?'已启用':'停用', on?'ok':'brand')}</div>
+        <div class="u-model">${m}</div>
+        <div class="u-vendor">${v}</div>
+        <div class="u-desc">${d}</div>
+        <div class="u-ops">
+          <button class="btn ghost" data-test="${p}">连通测试</button>
+          <button class="btn ghost">更换模型</button>
+        </div>
+      </div>`).join('')}
+      <div class="card use add">
+        <div class="u-top"><span class="u-name">备用通道</span></div>
+        <div class="u-model" style="color:var(--ink-3)">DeepSeek · deepseek-v4</div>
+        <div class="u-vendor">未启用</div>
+        <div class="u-ops"><button class="btn ghost">启用</button></div>
+      </div>
+    </div>
+
+    <div class="llm-grid">
+      <div class="card">
+        <div class="card-head"><h2>调用量 · 近 17 天</h2><div class="grow"></div>
+          <div class="legend"><span><i style="background:var(--ok)"></i>成功</span><span><i style="background:var(--bad)"></i>失败</span></div></div>
+        <div style="padding:20px 20px 12px">
+          <div class="trend">${bars}</div>
+          <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--ink-3)">
+            <span>10-08</span><span>10-24</span></div>
+        </div>
+        <div class="kv" style="margin:0;border-top:1px solid var(--line-2)">
+          <div><dt>累计调用</dt><dd class="num">747 次</dd></div>
+          <div><dt>成功率</dt><dd class="num"><b style="color:var(--ok)">93.4%</b></dd></div>
+          <div><dt>累计 token</dt><dd class="num">70.3 万</dd></div>
+          <div><dt>Key 存储</dt><dd>可逆加密</dd></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>时延与失败</h2></div>
+        <div style="padding:16px 20px 20px">
+          <div style="font-size:12px;color:var(--ink-3)">时延（成功调用）</div>
+          <div class="num" style="font-size:22px;font-weight:600;margin:4px 0 12px">12.0<small style="font-size:12px;color:var(--ink-3)"> s p50 · 24.5 s p90</small></div>
+          <div class="hbar"><span class="lb">研判</span><span class="track"><i style="width:80%;background:var(--c1)"></i></span><span class="val num">12.0s</span></div>
+          <div class="hbar"><span class="lb">抽取</span><span class="track"><i style="width:47%;background:var(--c1)"></i></span><span class="val num">7.1s</span></div>
+          <div class="hbar" style="margin-bottom:12px"><span class="lb">读图</span><span class="track"><i style="width:20%;background:var(--c1)"></i></span><span class="val num">3.0s</span></div>
+          <div style="font-size:12px;color:var(--ink-3);margin-bottom:6px">失败 49 次归类</div>
+          ${ERRS.map(([k,v])=>`<div class="hbar"><span class="lb">${k}</span><span class="track"><i style="width:${v/35*100}%;background:var(--bad)"></i></span><span class="val num">${v}</span></div>`).join('')}
+          <div style="font-size:12px;color:var(--ink-3);margin-top:8px">握手与超时占 87%，集中在 10-21 晨间；其后全部成功</div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h2>预置厂商</h2><div class="grow"></div>
+        <span style="font-size:12px;color:var(--ink-3)">8 家已核对官方文档 · 3 家待核对</span></div>
+      <div style="padding:12px 20px 16px;display:flex;gap:8px;flex-wrap:wrap">
+        ${['阿里云百炼','DeepSeek','火山方舟','智谱','月之暗面','阶跃星辰','MiniMax','百度千帆','腾讯混元','私有化部署'].map((v,i)=>`
+          <span class="chip ${i<7||i===9?'on':''}">${v}${i>6&&i<10&&i!==9?'<span style="color:var(--ink-3)"> · 待核对</span>':''}</span>`).join('')}
+      </div>
+    </div>`;
+  document.querySelectorAll('[data-test]').forEach(b => b.onclick = () => {
+    const name = b.textContent; b.textContent = '测试中…'; b.disabled = true;
+    setTimeout(()=>{b.textContent = name; b.disabled = false;
+      toast('连通正常 · 首字 0.8s · 实发一句话（不含业务数据）');}, 900);
+  });
+}
+
+function renderCheck(){
+  $('#view').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="cihero">
+        <div class="b" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg></div>
+        <div>
+          <div style="font-size:16px;font-weight:600">启动自检 5 组全部通过</div>
+          <div style="font-size:13px;color:var(--ink-2)">任何一组不过，系统会拒绝启动而不是带病运行</div>
+        </div>
+        <div class="grow"></div>
+        <button class="btn ghost">重新自检</button>
+      </div>
+      <table class="tbl"><thead><tr><th>校验组</th><th>项数</th><th>结果</th></tr></thead><tbody>
+        <tr><td>规则资产契约</td><td class="num">20</td><td>${pill('0 失败 0 警告','ok')}</td></tr>
+        <tr><td>智能体配置契约</td><td class="num">48</td><td>${pill('0 失败 0 警告','ok')}</td></tr>
+        <tr><td>执行集实现完整性</td><td class="num">28</td><td>${pill('全部有实现','ok')}</td></tr>
+        <tr><td>本体 ↔ 事实模型一致性</td><td class="num">121 = 121</td><td>${pill('一致','ok')}</td></tr>
+        <tr><td>脱敏出口覆盖</td><td class="num">9</td><td>${pill('全覆盖','ok')}</td></tr>
+      </tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>系统信息</h2></div>
+      <div class="kv">
+        <div><dt>数据库</dt><dd class="num">84 表 · 39 迁移</dd></div>
+        <div><dt>后端测试</dt><dd class="num">871 项全绿</dd></div>
+        <div><dt>前端契约测试</dt><dd class="num">47 项全绿</dd></div>
+        <div><dt>脱敏模式</dt><dd>开启（9 出口）</dd></div>
+      </div>
+    </div>`;
+}
+
+function renderUsers(){
+  /* 用户：[姓名, 账号, 角色, 启用, 最后登录, 手机/邮箱] */
+  const USERS = [
+    ['林嘉','linjia','审核岗',true,'10-24 09:12','138****6021'],
+    ['陈芳','chenfang','审核岗',true,'10-23 17:40','139****3357'],
+    ['何工','hetech','知识工程师',true,'10-24 08:55','137****8846'],
+    ['王总','wangzong','领导查询',true,'10-23 10:20','136****1129'],
+    ['系统管理','admin','系统管理员',false,'—','—'],
+  ];
+  const ROLE_C = {'审核岗':'','知识工程师':'k2','系统管理员':'','领导查询':'k2'};
+  /* 角色：[名, 人数, 权限摘要, 描述] */
+  const ROLES = [
+    ['审核岗',2,'AI 审核 · 工作台 · 审核报告 · 审计追溯 · 偏差与回流'],
+    ['知识工程师',1,'制度文件库 · 规则抽取 · 本体工场 · 发布管理'],
+    ['系统管理员',1,'智能体工作台 · 大模型配置 · 系统自检 · 用户与角色'],
+    ['领导查询',1,'总览看板 · 工作台（只读） · 审计追溯（只读）'],
+  ];
+  $('#view').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>角色权限</h2><div class="grow"></div>
+        <button class="btn ghost">新建角色</button></div>
+      <div class="rolegrid">
+        ${ROLES.map(([n,cnt,perm])=>`
+        <div class="rolecard">
+          <div class="r-top"><span class="r-name">${n}</span><span class="r-cnt num">${cnt} 人</span></div>
+          <div class="r-perm">${perm}</div>
+          <div class="r-ops"><button class="btn ghost">权限配置</button></div>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>用户账号</h2><div class="grow"></div>
+        <input class="input" style="width:180px" placeholder="搜索姓名 / 账号" aria-label="搜索用户">
+        <button class="btn primary">新增用户</button></div>
+      <table class="tbl">
+        <thead><tr><th>用户</th><th>账号</th><th>角色</th><th>数据权限</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+        ${USERS.map(([n,a,r,act,last,tel])=>`
+          <tr>
+            <td><div style="display:flex;align-items:center;gap:10px">
+              <span class="avatar" style="width:28px;height:28px;font-size:12px" aria-hidden="true">${n[0]}</span>${n}
+            </div></td>
+            <td style="color:var(--ink-3)" class="num">${a}</td>
+            <td><span class="chain ${ROLE_C[r]||''}" style="font-size:11px">${r}</span></td>
+            <td style="color:var(--ink-2);font-size:12px">${r==='领导查询'?'全部（只读）':r==='审核岗'?'全部单据':'配置数据'}</td>
+            <td><button class="switch${act?' on':''}" role="switch" aria-checked="${act}" aria-label="${n} 启用状态" data-sw="${a}"><i></i></button></td>
+            <td style="text-align:right;white-space:nowrap">
+              <a href="#" data-ed="${a}">编辑</a>${act?' · <a href="#" data-rs="${a}" style="color:var(--bad)">重置密码</a>':''}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  document.querySelectorAll('[data-sw]').forEach(sw => sw.onclick = () => {
+    sw.classList.toggle('on');
+    const on = sw.classList.contains('on');
+    sw.setAttribute('aria-checked', on);
+    toast(on ? '已启用' : '已停用：该账号立即无法登录');
+  });
+  document.querySelectorAll('[data-ed]').forEach(a => a.onclick = e => {e.preventDefault(); toast('编辑用户（演示）');});
+  document.querySelectorAll('[data-rs]').forEach(a => a.onclick = e => {e.preventDefault(); toast('重置链接已发送至用户手机（演示）');});
+}
+
+/* ═══ 弹窗 / 路由 / 主题 ═══ */
+function pushHist(no, act, note){ (S.hist[no] = S.hist[no]||[]).unshift(['刚刚','林嘉',act, note||'—']); }
+function openModal(sub){
+  S.modalBill = sub;
+  $('#mSub').textContent = sub; $('#mReason').value = '';
+  $('#mOk').disabled = true; $('#mask').classList.add('show');
+  setTimeout(()=>$('#mReason').focus(), 50);
+}
+$('#mReason').oninput = e => $('#mOk').disabled = !e.target.value.trim();
+$('#mCancel').onclick = () => $('#mask').classList.remove('show');
+$('#mOk').onclick = () => {
+  if(S.modalBill && S.modalBill.startsWith('FJ')) pushHist(S.modalBill,'退回报账人', $('#mReason').value.trim());
+  $('#mask').classList.remove('show'); S.sel.clear(); toast('已退回，理由已记录');
+};
+$('#mask').onclick = e => {if(e.target===e.currentTarget) $('#mask').classList.remove('show');};
+$('#lbClose').onclick = () => $('#lb').classList.remove('show');
+$('#lb').onclick = e => {if(e.target===e.currentTarget) $('#lb').classList.remove('show');};
+document.addEventListener('keydown', e => {if(e.key==='Escape'){$('#mask').classList.remove('show'); $('#lb').classList.remove('show');}});
+
+const PAGES = {dash:renderDash, ai:renderAI, bench:renderBench, report:renderReport, trace:renderTrace, dev:renderDev,
+  doc:renderDoc, extract:renderExtract, workshop:renderWorkshop, publish:renderPublish,
+  agent:renderAgent, llm:renderLLM, check:renderCheck, users:renderUsers};
+const TITLES = {dash:'总览看板', ai:'AI 智能审核', bench:'审核工作台', report:'审核报告', trace:'审计追溯', dev:'偏差与回流',
+  doc:'制度文件库', extract:'规则抽取', workshop:'本体工场', publish:'发布管理',
+  agent:'智能体工作台', llm:'大模型配置', check:'系统自检', users:'用户与角色'};
+function go(view){
+  if(!PAGES[view]) return;
+  S.view = view;
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('on', b.dataset.view===view));
+  $('#pageTitle').textContent = TITLES[view];
+  PAGES[view]();
+  $('#view').scrollTop = 0;
+}
+
+const saved = localStorage.getItem('fjhy-demo-theme');
+if(saved) document.documentElement.dataset.theme = saved;
+function syncThemeIcon(){
+  const dark = document.documentElement.dataset.theme==='dark';
+  $('#iconMoon').style.display = dark?'none':'';
+  $('#iconSun').style.display = dark?'':'none';
+}
+$('#themeBtn').onclick = () => {
+  const next = document.documentElement.dataset.theme==='dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('fjhy-demo-theme', next); syncThemeIcon();
+};
+syncThemeIcon();
+</script>
+</body>
+</html>

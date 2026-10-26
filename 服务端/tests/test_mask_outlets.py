@@ -142,7 +142,10 @@ def test_每条路由的响应都不得泄露(path):
     if "{" in url:
         pytest.skip("路径参数无法自动填充：%s" % path)
     resp = client.get(url)
-    assert resp.status_code in (200, 404, 422), \
+    # 401 也算正常响应：/api/auth/me、/api/iam/users 这类接口在未登录时
+    # 本来就该回 401（2026-10-25 起有真鉴权）。401 的响应体只有一句话，
+    # 不含业务数据，下面照样要过 find_leaks。
+    assert resp.status_code in (200, 401, 404, 422), \
         "%s 返回 %s：%s" % (url, resp.status_code, resp.text[:200])
     if resp.status_code != 200:
         return

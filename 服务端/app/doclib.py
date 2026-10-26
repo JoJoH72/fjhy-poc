@@ -1499,14 +1499,18 @@ def _refs_of(file_id):
     }
 
 
-def delete_managed_file(file_id, by=None):
+def delete_managed_file(file_id, by=None, purge=False):
     """删掉托管目录里的一份文件。
 
-    三条口径，缺一条就会出事：
+    三条口径，缺一样就会出事：
 
     1. **只能删托管根里的。** 引用根是客户的资料目录，0015 的只读纪律管着它。
-    2. **已产出条款/规则明细/已签字读图的拒删。** 那条规则的依据会凭空消失，
+    2. **已产出条款/规则明细/已签字读图的默认拒删。** 那条规则的依据会凭空消失，
        而页面上它看着仍然有出处——证据链断在这里基本查不出来。
+       **例外：purge=True（连产出一并作废删除）。** 真实场景是「传错了文件」——
+       误传文件的产出本来就是垃圾，证据链保护对它没有意义；让人手工去
+       「先清产出再删文件」等于没有出路（2026-10-25 用户实测卡死在这里）。
+       级联只清：规则明细 → 草稿 → 条款 → 该文件的读图记录，一个事务里做完。
     3. **doc_lib_file 的行不删，只标 missing。** 删行会级联清掉 OCR、读图、
        条款、规则明细（0017/0018/0027/0029 四张表都是 ON DELETE CASCADE），
        而「这份资料曾经在库里」必须留着。标记走扫描那条现成的路：
@@ -1529,14 +1533,37 @@ def delete_managed_file(file_id, by=None):
 
     refs = _refs_of(file_id)
     blocking = {k: v for k, v in refs.items() if v}
-    if blocking:
+    if blocking and not purge:
         raise ConflictError(
-            "「%s」已经产出了 %s，不能删。删掉原文之后，那些条款和规则明细"
+            "「%s」已经产出了 %s，不能直接删。删掉原文之后，那些条款和规则明细"
             "会指向一份不存在的文件，而页面上它们看着仍然有出处——"
             "这种断链基本查不出来。请先在「规则抽取」那一栏把这些产出处理掉"
-            "（作废，或改挂到别的出处），再回来删文件。"
+            "（作废，或改挂到别的出处），再回来删文件；"
+            "若这是**传错的文件**（产出本就不该存在），"
+            "可在确认框选择「连产出一并作废删除」。"
             % (row["file_name"],
                "、".join("%d 条%s" % (v, k) for k, v in blocking.items())))
+
+    purged = {}
+    if blocking and purge:
+        with db.tx() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM doclib_rule_detail WHERE file_id=%s",
+                        (file_id,))
+            purged["规则明细"] = cur.fetchone()[0]
+            cur.execute("DELETE FROM doclib_rule_detail WHERE file_id=%s", (file_id,))
+            cur.execute("""SELECT count(*) FROM doclib_draft WHERE clause_id IN
+                           (SELECT clause_id FROM doclib_clause WHERE file_id=%s)""",
+                        (file_id,))
+            purged["草稿"] = cur.fetchone()[0]
+            cur.execute("""DELETE FROM doclib_draft WHERE clause_id IN
+                           (SELECT clause_id FROM doclib_clause WHERE file_id=%s)""",
+                        (file_id,))
+            cur.execute("SELECT count(*) FROM doclib_clause WHERE file_id=%s",
+                        (file_id,))
+            purged["条款"] = cur.fetchone()[0]
+            cur.execute("DELETE FROM doclib_clause WHERE file_id=%s", (file_id,))
+            cur.execute("DELETE FROM doc_page_vision WHERE file_id=%s", (file_id,))
 
     existed = os.path.exists(row["abs_path"])
     if existed:
@@ -1554,15 +1581,18 @@ def delete_managed_file(file_id, by=None):
                    WHERE file_id = %s""",
                ("已于 %s 被 %s 删除" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
                                         (by or "ui")), file_id))
+    purged_note = ("；已连同一并作废：" + "、".join("%d 条%s" % (v, k) for k, v in purged.items())
+                   ) if purged else ""
     return {
         "file_id": file_id, "file_name": row["file_name"],
-        "removed_from_disk": existed, "refs": refs, "scan": scan_res,
+        "removed_from_disk": existed, "refs": refs, "purged": purged, "scan": scan_res,
         "note": ("磁盘上的文件已删，**登记行按「消失」保留**——"
                  "删掉登记行会连带级联清空 OCR、读图、条款、规则明细，"
-                 "而「这份资料曾经在库里」是溯源的一部分，只能作废不能蒸发。")
+                 "而「这份资料曾经在库里」是溯源的一部分，只能作废不能蒸发。"
+                 + purged_note)
                 if existed else
                 ("磁盘上本来就没有这个文件（可能之前已被人在文件系统里删掉了），"
-                 "登记行已按「消失」标记。"),
+                 "登记行已按「消失」标记。" + purged_note),
     }
 
 

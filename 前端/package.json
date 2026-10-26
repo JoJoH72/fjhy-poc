@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "福建海运集团POC · 差旅费 AI 智能审核 · 前端",
+  "description": "福州港口集团POC · 差旅费 AI 智能审核 · 前端",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",

@@ -23,10 +23,15 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AgentRuntime from '../components/AgentRuntime.vue'
 import Async from '../components/Async.vue'
+import ReviewerSelect from '../components/ReviewerSelect.vue'
+import { pro } from '../data/prose'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
 import type {
   ExClause, ExDetail, ExDetailStats, ExDraft, ExIncremental, ExMeta, ExProgress,
 } from '../api'
+
+const clauseList = useCollapse()
 
 // 「规则明细」排在第一个，而且是默认页签：**它才是这一栏的产物。**
 // 以前默认落在「条款清单」上，于是这一栏看起来像个文本切片工具——
@@ -54,6 +59,11 @@ const fMapped = ref('')
 const fTag = ref('')
 const fQ = ref('')
 const who = ref('')
+/** 审定人选择器的引用。没选人时点行内提示跳回它。 */
+const whoSel = ref<InstanceType<typeof ReviewerSelect> | null>(null)
+function focusWho() {
+  whoSel.value?.focus()
+}
 const openMap = ref('')
 const tagDraft = ref<{ id: string; tag: string; why: string } | null>(null)
 
@@ -92,6 +102,14 @@ async function poll() {
       // 跑完刷**产物**。条款是底账，只在展开着的时候才顺带刷一下——
       // 它一次取 1000 行，没人在看的时候刷它是白花一个请求。
       await loadDetails()
+      // 底账也一样顺带刷（一次请求换标题数字不骗人），**有新草稿待审时自动展开
+      // 台账**——2026-10-26 实测：跑完后台账折叠着、内容不点不渲染，使用者
+      // 以为没产出（标题的计数和空内容自相矛盾）。产出的东西要自己跳出来。
+      await loadDrafts().catch(() => {})
+      if (pendingDrafts.value > 0) {
+        debugOpen.value = true
+        draftsOpen.value = true
+      }
       if (clausesOpen.value) await loadClauses()
       // 增量范围跑完一定变了（抽过的文件指纹被钉下来，就不在增量里了）。
       // 不刷的话按钮上还写着「增量抽取（2 份）」，而那 2 份已经抽完了——
@@ -207,16 +225,61 @@ const runDetail = () =>
     await loadDetails()
   })
 
-/** 采纳/驳回。**署名不许空**——没有署名的审定在审计上等于没发生。 */
+/** 采纳/驳回。**审定人不许空**——没有署名的审定在审计上等于没发生。
+ * 按钮常驻可点（默认带出当前登录人），点下才拦，拦了就说原因并跳回去选。 */
 const reviewDetail = (d: ExDetail, state: string) =>
   run('rev', async () => {
+    if (!who.value.trim()) {
+      msg.value = '先选「审定人」——没有署名的审定在审计上等于没发生'
+      focusWho()
+      return
+    }
     let reason: string | undefined
     if (state === '驳回') {
       reason = window.prompt('驳回原因（必填：不写原因，下次抽取还会抽出同一条）') || ''
       if (!reason.trim()) { msg.value = '驳回必须写原因，已取消'; return }
     }
     await api.exDetailReview(d.detail_id, state, who.value, reason)
-    msg.value = d.rule_name + ' → ' + state
+    msg.value = d.rule_name + ' → ' + state + '（' + who.value + '）'
+    await loadDetails()
+  })
+
+/** 草稿的采纳/驳回。后端端点一直都在，之前页面没接——「专家确认」
+ *  在草稿这一层等于不存在（2026-10-25 演示待办④补齐）。
+ *  与明细同一套口径：审定人必选、驳回必写原因。 */
+const reviewDraft = (d: ExDraft, state: string) =>
+  run('revd', async () => {
+    if (!who.value.trim()) {
+      msg.value = '先选「审定人」——没有署名的审定在审计上等于没发生'
+      focusWho()
+      return
+    }
+    let reason: string | undefined
+    if (state === '驳回') {
+      reason = window.prompt('驳回原因（必填：不写原因，下次抽取还会抽出同一条）') || ''
+      if (!reason.trim()) { msg.value = '驳回必须写原因，已取消'; return }
+    }
+    await api.exReview(d.draft_id, state, who.value, reason)
+    msg.value = '草稿 ' + d.clause_no + ' → ' + state + '（' + who.value + '）'
+    await loadDrafts()
+  })
+
+/** 撤回（误点补救）：已审的行回待审。与「改判」并存——
+ *  改判＝直接点另一按钮覆盖（最新一次为准）；撤回＝这次审定视为未发生。
+ *  后端会清掉审定人/时间/驳回原因；撤回不留历史是演示级边界（无审定历史表）。 */
+const revokeDraft = (d: ExDraft) =>
+  run('rvkd', async () => {
+    if (!window.confirm(`撤回「${d.clause_no}」的${d.review_state}？撤回后回到待审`)) return
+    await api.exReview(d.draft_id, '待审', who.value)
+    msg.value = '草稿 ' + d.clause_no + ' 已撤回，回到待审'
+    await loadDrafts()
+  })
+
+const revokeDetail = (d: ExDetail) =>
+  run('rvk', async () => {
+    if (!window.confirm(`撤回「${d.rule_name}」的${d.review_state}？撤回后回到待审`)) return
+    await api.exDetailReview(d.detail_id, '待审', who.value)
+    msg.value = d.rule_name + ' 已撤回，回到待审'
     await loadDetails()
   })
 
@@ -228,6 +291,9 @@ const addTag = () =>
     tagDraft.value = null
     await loadDetails()
   })
+
+/** 待审计数：页头徽标 + 折叠头都要看得见「有活在等」 */
+const pendingDrafts = computed(() => drafts.value.filter((d) => d.review_state === '待审').length)
 
 /** 展开时才去取草稿台账。和条款底账同一个道理：没人看的时候不花这个请求。 */
 function toggleDrafts() {
@@ -254,6 +320,19 @@ const stepAi = () =>
     if (draftsOpen.value) await loadDrafts()
   })
 
+/** 手动给单条条款买一次草稿：候选门禁漏掉的（措辞温和的规则），专家
+ *  觉得值得问模型就从条款底账点这里——一条一价、真出网计费。 */
+const draftOne = (c: { clause_id: string; clause_no: string }) =>
+  run('ai1', async () => {
+    const r = await api.exAi({ clause_ids: [c.clause_id], limit: 1 })
+    const it = (r.items || [])[0] as { ok?: boolean } | undefined
+    msg.value = '「' + c.clause_no + '」草稿：'
+      + (r.drafted ? '成稿（去 AI 草稿台账看）' : '没成——' + (it?.ok === false ? '见台账错误行' : '本条无候选'))
+    draftsOpen.value = true
+    debugOpen.value = true
+    await loadDrafts()
+  })
+
 // 进度条、协同全景都在 AgentRuntime 组件里，四个页面共用一份
 // ——**不留两份会各自走偏的拷贝**。
 // 这一页把 S→D→A→F→I 那列卡片关掉了（phase-cards=false）：
@@ -270,13 +349,24 @@ onMounted(async () => {
   // 增量范围进页面就取：按钮上要写份数，而「点了才知道有没有东西可抽」
   // 等于把一个会花钱的动作当探测用。
   await loadInc().catch(() => {})
+  // 有待审草稿时自动展开「单步调试」和「AI 草稿台账」：草稿是等专家处置的
+  // 活，藏在二级折叠里等于不存在——2026-10-25 实测使用者（含演示场景）
+  // 在页面上根本找不到刚产出的草稿。多花一次请求换「进页面就看见活」。
+  try {
+    const d = await api.exDrafts({ state: '待审', limit: 500 })
+    if (d.items?.length) {
+      debugOpen.value = true
+      draftsOpen.value = true
+      await loadDrafts()
+    }
+  } catch { /* 台账取不动不拦页面 */ }
   if (prog.value?.status === 'running') startPoll()
 })
 onUnmounted(stopPoll)
 </script>
 
 <template>
-  <h2>规则抽取</h2>
+  <div class="v2">
 
   <!-- ── 增量范围 ───────────────────────────────────────────────────────────
        点之前要能看见这一下会动哪几份、为什么、以及**会不会花钱**。
@@ -388,45 +478,50 @@ onUnmounted(stopPoll)
         已进本体 {{ dstats.into_onto }}
       </span>
     </div>
-    <div class="row">
-      <select v-model="fOrigin" @change="loadDetails()">
+    <!-- 筛选工具条：统一 32px 高、紧凑间距；「重跑列映射」是次要动作放行尾。
+         原来八个控件高度不一（原生 select/button/input 各长各的），排一行像贴上去的。 -->
+    <div class="ex-bar">
+      <select v-model="fOrigin" class="ex-sel" @change="loadDetails()">
         <option value="">全部来源</option>
         <option value="列映射">列映射（确定性）</option>
         <option value="场景拆条">场景拆条（确定性）</option>
         <option value="AI草稿">AI草稿（模型）</option>
       </select>
-      <select v-model="fState" @change="loadDetails()">
+      <select v-model="fState" class="ex-sel" @change="loadDetails()">
         <option value="">全部状态</option>
         <option value="待审">待审</option>
         <option value="采纳">采纳</option>
         <option value="驳回">驳回</option>
       </select>
-      <select v-model="fMapped" @change="loadDetails()">
+      <select v-model="fMapped" class="ex-sel" @change="loadDetails()">
         <option value="">列对齐不限</option>
         <option value="y">列已对齐</option>
         <option value="n">列对不齐</option>
       </select>
-      <select v-model="fTag" @change="loadDetails()">
+      <select v-model="fTag" class="ex-sel" @change="loadDetails()">
         <option value="">人工标签不限</option>
         <option v-for="t in dtags" :key="t.tag" :value="t.tag">
           {{ t.tag }}（{{ t.n }}）
         </option>
       </select>
-      <input v-model="fQ" placeholder="搜规则名或判定逻辑" style="width: 170px"
+      <input v-model="fQ" class="ex-q" placeholder="搜规则名或判定逻辑"
              @keyup.enter="loadDetails()" />
-      <button :disabled="!!busy" @click="loadDetails()">筛选</button>
-      <button :disabled="!!busy" @click="runDetail">
+      <button class="ex-btn" :disabled="!!busy" @click="loadDetails()">筛选</button>
+      <div class="grow"></div>
+      <button class="ex-btn" :disabled="!!busy" @click="runDetail">
         {{ busy === 'detailrun' ? '映射中…' : '重跑列映射（不计费）' }}
       </button>
-      <input v-model="who" placeholder="审定署名" style="width: 110px" />
+      <!-- 审定人从账号里选（默认当前登录人），不再手工输入姓名（演示待办④）。
+           选出来的署名对得上一个真实账号，审计留痕才有意义。 -->
+      <ReviewerSelect ref="whoSel" v-model="who" />
     </div>
-    <table v-if="details.length">
+    <table v-if="details.length" class="rule-tbl">
       <thead>
         <tr>
           <th style="width: 40px" title="当前清单里的第几行。筛选、改排序都会变号——不是规则编号">序号</th>
           <th>规则</th>
           <th style="width: 250px">出处</th>
-          <th style="width: 230px">分类（标签）</th>
+          <th style="width: 270px">分类（标签）</th>
           <th style="width: 120px">审定</th>
         </tr>
       </thead>
@@ -502,16 +597,29 @@ onUnmounted(stopPoll)
                 : d.review_state === '驳回' ? 't-hit' : 't-na'">
                 {{ d.review_state }}</span>
               <div v-if="d.reviewer" class="muted" style="font-size: 11px">
-                {{ d.reviewer }}
+                {{ d.reviewer }}{{ d.reviewed_at
+                  ? ' · ' + String(d.reviewed_at).replace('T', ' ').slice(0, 16) : '' }}
               </div>
               <div v-if="d.adopted_rule_id" class="mono" style="font-size: 11px">
                 {{ d.adopted_rule_id }}
               </div>
-              <div v-if="d.review_state === '待审'" class="acts">
-                <button class="mini" :disabled="!!busy || !who"
-                        @click="reviewDetail(d, '采纳')">采纳</button>
-                <button class="mini" :disabled="!!busy || !who"
-                        @click="reviewDetail(d, '驳回')">驳回</button>
+              <div class="acts">
+                <!-- 按钮常驻可点：默认已带出当前登录人，真没选时点下才拦、
+                     拦了就说原因并把审定人选择器滚到眼前——不搞灰按钮，
+                     灰按钮不解释自己为什么灰，看起来和坏了一样。
+                     已审的行同样给「改判/撤回」补救通道（与草稿台账同口径）。 -->
+                <template v-if="d.review_state === '待审'">
+                  <button class="mini" :disabled="!!busy"
+                          @click="reviewDetail(d, '采纳')">采纳</button>
+                  <button class="mini" :disabled="!!busy"
+                          @click="reviewDetail(d, '驳回')">驳回</button>
+                </template>
+                <template v-else>
+                  <button class="mini" :disabled="!!busy"
+                          @click="reviewDetail(d, d.review_state === '采纳' ? '驳回' : '采纳')">
+                    改为{{ d.review_state === '采纳' ? '驳回' : '采纳' }}</button>
+                  <button class="mini" :disabled="!!busy" @click="revokeDetail(d)">撤回</button>
+                </template>
               </div>
             </td>
           </tr>
@@ -536,6 +644,10 @@ onUnmounted(stopPoll)
                        style="width: 330px" />
                 <button class="mini" :disabled="!!busy || !who || !tagDraft.tag
                   || !tagDraft.why" @click="addTag">保存</button>
+                <!-- 打标签同样要署名，同样给原因，别让人对着灰按钮猜 -->
+                <a v-if="!who" href="#" class="need-who" @click.prevent="focusWho">
+                  还要选「审定人」↑
+                </a>
               </div>
             </td>
           </tr>
@@ -549,8 +661,12 @@ onUnmounted(stopPoll)
 
   <Async :load="() => api.exDetailStorage()">
     <template #default="{ data }">
-      <div class="panel">
-        <h3>列映射 → 人核列 → 采纳 → <b>到「规则本体」才写 rule 表</b></h3>
+      <details class="panel ex-fold">
+        <summary>
+          <span class="nt">存储链路</span>
+          <span class="nh">列映射 → 人核列 → 采纳 → 到「规则本体」才写 rule 表</span>
+        </summary>
+        <div style="padding-top: 8px">
         <table>
           <thead>
             <tr>
@@ -563,39 +679,35 @@ onUnmounted(stopPoll)
           <tbody>
             <tr v-for="x in (data as any).items" :key="x.table_name">
               <td class="mono" style="font-size: 12px">{{ x.table_name }}</td>
-              <td style="font-size: 12px">{{ x.what }}</td>
+              <td style="font-size: 12px">{{ pro(x.what) }}</td>
               <td class="num">{{ x.rows }}</td>
-              <td class="muted" style="font-size: 12px">{{ x.written_by }}</td>
+              <td class="muted" style="font-size: 12px">{{ pro(x.written_by) }}</td>
               <td style="font-size: 12px">{{ x.on_recalc }}</td>
-              <td class="muted" style="font-size: 12px"><MarkText :text="x.why" /></td>
+              <td class="muted" style="font-size: 12px"><MarkText :text="pro(x.why)" /></td>
             </tr>
           </tbody>
         </table>
       </div>
+      </details>
     </template>
   </Async>
 
 
 
+  <!-- 处置口径只有三行，整块面板太重——收成一行内联。
+       「不允许自动发布」「必须有确认人」是治理底线，保留但不再占一屏。 -->
   <Async :load="() => api.extractPolicy()">
       <template #default="{ data }">
-        <div class="panel">
-          <h3>处置口径</h3>
-          <div class="kv">
-            <b>两档</b><span>{{ (data as any).two_tier }}</span>
-            <b>允许自动发布</b>
-            <span><span class="tag t-hit">
-              {{ (data as any).no_auto_publish ? '不允许' : '允许' }}</span></span>
-            <b>必须有确认人</b>
-            <span><span class="tag t-pass">
-              {{ (data as any).requires_reviewer ? '是' : '否' }}</span></span>
-          </div>
+        <div class="policy-line">
+          处置口径：{{ (data as any).two_tier }} ·
+          <span class="tag t-hit">{{ (data as any).no_auto_publish ? '不允许自动发布' : '允许自动发布' }}</span>
+          <span class="tag t-pass">{{ (data as any).requires_reviewer ? '审定人必选' : '审定人可选' }}</span>
         </div>
       </template>
   </Async>
 
   <div class="panel">
-    <h3 style="cursor: pointer" @click="debugOpen = !debugOpen">
+    <h3 class="fold-h" style="cursor: pointer" @click="debugOpen = !debugOpen">
       {{ debugOpen ? '▾' : '▸' }} 单步调试
     </h3>
     <template v-if="debugOpen">
@@ -628,8 +740,8 @@ onUnmounted(stopPoll)
            规则明细看的是整理后的产物；这里看的是模型原样返回的八要素，
            外加「哪一条原文离开过本系统、发了多少字、有没有被截断、
            哪个型号、第几次抽、数值核对过没有」——审计要的是这些。 -->
-      <h3 style="cursor: pointer; margin-top: 14px" @click="toggleDrafts">
-        {{ draftsOpen ? '▾' : '▸' }} AI 草稿台账（{{ drafts.length || '未加载' }}）
+      <h3 class="fold-h" style="cursor: pointer; margin-top: 14px" @click="toggleDrafts">
+        {{ draftsOpen ? '▾' : '▸' }} AI 草稿台账（{{ drafts.length || '未加载' }}<template v-if="pendingDrafts"> · <b style="color: var(--warn)">待审 {{ pendingDrafts }}</b></template>）
       </h3>
       <template v-if="draftsOpen">
       <div v-for="d in drafts" :key="d.draft_id" class="panel" style="margin-top: 8px">
@@ -642,6 +754,29 @@ onUnmounted(stopPoll)
           <span class="muted" style="font-size: 11px">
             {{ d.model }} · {{ d.latency_ms }}ms · 发送 {{ d.sent_chars }} 字
           </span>
+          <!-- 草稿也要能审定（演示待办④）：端点一直在，这里补上入口。
+               与明细同一套口径：审定人必选、驳回必写原因。
+               已审的行给补救通道：改判（覆盖）+ 撤回（回待审）——
+               误点没有退路的审定界面，专家用一次就抵触。 -->
+          <template v-if="d.review_state === '待审'">
+            <button class="mini" :disabled="!!busy"
+                    @click="reviewDraft(d, '采纳')">采纳</button>
+            <button class="mini" :disabled="!!busy"
+                    @click="reviewDraft(d, '驳回')">驳回</button>
+          </template>
+          <template v-else>
+            <button class="mini" :disabled="!!busy"
+                    @click="reviewDraft(d, d.review_state === '采纳' ? '驳回' : '采纳')">
+              改为{{ d.review_state === '采纳' ? '驳回' : '采纳' }}</button>
+            <button class="mini" :disabled="!!busy" @click="revokeDraft(d)">撤回</button>
+          </template>
+          <span v-if="d.reviewer" class="muted" style="font-size: 11px">
+            审定：{{ d.reviewer }}{{ d.reviewed_at
+              ? ' · ' + String(d.reviewed_at).replace('T', ' ').slice(0, 16) : '' }}
+          </span>
+        </div>
+        <div v-if="d.reject_reason" class="err" style="font-size: 12px">
+          驳回原因：<MarkText :text="d.reject_reason" />
         </div>
         <div v-if="d.number_check.ok === false" class="err">
           <b>数值存疑</b>（草稿里的这些数字在条款原文中找不到）：
@@ -675,7 +810,7 @@ onUnmounted(stopPoll)
             <th>正文</th><th style="width: 140px">特征</th><th style="width: 110px">规则覆盖</th></tr>
         </thead>
         <tbody>
-          <tr v-for="c in clauses" :key="c.clause_id">
+          <tr v-for="c in clauseList.view(clauses)" :key="c.clause_id">
             <td>
               {{ c.file_name }}
               <div>
@@ -703,22 +838,72 @@ onUnmounted(stopPoll)
               <code v-for="r in c.covered_by" :key="r" class="mono"
                     style="display: block; font-size: 11px">{{ r }}</code>
               <span v-if="!c.covered_by.length && c.is_candidate" class="tag t-pend">候选</span>
+              <!-- 手动买单：候选门禁只自动买带规则特征的条款，措辞温和的
+                   （如「按办法执行」）会被跳过——专家觉得值得问模型就点这里，
+                   一次一条、真出网计费，和批量一个价。 -->
+              <button class="mini" :disabled="!!busy" style="margin-top: 4px"
+                      :title="'只对这一条调模型出草稿（出网计费）'"
+                      @click="draftOne(c)">跑草稿</button>
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="clauseList.more(clauses).show">
+                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="clauseList.more(clauses).toggle()">
+                  {{ clauseList.more(clauses).rest === -1 ? '收起' : `展开剩余 ${clauseList.more(clauses).rest} 条` }}（共 {{ clauses.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       </template>
     </template>
   </div>
+  </div>
 </template>
 
 <style scoped>
+/* 没选审定人时顶替灰按钮的那条提示（打标签行）。灰按钮不解释自己为什么灰，
+   看起来和功能坏了一样——这条既说清原因，又能点回去选。 */
+.need-who {
+  font-size: 11px;
+  color: var(--pend, #d48806);
+  white-space: nowrap;
+}
 button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
-.detailcell { background: #fafbfc; }
+.detailcell { background: var(--panel-2); }
 /* 序号刻意做淡：它是「第几行」，不是编号，不该抢 detail_id 和行号的位置 */
 .seqno { color: var(--muted); font-size: 11px; vertical-align: top; padding-top: 9px; }
 td.acts { white-space: nowrap; }
 .acts button { margin-right: 4px; }
 b.bad { color: var(--hit); }
 
+/* 审定（第 5 列）是状态，居中；序号右对齐，规则/出处/分类左对齐。
+   只作用于规则明细表——裸 table 选择器会把第二张表（存的是什么/条数/…）的第 5 列也居中。 */
+.rule-tbl th:nth-child(5), .rule-tbl td:nth-child(5) { text-align: center; }
+
+/* ── 筛选工具条：八个控件原来各长各的（原生 select 高 22、button 高 26、
+     ReviewerSelect 又是另一套），排一行高矮不齐像贴上去的。统一 32px。 */
+.ex-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 16px; margin: 12px 0;
+  background: var(--panel-2); border-radius: var(--r-s, 8px);
+}
+.ex-bar .grow { flex: 1; }
+.ex-sel, .ex-q, .ex-btn {
+  height: 30px; padding: 0 10px; font-size: 12.5px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--text);
+}
+.ex-q { width: 170px; }
+.ex-btn { cursor: pointer; }
+.ex-btn:hover { border-color: var(--brand); color: var(--brand); }
+.ex-btn:disabled { color: var(--weak); cursor: not-allowed; }
+/* 处置口径：一行内联，不再是三行面板 */
+.policy-line {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; color: var(--muted); margin: 0 0 12px;
+}
+.fold-h { color: var(--text); }
+.fold-h:hover { color: var(--brand); }
+
+/* 审定人选择器跟同一行对齐（组件内部有自己的高度，外面统一 flex 对齐） */
+.ex-bar > :deep(.rev-sel), .ex-bar > * { align-self: center; }
 </style>

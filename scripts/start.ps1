@@ -228,10 +228,38 @@ if ($StopOnly) {
 
 # ── 1 数据库 ────────────────────────────────────────────────────────────────
 Step '数据库容器 fjhy-poc-sdafi-pg'
-try { docker version --format '{{.Server.Version}}' > $null 2>&1 } catch { Die 'Docker 没装或没启动' }
-if ($LASTEXITCODE -ne 0) { Die 'Docker Desktop 没启动，先把它起来' }
+# 刚装完 Docker 后没重开终端，PATH 里还没有 docker——补默认安装路径再找一次。
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+  $dockerBin = 'C:\Program Files\Docker\Docker\resources\bin'
+  if (Test-Path "$dockerBin\docker.exe") { $env:PATH = "$dockerBin;$env:PATH" }
+}
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+  Die 'Docker 没装。装法：winget install --id Docker.DockerDesktop'
+}
 
-$state = (docker inspect -f '{{.State.Status}}' fjhy-poc-sdafi-pg 2>$null)
+# 引擎没起来时自动拉起 Docker Desktop 再等，而不是直接报错——
+# 重启电脑后 Docker Desktop 不一定自启，双击启动的人不该先去手动开它。
+# stderr 一律走 cmd 的 2>nul：PS 5.1 会把 native 命令 stderr 包成 ErrorRecord，
+# 配合本脚本开头的 $ErrorActionPreference=Stop 会把这里炸掉（同 docker inspect 的坑）。
+function Test-DockerReady { (cmd /c "docker version --format {{.Server.Version}} 2>nul") -match '^\d' }
+if (-not (Test-DockerReady)) {
+  $ddExe = 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
+  if (-not (Test-Path $ddExe)) { Die 'Docker Desktop 没启动，也找不到 Docker Desktop.exe' }
+  Say '  Docker 引擎没在跑，拉起 Docker Desktop…（冷启动要一两分钟）'
+  Start-Process $ddExe | Out-Null
+  $deadline = (Get-Date).AddSeconds(180)
+  while (-not (Test-DockerReady)) {
+    if ((Get-Date) -gt $deadline) { Die 'Docker 引擎 180 秒内没起来。手动打开 Docker Desktop，等它就绪后再跑一次' }
+    Start-Sleep -Seconds 5
+  }
+  Ok 'Docker 引擎已就绪'
+}
+
+# stderr 走 cmd 隔离（2>nul），别在 PowerShell 里写 2>$null：
+# PS 5.1 会把 native 命令的 stderr 包成 ErrorRecord，配合本脚本开头的
+# $ErrorActionPreference='Stop'，容器不存在的第一句话就把脚本炸了，
+# 「容器不存在，创建中」这个分支永远走不到。python 那几处同理。
+$state = (cmd /c "docker inspect -f {{.State.Status}} fjhy-poc-sdafi-pg 2>nul")
 if ($LASTEXITCODE -ne 0) {
   Say '  容器不存在，创建中…'
   Push-Location $Root
@@ -245,9 +273,17 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Say '  等待数据库就绪…'
+# **必须从宿主机测**，不能 docker exec pg_isready：容器刚起那几秒，容器内已报 ready
+# 而宿主机端口映射还没通（首次实测踩到：pg_isready 过了，migrate.py 立刻连失败）。
+# 这里用 python + psycopg2 连一次，测的就是后端将来走的那条路。
 $ready = $false
 foreach ($i in 1..40) {
-  docker exec fjhy-poc-sdafi-pg pg_isready -U fjhy -d fjhy_poc > $null 2>&1
+  # stderr 必须走 cmd 的 2>nul，不能写 `2>$null`（同上面 migrate 的坑）：
+  # 这个循环**每次失败都会往 stderr 写一整段 traceback**，PS 5.1 把它包成
+  # ErrorRecord，配合开头的 EAP=Stop，冷启动后第一次连接失败就把循环炸死
+  # （2026-10-25 实测：Docker 冷启动、容器刚起，重试第一枪 NativeCommandError
+  # 直接中断脚本，40 次重试一次都没用上）。
+  cmd /c "python -X utf8 -I -c `"import psycopg2;psycopg2.connect(host='127.0.0.1',port=55460,dbname='fjhy_poc',user='fjhy',password='fjhy_poc_dev_only',connect_timeout=3).close()`" 2>nul"
   if ($LASTEXITCODE -eq 0) { $ready = $true; break }
   Start-Sleep -Milliseconds 800
 }
@@ -273,7 +309,7 @@ cmd /c "python -X utf8 -I db/migrate.py 2>&1" | Select-Object -Last 2 | ForEach-
 if ($LASTEXITCODE -ne 0) { Pop-Location; Die '迁移失败' }
 
 # 规则为空才装载——装载是幂等的，但每次重跑要十几秒，没必要
-$ruleCount = (python -X utf8 -I -c "import sys,os;sys.path.insert(0,os.getcwd());from app import db;print(db.scalar('SELECT count(*) FROM rule') or 0)" 2>$null)
+$ruleCount = (cmd /c "python -X utf8 -I -c `"import sys,os;sys.path.insert(0,os.getcwd());from app import db;print(db.scalar('SELECT count(*) FROM rule') or 0)`" 2>nul")
 if ([int]$ruleCount -eq 0) {
   Say '  规则资产为空，装载中…'
   python -X utf8 -I app/ontology/loader.py | Out-Null
@@ -281,7 +317,7 @@ if ([int]$ruleCount -eq 0) {
   Ok '本体与规则资产已装载'
 } else { Say "  规则资产已在库（$ruleCount 条）" }
 
-$billCount = (python -X utf8 -I -c "import sys,os;sys.path.insert(0,os.getcwd());from app import db;print(db.scalar('SELECT count(*) FROM expense_bill') or 0)" 2>$null)
+$billCount = (cmd /c "python -X utf8 -I -c `"import sys,os;sys.path.insert(0,os.getcwd());from app import db;print(db.scalar('SELECT count(*) FROM expense_bill') or 0)`" 2>nul")
 if ([int]$billCount -eq 0) {
   Say '  业务数据为空，装载样本与演示数据中…'
   python -X utf8 -I app/demo/seed.py      | Out-Null
@@ -290,6 +326,23 @@ if ([int]$billCount -eq 0) {
   python -X utf8 -I -c "import sys,os;sys.path.insert(0,os.getcwd());from app.runtime.orchestrator import Orchestrator;Orchestrator(verbose=False).startup().heartbeat_once(limit=300)" | Out-Null
   Ok '样本与演示数据已就绪'
 } else { Say "  业务数据已在库（$billCount 张单）" }
+
+# ── 附件与制度文件库的数据自愈（幂等，每次启动都跑，秒级）──────────────────
+# 两件事都不是「装载」而是「对账」：
+# ① seed.py 的 clear() 会整表清掉 attachment 而磁盘上的图不删——entrypoint.sh
+#    一直在补抽这一步，start.ps1 此前从来没有，本地于是出现「40 张真实单
+#    全无附件、磁盘 219 张全是孤儿」（2026-10-25 实测）。抽取幂等，每次跑不亏。
+# ② 制度文件库此前从未在本地环境上传过材料，页面是空的（演示待办③）。
+#    预置走 doclib.save_uploads() 真实上传路径，sha256 内容去重。
+if (Test-Path (Join-Path $Root '材料\单据明细表与审批意见')) {
+  Say '  同步 xlsx 内嵌真实附件（幂等）…'
+  cmd /c "python -X utf8 -I app/demo/attachment_sync.py 2>&1" | Select-Object -Last 3 | ForEach-Object { Say "  $_" }
+  if ($LASTEXITCODE -ne 0) { Warn '附件同步没跑成——真实单详情页会看不到附件原图（重跑 启动.bat 或手动跑 服务端/app/demo/attachment_sync.py）' }
+
+  Say '  预置制度文件到文件库（幂等）…'
+  cmd /c "python -X utf8 -I app/demo/preset_doclib.py 2>&1" | Select-Object -Last 3 | ForEach-Object { Say "  $_" }
+  if ($LASTEXITCODE -ne 0) { Warn '制度文件预置没跑成——文件库页会是空的（手动跑 服务端/app/demo/preset_doclib.py）' }
+} else { Warn '材料/ 目录不在，跳过真实附件抽取与制度文件预置（详情页无附件原图、文件库为空属预期）' }
 Pop-Location
 
 # ── 3 端口 ──────────────────────────────────────────────────────────────────
@@ -342,14 +395,22 @@ Ok "前端就绪 http://127.0.0.1:$WebPort（PID $webPid）"
 # ── 6 自检：确认跑起来的是能用的 ────────────────────────────────────────────
 # 「端口通了」不等于「能用」。这里真调一次接口，顺带把关键数字打出来——
 # 没有这一步，一个契约校验没过、规则一条都没装的后端也会显示「就绪」。
+# 2026-10-25 起 /api/* 要登录（iam_auth.SessionMiddleware），自检先走一遍
+# 真实登录（演示账号见迁移 0040_iam：密码统一 demo-1234），拿 HttpOnly 会话
+# Cookie 再探测——顺带把「登录链路坏了」也提前到自检里暴露，而不是等
+# 演示现场输完账号密码才发现。
 Step '自检'
 try {
-  $sum = Invoke-RestMethod "http://127.0.0.1:$WebPort/api/asset/rules/summary" -TimeoutSec 15
+  $null = Invoke-RestMethod "http://127.0.0.1:$WebPort/api/auth/login" `
+    -Method Post -ContentType 'application/json' `
+    -Body '{"account":"admin","password":"demo-1234"}' `
+    -SessionVariable sid -TimeoutSec 15
+  $sum = Invoke-RestMethod "http://127.0.0.1:$WebPort/api/asset/rules/summary" -WebSession $sid -TimeoutSec 15
   Ok "规则 $($sum.total) 条 · 可编译 $($sum.compiled) · 执行集 $($sum.executable)"
-  $hc  = Invoke-RestMethod "http://127.0.0.1:$WebPort/health" -TimeoutSec 15
+  $hc  = Invoke-RestMethod "http://127.0.0.1:$WebPort/health" -WebSession $sid -TimeoutSec 15
   $audit = if ($hc.audit.problems.Count -eq 0) { '一致' } else { "有 $($hc.audit.problems.Count) 项问题" }
   Ok "数据库 $($hc.db.tables) 表 · 迁移 $($hc.db.migrations) · 脱敏 $($hc.mask_mode) · 审计$audit"
-  $bills = Invoke-RestMethod "http://127.0.0.1:$WebPort/api/bills?size=1" -TimeoutSec 15
+  $bills = Invoke-RestMethod "http://127.0.0.1:$WebPort/api/bills?size=1" -WebSession $sid -TimeoutSec 15
   Ok "单据 $($bills.total) 张（真实 $($bills.banner.real_bills) · 演示 $($bills.banner.demo_bills)）"
 } catch {
   Warn "自检接口调用失败：$_"

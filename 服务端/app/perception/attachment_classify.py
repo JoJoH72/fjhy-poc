@@ -39,6 +39,7 @@ import re
 
 from .. import db
 from ..llm import client
+from .attachment_extract import resolve_stored_path
 
 # ── 类型字典：唯一真相来源 ───────────────────────────────────────────────────
 # code: (中文名, EN17 值, 决策表要求读图)
@@ -158,13 +159,22 @@ def classify_one(attachment_id, config_id=None, max_tokens=500):
     if not row["stored_path"]:
         raise ValueError("这条附件没有原图路径：%s" % row["file_name"])
 
+    # stored_path 库里存的是**相对 ATTACH_DIR 的值**（或跨环境搬来的旧绝对值），
+    # 读图前必须解析成本机可用路径——与 /api/attachments/{id}/file 同一条规则。
+    # 此前把相对路径原样交给视觉客户端，从 cwd 找文件必失败，判型整链在本地
+    # 环境全断（2026-10-25 深测：err_kind=http「No such file or directory」）。
+    img_path = resolve_stored_path(row["stored_path"])
+    if not img_path:
+        raise ValueError("这条附件的原图路径解析不到（stored_path=%s）：%s"
+                         % (row["stored_path"], row["file_name"]))
+
     cfg = _cfg(config_id)
     attempt = (db.scalar("""SELECT max(attempt) FROM attachment_vision
                              WHERE attachment_id=%s AND model_name=%s""",
                          (attachment_id, cfg["model_name"])) or 0) + 1
 
     res, content, use = client.chat_vision(cfg, SYSTEM, PROMPT % _type_menu(),
-                                           row["stored_path"], max_tokens=max_tokens)
+                                           img_path, max_tokens=max_tokens)
     parsed = _parse(content) if res.ok else {
         "type_code": None, "type_label": None, "en17_value": None,
         "confidence": None, "reason": None, "note": None}

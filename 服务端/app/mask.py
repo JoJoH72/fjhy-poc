@@ -291,6 +291,14 @@ _NEVER_MASK = {
     "limit_amount", "alloc_amount", "budget_amount", "used_amount", "deviation",
 }
 
+# 署名字段：复核人 / 认领人 / 登录人真名。**脱了 = 签名作废**。
+# 「陈芳」不在闭集合能漏过、 «林嘉» 是真实单据里的报账人会被打成「林*」——
+# 同一个页面两个署名一个真名一个星号，比不脱还糟。这批字段两跳都跳过：
+# 既不走字段策略，也不过闭集合兜底；find_leaks 对它们也不报（真名是设计要求）。
+# 语义边界：单据里的个人信息（payee/approver）照脱不误——这里豁免的是
+# 「系统用户的署名」，不是单据数据。
+_SIGNATURE_FIELDS = {"user_label", "claim_label", "user_name"}
+
 
 def _apply(policy, value):
     """字段级策略。**每条策略的结果都再过一遍闭集合姓名**。
@@ -356,7 +364,7 @@ def scrub(obj, _depth=0):
         out = {}
         for k, v in obj.items():
             lk = str(k).lower()
-            if lk in _NEVER_MASK:
+            if lk in _NEVER_MASK or lk in _SIGNATURE_FIELDS:
                 out[k] = v
                 continue
             pol = _FIELD_POLICY.get(lk)
@@ -399,6 +407,9 @@ def find_leaks(obj):
             # **白名单字段不做「数字模式」检查。** 它们是对账抓手（单据号、
             # 周期号、信号号、金额），按设计就不脱敏；拿卡号/手机号正则去扫它们
             # 只会产生假泄露。姓名检查仍然做——标识里不该出现姓名。
+            # 署名字段两跳全免：真名就是设计要求，报上去是假泄露。
+            if key in _SIGNATURE_FIELDS:
+                return
             if key in _NEVER_MASK:
                 for n in _names_sorted():
                     if n in node:
@@ -448,6 +459,17 @@ class MaskMiddleware:
         chunks = []
         status_holder = {}
         headers_holder = {}
+        # 账号与角色管理（/api/iam/*、/api/auth/*）：
+        # 账号名、角色名、部门属于**系统配置**，不是单据里的个人信息，
+        # 而闭集合姓名脱敏会把「林嘉」替成「林*」——账号目录就没法用了。
+        # 这里只跳过 scrub，响应头 x-fjhy-masked 照常写；
+        # 手机号仍在接口里单独按 M03 脱敏，密码摘要在任何情况下都不回显。
+        # /api/extract/reviewers 同理（2026-10-25）：审定人下拉给的是**真名**，
+        # 要落进审定留痕当署名——闭集合把它打成「林*」，签名等于被涂掉
+        # （doclib.py reviewers 端点注释写明了这个语义）。只豁免这一条路径，
+        # /api/extract/* 其余接口照常过脱敏：条款原文里出现人名仍要打星。
+        skip_scrub = scope.get("path", "").startswith(
+            ("/api/iam/", "/api/auth/", "/api/extract/reviewers"))
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -458,13 +480,13 @@ class MaskMiddleware:
                 chunks.append(message.get("body", b""))
                 if message.get("more_body"):
                     return
-                await self._flush(send, status_holder, headers_holder, chunks)
+                await self._flush(send, status_holder, headers_holder, chunks, skip_scrub)
                 return
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
 
-    async def _flush(self, send, status_holder, headers_holder, chunks):
+    async def _flush(self, send, status_holder, headers_holder, chunks, skip_scrub=False):
         raw = b"".join(chunks)
         headers = headers_holder.get("headers") or []
         ctype = b""
@@ -478,7 +500,7 @@ class MaskMiddleware:
                 data = json.loads(raw.decode("utf-8"))
             except Exception:
                 data = None
-            if data is not None:
+            if data is not None and not skip_scrub:
                 body = json.dumps(scrub(data), ensure_ascii=False).encode("utf-8")
         new_headers = []
         for k, v in headers:

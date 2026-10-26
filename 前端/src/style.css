@@ -126,7 +126,7 @@ code { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
 .scopebar {
   display: flex; align-items: center; gap: 10px;
   margin: 0 0 12px; padding: 6px 12px;
-  background: #f3f8ff; border: 1px solid #d6e6fb; border-radius: 6px;
+  background: var(--brand-bg); border: 1px solid var(--brand-line); border-radius: 6px;
   font-size: 13px;
 }
 .scopebar .scopetag { font-weight: 600; color: var(--brand); }
@@ -193,10 +193,10 @@ th, td {
   text-align: left; vertical-align: top;
 }
 th {
-  background: #f5f8fc; font-weight: 600; white-space: nowrap;
-  color: var(--brand); border-bottom: 2px solid #dce6f2;
+  background: var(--panel-2); font-weight: 600; white-space: nowrap;
+  color: var(--muted); border-bottom: 2px solid var(--line);
 }
-tr:hover td { background: #fafcfe; }
+tr:hover td { background: var(--panel-2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ── 标签：四态两两可辨是硬要求 ────────────────────────────────────────── */
@@ -218,13 +218,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .kv > b { font-weight: 600; color: var(--muted); }
 
 /* ── 提示框 ────────────────────────────────────────────────────────────── */
+/* 旧版是「奶油底 + 金色左竖线」，2026-10-25 全站统一去掉：竖线不携带信息，
+   金色在本系统里又专指「待人工」。现在只留中性描边块（.v2 里还有一层覆盖）。 */
 .note {
-  background: #fdf8ec; border-left: 3px solid var(--gold);
-  padding: 10px 12px; border-radius: var(--radius); margin: 10px 0; color: #6b541a;
+  background: #f7f8fa; border: 1px solid #e3e8ef;
+  padding: 10px 12px; border-radius: 8px; margin: 10px 0; color: #5b6675;
 }
 .err {
-  background: #fdf3f2; border-left: 3px solid var(--hit);
-  padding: 10px 12px; border-radius: var(--radius); margin: 10px 0; color: #8a241d;
+  background: #fdf3f2; border: 1px solid #f6d3cd;
+  padding: 10px 12px; border-radius: 8px; margin: 10px 0; color: #8a241d;
 }
 .muted { color: var(--muted); }
 .mono { font-family: Consolas, monospace; font-size: 12px; }

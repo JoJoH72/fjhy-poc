@@ -206,6 +206,96 @@ def attach_dir(inst, bill_no):
     return os.path.join(config.ATTACH_DIR, inst["domain_id"], inst["instance_id"], bill_no)
 
 
+# ── stored_path 的形态：写相对，读兼容 ───────────────────────────────────────
+#
+# 2026-10-25 之前的值全是**当次运行环境的绝对路径**（E:\...\var\attachments\…
+# 或容器里的 /app/服务端/var/attachments/…）。数据库一旦跟着环境走
+# （pg_dump 搬库、docker 卷重建后重灌），这些绝对路径就全体失效——
+# /api/attachments/{id}/file 的 _under 闸门会正确地拒绝它们，但用户看到的
+# 是「40 张真实单一张附件都打不开」，和「附件没给」长得一模一样。
+# 待办清单里「数据导入新环境后部分附件缺失」指的就是这个形态问题。
+#
+# 约定：**新值一律写「相对 ATTACH_DIR、分隔符统一 /」**（如
+# `audit/fjhy/FJPG-BX2512150529/01_image1.png`）。读取端三种历史形态都认
+# （见 resolve_stored_path），存量的旧绝对值由 repair_paths 幂等改写。
+
+def to_rel(full):
+    """绝对路径 → 相对 ATTACH_DIR 的正斜杠相对路径。
+
+    不在 ATTACH_DIR 之下时原样返回——调用方只该传 attach_dir() 出来的路径，
+    真拿到外面的路径时**不做任何变形**，让下游的闸门去拒绝它。
+    """
+    p = os.path.normpath(os.path.abspath(full))
+    base = os.path.normpath(os.path.abspath(config.ATTACH_DIR))
+    if os.path.normcase(p).startswith(os.path.normcase(base) + os.sep):
+        return os.path.relpath(p, base).replace("\\", "/")
+    return full
+
+
+def _is_under(path, base):
+    """path 是否落在 base 之下。判据与 api/review.py 的 _under 同源：
+    normcase 必须有（Windows 大小写不敏感），commonpath 刻意不用
+    （跨盘符抛 ValueError，见 review.py 那边的实测记录）。"""
+    p = os.path.normcase(os.path.abspath(path))
+    b = os.path.normcase(os.path.abspath(base)).rstrip("\\/")
+    return p == b or p.startswith(b + os.sep)
+
+
+_CROSS_ENV_PAT = re.compile(r"/attachments/(.+)$", re.IGNORECASE)
+
+
+def resolve_stored_path(raw):
+    """库里的 stored_path → 当前环境可用的绝对路径（拿不到就原样/None 交回）。
+
+    三种形态都要认：
+    - 相对值（新格式）：直接挂在 ATTACH_DIR 下；
+    - 本环境的旧绝对值：在 ATTACH_DIR 内 → 原样；
+    - **别的环境搬来的旧绝对值**（另一台机器的盘符、容器内 /app/…）：
+      按 `/attachments/` 段重定位到本环境，**候选文件确实存在才采信**——
+      重定位只是善意猜测，猜错了不如把原值交回去走既有的 400/404 分支，
+      那两个分支的文案会告诉人到底发生了什么。
+    """
+    if not raw or not str(raw).strip():
+        return None
+    raw = str(raw).strip()
+    base = os.path.abspath(config.ATTACH_DIR)
+    if not os.path.isabs(raw):
+        return os.path.normpath(os.path.join(base, raw.replace("/", os.sep)))
+    if _is_under(raw, base):
+        return os.path.abspath(raw)
+    m = _CROSS_ENV_PAT.search(raw.replace("\\", "/"))
+    if m:
+        cand = os.path.normpath(os.path.join(base, *m.group(1).split("/")))
+        if os.path.isfile(cand):
+            return cand
+    return raw
+
+
+def repair_paths():
+    """把存量 stored_path 幂等改写成规范相对值。
+
+    只改「定位得到且文件确实在」的行。两边都没有文件的行**保留登记不动**——
+    与 attachment_file 的纪律一致：登记在而文件不在，是需要人查的状态，
+    悄悄清掉等于把问题藏起来。
+    """
+    rows = db.query(
+        "SELECT id, stored_path FROM attachment WHERE stored_path IS NOT NULL")
+    fixed = kept = missing = 0
+    for r in rows:
+        resolved = resolve_stored_path(r["stored_path"])
+        if resolved and os.path.isfile(resolved):
+            rel = to_rel(resolved)
+            if rel != r["stored_path"]:
+                db.execute("UPDATE attachment SET stored_path=%s WHERE id=%s",
+                           (rel, r["id"]))
+                fixed += 1
+            else:
+                kept += 1
+        else:
+            missing += 1
+    return {"total": len(rows), "fixed": fixed, "kept": kept, "missing": missing}
+
+
 def extract_xlsx(path, instance_id=None, dry_run=False):
     """从一份 xlsx 抽内嵌附件。**只读源文件**，落盘一律在 var/attachments 下。
 
@@ -276,12 +366,14 @@ def extract_xlsx(path, instance_id=None, dry_run=False):
                     continue
                 with open(full, "wb") as f:
                     f.write(data)
+                # 存相对值（见 to_rel 的注释）：绝对路径跨环境即失效，
+                # 读取端 resolve_stored_path 认新旧两种形态。
                 db.execute("""
                     INSERT INTO attachment(bill_no, file_name, stored_path, seq, sha256,
                                            byte_size, content_type, source_kind, source_ref)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,'xlsx内嵌',%s)
                     ON CONFLICT DO NOTHING""",
-                    (bill, fname, full, seq, sha, len(data), ct, ref))
+                    (bill, fname, to_rel(full), seq, sha, len(data), ct, ref))
                 n_new += 1
             saved += n_new
             skipped += n_dup

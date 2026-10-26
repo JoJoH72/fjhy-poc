@@ -255,7 +255,7 @@ async function send() {
   border-radius: var(--radius);
   padding: 22px 18px;
   text-align: center;
-  background: #fafcfe;
+  background: var(--panel-2);
   transition: background .12s, border-color .12s;
 }
 .drop.hot { border-color: var(--brand-light); background: #eef6ff; }

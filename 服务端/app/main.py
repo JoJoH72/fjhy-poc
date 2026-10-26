@@ -26,7 +26,8 @@ from fastapi import FastAPI, Request                      # noqa: E402
 from fastapi.responses import JSONResponse                # noqa: E402
 
 from app import config, db, mask                          # noqa: E402
-from app.api import (agents, ai_review, asset, doclib, domain, onto, pub,  # noqa: E402
+from app import iam_auth                                  # noqa: E402
+from app.api import (agents, ai_review, asset, doclib, domain, iam, onto, pub,  # noqa: E402
                      publish, review, sys_llm)  # noqa: E402
 from app.audit import recorder as rec                     # noqa: E402
 from app.rules import engine, impl                        # noqa: E402,F401
@@ -87,7 +88,11 @@ app = FastAPI(title="福建海运集团POC · 差旅费 AI 智能审核",
 # 而且异常处理器返回的响应根本不经过 handler，错误信息里带着参数值，
 # 是最容易漏的出口之一。
 app.add_middleware(mask.MaskMiddleware)
+# 会话中间件放在脱敏之后加 = 处于更外层：先拦未登录，再谈脱敏。
+# 白名单见 iam_auth.SessionMiddleware.PUBLIC（只有登录、登出、角色选项）。
+app.add_middleware(iam_auth.SessionMiddleware)
 
+app.include_router(iam.router)
 app.include_router(asset.router)
 app.include_router(domain.router)
 app.include_router(review.router)
@@ -146,16 +151,18 @@ def startup_report():
     ac = yaml_loader.load(verbose=False)
     return {
         "contract": {
-            "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in cv.checks],
+            # 键名**不能**叫 name：出口脱敏把任何 name 字段当人名，检查项会被吃成
+            # 「本****」——自检页整列变成星号，比不显示还糟。同坑见 api/asset.py。
+            "checks": [{"check": n, "ok": o, "detail": d} for n, o, d in cv.checks],
             "errors": cv.errors, "warnings": cv.warnings,
             "executable": cv.executable,
             "excluded": [{"rule_id": r, "why": w} for r, w in cv.excluded],
         },
         "agents": {
-            "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in ac.checks],
+            "checks": [{"check": n, "ok": o, "detail": d} for n, o, d in ac.checks],
             "errors": ac.errors,
             "items": [{"agent_id": a.agent_id, "version": a.agent_version,
-                       "layer": a.layer, "name": a.name,
+                       "layer": a.layer, "agent_name": a.name,
                        "triggers": a.enabled_triggers,
                        "reads": sorted(a.readable_tables),
                        "writes": sorted(a.writable_tables),

@@ -11,6 +11,9 @@ import vue from '@vitejs/plugin-vue'
 const API_TARGET = process.env.FJHY_API_TARGET || 'http://127.0.0.1:8000'
 
 export default defineConfig({
+  // base './'：构建产物用相对路径，双击 dist/index.html 才能直接打开。
+  // 默认 '/' 是绝对路径，file:// 下会去盘符根找 /assets/ —— 白屏就是这么来的。
+  base: './',
   plugins: [vue()],
   server: {
     port: Number(process.env.FJHY_WEB_PORT || 5173),

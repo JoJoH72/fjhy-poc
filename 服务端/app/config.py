@@ -125,3 +125,9 @@ DEMO_BILL_PREFIX = "FJHY-DEMO-"
 
 # ── 版本 ─────────────────────────────────────────────────────────────────────
 APP_VERSION = "0.1.0"
+
+# 登录鉴权开关。**默认 on**：所有 /api/* 要登录。
+# 单元测试里关掉（tests/conftest.py 设 FJHY_AUTH_MODE=off）——
+# 那几百条用例验的是业务逻辑，不该每条都先登一次录；
+# 鉴权本身由 tests/test_iam.py 单独覆盖（它会把开关打回 on 再测）。
+AUTH_MODE = os.environ.get("FJHY_AUTH_MODE", "on").lower()

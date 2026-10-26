@@ -7,10 +7,11 @@
 """
 import os
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from .. import db
 from ..audit import recorder as rec
+from ..iam_auth import current_user
 from .common import demo_banner, must_exist, paginate
 
 router = APIRouter(prefix="/api", tags=["报账单审核"])
@@ -20,9 +21,24 @@ router = APIRouter(prefix="/api", tags=["报账单审核"])
 # 审核岗工作台
 # ─────────────────────────────────────────────────────────────────────────────
 @router.get("/bills")
-def list_bills(conclusion: str = None, is_demo: bool = None,
-               q: str = None, page: int = 1, size: int = 20):
+def list_bills(request: Request, conclusion: str = None, is_demo: bool = None,
+               q: str = None, manual: str = None, claim: str = None,
+               page: int = 1, size: int = 20):
+    if manual not in (None, "none", "done"):
+        raise HTTPException(400, "manual 只能是 none（还没人工结论）/ done（已有结论）")
+    if claim not in (None, "all", "none", "mine"):
+        raise HTTPException(400, "claim 只能是 none（未认领）/ mine（我认领的）/ all（不过滤）")
+    # 单位范围（2026-10-26 客户待办#1：按账号权限匹配待审工单）。
+    # 账号在 sys_user_org 挂了单位 → 工单只看所挂单位（审核专业组）；
+    # 没挂 → 看全池。任何角色挂了都过滤——这是数据范围语义，不挑角色；
+    # 领导/管理员正常不挂，即看全部。
+    u = current_user(request)
     where, params = [], []
+    my_orgs = [r["org_id"] for r in
+               db.query("SELECT org_id FROM sys_user_org WHERE account = %s", (u["account"],))]
+    if my_orgs:
+        where.append("b.org_id = ANY(%s)")
+        params.append(my_orgs)
     if is_demo is not None:
         where.append("b.is_demo = %s")
         params.append(is_demo)
@@ -32,19 +48,49 @@ def list_bills(conclusion: str = None, is_demo: bool = None,
     if conclusion:
         where.append("r.conclusion = %s")
         params.append(conclusion)
+    # 人工复核回流（2026-10-25）：manual=none 只取还没人工结论的单——复核一张，
+    # none 就少一张，刷新页面、换台机器都不回弹。review_run.conclusion **不动**：
+    # 那是 AI 的结论；人工结论叠加在旁边（m.* 列）。两个结论分开存，
+    # 「AI 说待复核、人核了没问题」这件事才追得清。
+    if manual == "none":
+        where.append("m.id IS NULL")
+    elif manual == "done":
+        where.append("m.id IS NOT NULL")
+    # 认领状态（2026-10-26）：none=抢单池（未认领），mine=我认领的（我的待办）。
+    if claim == "none":
+        where.append("c.assignee IS NULL")
+    elif claim == "mine":
+        where.append("c.assignee = %s")
+        params.append(u["account"])
     w = (" WHERE " + " AND ".join(where)) if where else ""
     base = """FROM expense_bill b
+              LEFT JOIN org o ON o.org_id = b.org_id
               LEFT JOIN LATERAL (SELECT * FROM review_run rr WHERE rr.bill_no=b.bill_no
-                                 ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE""" + w
+                                 ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE
+              LEFT JOIN LATERAL (SELECT id, decision, decided_at
+                                 FROM manual_review mr WHERE mr.bill_no=b.bill_no
+                                 ORDER BY mr.decided_at DESC LIMIT 1) m ON TRUE
+              LEFT JOIN LATERAL (SELECT a.assignee, a.claimed_at, s.user_name AS claim_name
+                                 FROM review_assignment a
+                                 JOIN sys_user s ON s.account = a.assignee
+                                 WHERE a.bill_no=b.bill_no AND a.released_at IS NULL
+                                 ORDER BY a.claimed_at DESC LIMIT 1) c ON TRUE""" + w
     out = paginate(
         "SELECT count(*) " + base,
         """SELECT b.bill_no, b.doc_type, b.doc_date, b.biz_type, b.amount, b.summary,
                   b.is_demo, b.applicant_rank, b.remark IS NOT NULL AS has_remark,
+                  b.org_id, o.name AS org_name,
                   r.run_id, r.conclusion, r.hit_count, r.pending_count,
-                  r.rule_executed, r.rule_candidates, r.finished_at
+                  r.rule_executed, r.rule_candidates, r.finished_at,
+                  m.decision AS manual_decision, m.decided_at AS manual_decided_at,
+                  c.assignee AS claim_account, c.claim_name AS claim_label,
+                  c.claimed_at
            """ + base + " ORDER BY b.doc_date DESC NULLS LAST, b.bill_no", tuple(params),
         page, size)
     out["banner"] = demo_banner()
+    if my_orgs:
+        # 过滤口径要在出口说清楚，否则「为什么少了单」要翻代码才知道
+        out["scope_note"] = "当前账号按单位范围过滤（%d 个核算主体）" % len(my_orgs)
     return out
 
 
@@ -53,6 +99,12 @@ def get_bill(bill_no: str):
     b = must_exist(db.query_one("""SELECT b.*, o.name AS org_name FROM expense_bill b
                                    LEFT JOIN org o ON o.org_id=b.org_id
                                    WHERE b.bill_no=%s""", (bill_no,)), "报账单 " + bill_no)
+    # 有效认领（2026-10-26）：详情页/报告页直达 URL 时也要知道这单在谁手上。
+    # 字段名 claim_label 不叫 reviewer——mask M01 按字段名打星，署名不许打星。
+    act = _active_claim(bill_no)
+    b["claim_account"] = act["assignee"] if act else None
+    b["claim_label"] = act["claim_name"] if act else None
+    b["claimed_at"] = act["claimed_at"] if act else None
     b["details"] = db.query("SELECT expense_item, amount, alloc_dept FROM expense_detail "
                             "WHERE bill_no=%s ORDER BY id", (bill_no,))
     b["approvals"] = db.query("""SELECT seq, node, approver, opinion, approved_at
@@ -176,6 +228,12 @@ def get_review(run_id: str):
     """
     r = must_exist(db.query_one("SELECT * FROM review_run WHERE run_id=%s", (run_id,)),
                    "审核记录 " + run_id)
+    # 人工结论叠加（2026-10-25 回流）：与 AI 结论并列返回，谁判的一目了然。
+    # None = 该轮还没有人工结论（闸门待提交）。user_label 命名理由见 bill_manuals。
+    manual = db.query_one("""SELECT decision, reviewer AS user_label, decided_at,
+                                    return_reason
+                             FROM manual_review WHERE run_id=%s
+                             ORDER BY decided_at DESC LIMIT 1""", (run_id,))
     findings = db.query("""SELECT rule_id, rule_class, control_type, outcome, message,
                            evidence, clause_ref, matched_text, pending_reason,
                            llm_involved, llm_rationale, needs_human
@@ -190,6 +248,7 @@ def get_review(run_id: str):
           and (f["evidence"] or {}).get("not_applicable")]
     return {
         "run": r,
+        "manual": manual,
         "coverage": {
             "candidates": r["rule_candidates"], "executed": r["rule_executed"],
             "excluded": len(r["rule_excluded"] or []),
@@ -227,33 +286,223 @@ def bill_reviews(bill_no: str):
                                  ORDER BY started_at DESC""", (bill_no,))}
 
 
+@router.get("/bills/{bill_no}/manuals")
+def bill_manuals(bill_no: str):
+    """一张单的人工复核历史（复核记录卡的数据源）。
+
+    此前 manual_review 只写不读：复核记录只能显示「本会话」的动作，
+    刷新即失忆——留痕看不见等于没留。
+    署名字段出口叫 user_label：叫 reviewer 会被 M01 按字段名打成「陈*」，
+    打星的署名落进留痕等于签名作废（doclib 审定人同一个坑）。
+    """
+    must_exist(db.query_one("SELECT bill_no FROM expense_bill WHERE bill_no=%s", (bill_no,)),
+               "报账单 " + bill_no)
+    return {"items": db.query("""SELECT id, run_id, decision, reviewer AS user_label,
+                                        decided_at, return_reason, disagree_with
+                                 FROM manual_review WHERE bill_no=%s
+                                 ORDER BY decided_at DESC, id DESC""", (bill_no,))}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 工单认领（2026-10-26 客户待办#1：个人工作台 / 按账号匹配待审工单）
+#
+# 模型 = 抢单池（对位客户在用共享系统的「拉式」派工）：待审池对审核岗公开可见，
+# 认领即锁定——有效认领期间他人不可提交该单复核；释放盖时间戳不删行。
+# 认领不是提交的前置条件（未认领的单可直接复核，提交时自动补认领留痕），
+# 这样旧流程不破，锁定语义也完整。
+# ─────────────────────────────────────────────────────────────────────────────
+def _active_claim(bill_no: str) -> dict | None:
+    return db.query_one(
+        """SELECT a.id, a.assignee, a.claimed_at, s.user_name AS claim_name
+             FROM review_assignment a JOIN sys_user s ON s.account=a.assignee
+            WHERE a.bill_no=%s AND a.released_at IS NULL
+            ORDER BY a.claimed_at DESC LIMIT 1""", (bill_no,))
+
+
+@router.post("/bills/{bill_no}/claim")
+def claim_bill(bill_no: str, request: Request):
+    u = current_user(request)
+    if u["role_key"] != "auditor":
+        raise HTTPException(403, "认领是审核岗的动作（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    must_exist(db.query_one("SELECT bill_no FROM expense_bill WHERE bill_no=%s", (bill_no,)),
+               "报账单 " + bill_no)
+    act = _active_claim(bill_no)
+    if act:
+        # 错误文案不带认领人姓名：detail 是自由文本，闭集合脱敏会把「林嘉」打成
+        # 「林*」，和列表里的真名署名（claim_label）同屏打架。真名看列表/详情，
+        # 错误只说事实。
+        raise HTTPException(409, "该单据已被认领（%s），不可重复认领；认领人见单据列表"
+                            % act["claimed_at"].strftime("%H:%M"))
+    db.execute("INSERT INTO review_assignment (bill_no, assignee) VALUES (%s, %s)",
+               (bill_no, u["account"]))
+    return {"ok": True, "bill_no": bill_no, "assignee": u["account"],
+            "claim_label": u["user_name"],
+            "note": "认领即锁定：有效认领期间他人不可复核此单；不处理可在个人工作台释放。"}
+
+
+@router.post("/bills/{bill_no}/release")
+def release_bill(bill_no: str, request: Request, body: dict = Body(None)):
+    u = current_user(request)
+    if u["role_key"] != "auditor":
+        raise HTTPException(403, "释放认领是审核岗的动作（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    act = _active_claim(bill_no)
+    if not act:
+        raise HTTPException(409, "该单据当前没有有效认领，无需释放")
+    if act["assignee"] != u["account"]:
+        # 只许认领人自己释放：他人代释放等于替人退单，责任链就断了。
+        # 管理员要强制回收走数据库，不留后门接口。
+        raise HTTPException(403, "只有认领人可以释放此认领")
+    note = str((body or {}).get("reason") or "").strip() or None
+    db.execute("UPDATE review_assignment SET released_at=now(), release_note=%s WHERE id=%s",
+               (note, act["id"]))
+    return {"ok": True, "bill_no": bill_no, "released": u["account"]}
+
+
+@router.get("/my/work")
+def my_work(request: Request):
+    """个人工作台（审核岗首页）：我的待办 / 可认领池 / 我的已审 / 我的统计。
+
+    「历史审核数据」按 manual_review.reviewer = 当前账号姓名 查——
+    复核留痕的署名存的就是姓名（沿用既有列，不加第二套署名键）。
+    代价是改姓名会断历史，属已知取舍：账号是唯一键但留痕里没有它，
+    生产化时应在 manual_review 补 account 列，这里先在 note 里说清楚。
+    """
+    u = current_user(request)
+    if u["role_key"] != "auditor":
+        raise HTTPException(403, "个人工作台是审核岗页面（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    my_orgs = [r["org_id"] for r in
+               db.query("SELECT org_id FROM sys_user_org WHERE account = %s", (u["account"],))]
+    org_w, org_p = (" AND b.org_id = ANY(%s)", [my_orgs]) if my_orgs else ("", [])
+    # 三段共用同一套单据基座（最新run/人工结论/有效认领），与 /api/bills 同口径
+    base = """FROM expense_bill b
+              LEFT JOIN org o ON o.org_id = b.org_id
+              LEFT JOIN LATERAL (SELECT * FROM review_run rr WHERE rr.bill_no=b.bill_no
+                                 ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE
+              LEFT JOIN LATERAL (SELECT id FROM manual_review mr WHERE mr.bill_no=b.bill_no
+                                 ORDER BY mr.decided_at DESC LIMIT 1) m ON TRUE
+              LEFT JOIN LATERAL (SELECT a.assignee, a.claimed_at
+                                 FROM review_assignment a
+                                 WHERE a.bill_no=b.bill_no AND a.released_at IS NULL
+                                 ORDER BY a.claimed_at DESC LIMIT 1) c ON TRUE"""
+    sel = """SELECT b.bill_no, b.doc_date, b.biz_type, b.amount, b.is_demo,
+                    o.name AS org_name, r.run_id, r.conclusion, r.hit_count,
+                    r.pending_count, r.finished_at, c.claimed_at """
+
+    def seg(where1: str, extra: list, order: str, limit: int) -> tuple[list, int]:
+        sql_where = " WHERE " + where1 + org_w if where1 else ""
+        items = db.query(sel + base + sql_where + " " + order + " LIMIT %s",
+                         extra + org_p + [limit])
+        n = db.scalar("SELECT count(*)" + base + sql_where, extra + org_p)
+        return items, n
+
+    todo, todo_n = seg("m.id IS NULL AND c.assignee = %s", [u["account"]],
+                       "ORDER BY c.claimed_at DESC NULLS LAST", 50)
+    pool, pool_n = seg("m.id IS NULL AND c.assignee IS NULL", [],
+                       "ORDER BY b.doc_date DESC NULLS LAST, b.bill_no", 50)
+    hist = db.query(
+        """SELECT mr.bill_no, mr.decision, mr.decided_at, mr.return_reason,
+                  b.amount, b.is_demo, o.name AS org_name, r.conclusion AS ai_conclusion
+             FROM manual_review mr
+             JOIN expense_bill b ON b.bill_no = mr.bill_no
+             LEFT JOIN org o ON o.org_id = b.org_id
+             LEFT JOIN LATERAL (SELECT conclusion FROM review_run rr
+                                WHERE rr.bill_no = mr.bill_no
+                                ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE
+            WHERE mr.reviewer = %s
+            ORDER BY mr.decided_at DESC, mr.id DESC LIMIT 50""", (u["user_name"],))
+    hist_n = db.scalar("SELECT count(*) FROM manual_review WHERE reviewer = %s",
+                       (u["user_name"],))
+    st = db.query_one(
+        """SELECT count(*) AS total,
+                  count(*) FILTER (WHERE decision IN ('agree','agree_with_note')) AS agree,
+                  count(*) FILTER (WHERE decision = 'return') AS ret,
+                  count(*) FILTER (WHERE decided_at::date = current_date) AS today,
+                  count(*) FILTER (WHERE decided_at >= date_trunc('month', current_date)) AS month
+             FROM manual_review WHERE reviewer = %s""", (u["user_name"],)) or {}
+    return {
+        "me": {"account": u["account"], "user_name": u["user_name"], "orgs": my_orgs},
+        "todo": {"items": todo, "total": todo_n},
+        "pool": {"items": pool, "total": pool_n},
+        "history": {"items": hist, "total": hist_n},
+        "stats": st,
+        "note": "历史与统计按复核署名（姓名）归集；生产化将在留痕表补账号列，避免重名/改名歧义。",
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 人工复核闸门 —— **真正的闸在这里**
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/reviews/{run_id}/manual")
-def manual_review(run_id: str, body: dict):
-    r = must_exist(db.query_one("SELECT bill_no FROM review_run WHERE run_id=%s", (run_id,)),
-                   "审核记录 " + run_id)
+def manual_review(run_id: str, body: dict, request: Request):
+    # 角色闸（2026-10-25 深夜补）：复核留痕是审核岗的职责动作。SessionMiddleware
+    # 只验「登录」不验「角色」，前端菜单收敛不是权限边界——四角色深测实测
+    # leader 会话直接 POST 本接口返回 200，越权落了一条复核留痕。签字类写操作
+    # 必须在服务端认角色，403 不是 401：人已登录，只是权限不够。
+    u = current_user(request)
+    if u["role_key"] != "auditor":
+        raise HTTPException(403, "复核提交仅限审核岗（当前角色：%s）" % u.get("role_name", u["role_key"]))
+    run = must_exist(db.query_one(
+        "SELECT bill_no, cycle_id, agent_id FROM review_run WHERE run_id=%s", (run_id,)),
+        "审核记录 " + run_id)
     decision = body.get("decision")
     if decision not in ("agree", "return", "agree_with_note"):
         raise HTTPException(400, "decision 只能是 agree / return / agree_with_note")
     if decision == "return" and not body.get("return_reason"):
         raise HTTPException(400, "退回必须给理由——退回理由是误报/漏报回流的起点")
+    # 同一轮只许一条留痕。此前可以反复提交：一次复核算成两次，队列的
+    # manual=none/done 口径也会被重复行冲乱。
+    dup = db.query_one("SELECT decision, decided_at FROM manual_review WHERE run_id=%s",
+                       (run_id,))
+    if dup:
+        raise HTTPException(409, "该轮已有复核留痕（%s，%s），不重复记录"
+                            % (dup["decision"], dup["decided_at"]))
+    # 认领锁（2026-10-26）：已被他人认领的单不可提交复核——两个审核岗同时
+    # 开着同一张单时，后提交的那个在这里被拦下，而不是两边都成功后
+    # 对着同 run 的 409 猜「谁先审的」。未认领的单可直接审，提交时自动补认领。
+    act = _active_claim(run["bill_no"])
+    if act and act["assignee"] != u["account"]:
+        raise HTTPException(409, "该单据已被其他审核岗认领，正在其待办中，不可代审")
+    disagree = [x for x in (body.get("disagree_with") or []) if isinstance(x, str)]
     import json
     with rec.phase("A"):
         with db.tx() as conn:
             rec.guard_write("manual_review")
+            # 自动补认领：未认领就提交复核 = 隐式认领（审了就是我的单），
+            # 认领留痕于是覆盖「谁审的」而不只是「谁领的」。
+            if not act:
+                conn.cursor().execute(
+                    "INSERT INTO review_assignment (bill_no, assignee) VALUES (%s, %s)",
+                    (run["bill_no"], u["account"]))
             conn.cursor().execute("""INSERT INTO manual_review
                 (bill_no, run_id, reviewer, decision, return_reason,
                  disagree_with, agree_with)
                 VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                (r["bill_no"], run_id, body.get("reviewer") or "unknown", decision,
+                (run["bill_no"], run_id, body.get("reviewer") or "unknown", decision,
                  body.get("return_reason"),
-                 json.dumps(body.get("disagree_with") or [], ensure_ascii=False),
+                 json.dumps(disagree, ensure_ascii=False),
                  json.dumps(body.get("agree_with") or [], ensure_ascii=False)))
+            # 「不认可这条命中」逐条回流 feedback_log。此前接口 note 一直**承诺**回流
+            # 但全仓没人写——承诺了就是欠着：偏差页（finding_vs_human/false_positive）
+            # 因此从来不含这些勾选。cycle_id/agent_id 取自本轮 review_run——
+            # 被评判的正是那个 Agent 的产出。feedback_log.cycle_id NOT NULL，
+            # 老 run 没有 cycle 时只能跳过，并在返回里如实报数，不假报成功。
+            written = 0
+            for rid in disagree:
+                if not run["cycle_id"]:
+                    break
+                rec.record_feedback(conn, run["cycle_id"], run["agent_id"], run["bill_no"],
+                                    "finding_vs_human",
+                                    {"human": "不认可该命中"},
+                                    {"rule_id": rid, "run_id": run_id},
+                                    1.0, "false_positive", "human_review")
+                written += 1
     return {"ok": True,
-            "note": "人工结论已记录。disagree_with 里的每一条都会回流成 "
-                    "feedback_log(deviation_kind=false_positive)。"}
+            "feedback_written": written,
+            "note": "人工结论已记录。%d 条不认可已逐条回流 feedback_log"
+                    "(finding_vs_human/false_positive)。" % written}
 
 
 # ── 单据附件 ────────────────────────────────────────────────────────────────
@@ -298,7 +547,11 @@ def attachment_file(att_id: int):
     row = must_exist(db.query_one(
         "SELECT bill_no, file_name, stored_path, content_type, source_kind "
         "FROM attachment WHERE id=%s", (att_id,)), "附件 %d" % att_id)
-    path = row["stored_path"]
+    # stored_path 有两种历史形态（新相对值 / 旧绝对值，跨环境搬来的也在内），
+    # 统一先解析成本环境路径，见 attachment_extract.resolve_stored_path 的注释。
+    # 解析不了的交回 _under / 404 的既有分支——那两处文案会说清发生了什么。
+    from ..perception.attachment_extract import resolve_stored_path
+    path = resolve_stored_path(row["stored_path"])
     if not path:
         raise HTTPException(404, detail=(
             "这条附件记录没有原图。source_kind=%s —— **演示单的附件是合成的**，"

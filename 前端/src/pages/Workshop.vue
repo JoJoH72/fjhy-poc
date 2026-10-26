@@ -165,6 +165,7 @@ onUnmounted(stopPoll)
 </script>
 
 <template>
+  <div class="v2">
   <h2>本体工场</h2>
 
   <AgentRuntime :prog="prog" :meta="meta" :disabled="!!busy" :phase-cards="false"
@@ -248,6 +249,7 @@ onUnmounted(stopPoll)
       <span><MarkText :text="c.detail" /></span>
     </div>
   </div>
+  </div>
 </template>
 
 <style scoped>
@@ -289,4 +291,6 @@ onUnmounted(stopPoll)
   font-size: 12px;
   color: var(--muted);
 }
+/* 装载检查表：结论列（第 3 列）是状态，居中 */
+table th:nth-child(3), table td:nth-child(3) { text-align: center; }
 </style>

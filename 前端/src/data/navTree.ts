@@ -32,6 +32,8 @@ export interface NavItem {
   todo?: string
   /** 隶属于本项的子菜单。目前只有「本体工场」有：三元本体是它搭出来的 */
   children?: NavItem[]
+  /** 可见角色（2026-10-24 角色规划）。缺省 = 全部角色可见 */
+  roles?: string[]
 }
 
 /**
@@ -54,6 +56,8 @@ export interface NavGroup {
    * 所以 App.vue 里只有带 path 的组名才渲染成链接。
    */
   path?: string
+  /** 可见角色（2026-10-24 角色规划）。缺省 = 全部角色可见 */
+  roles?: string[]
 }
 
 export const RA_NAV: NavItem[] = [
@@ -62,12 +66,14 @@ export const RA_NAV: NavItem[] = [
     label: '制度文件库',
     path: '/asset/docs',
     built: true,
+    roles: ['engineer'],
   },
   {
     key: 'extract',
     label: '规则抽取',
     path: '/asset/extract',
     built: true,
+    roles: ['engineer'],
   },
   {
     // 本体工场排在三个本体页**之前**：它是搭建入口，那三页是搭完之后看的。
@@ -77,6 +83,7 @@ export const RA_NAV: NavItem[] = [
     label: '本体工场',
     path: '/asset/workshop',
     built: true,
+    roles: ['engineer'],
     children: [
       {
         // 业务本体在规则本体**之前**：规则引用概念，上游没有的概念下游长不出来。
@@ -105,35 +112,52 @@ export const RA_NAV: NavItem[] = [
     label: '发布管理',
     path: '/asset/releases',
     built: true,
+    roles: ['engineer'],
   },
 ]
 
 export const REVIEW_NAV: NavItem[] = [
   {
-    // AI智能审核在审核岗工作台之上：它是入口，工作台是出口。
+    // AI智能审核在审核工作台之上：它是入口，工作台是出口。
     // 智能审核触发 → 规则引擎 + LLM 三层跑完 → 不合格单流入工作台。
     key: 'ai-review',
-    label: 'AI智能审核',
+    label: 'AI 智能审核',
     path: '/review/ai-review',
     built: true,
+    roles: ['auditor'],
   },
   {
     key: 'workbench',
-    label: '审核岗工作台',
+    label: '审核工作台',
     path: '/review/bills',
     built: true,
+    roles: ['auditor', 'leader'],
+  },
+  {
+    // 审核报告作为一级菜单（2026-10-24 demo 契约：林嘉四项 ai/bench/report/trace）。
+    // 旧工程里它只是工作台点进去的详情页；demo 把它升为菜单——审核岗的日常
+    // 就是「进报告 → 逐张复核」，不该每次都绕工作台。免 runId 进入时自动选队列首张。
+    key: 'report',
+    label: '审核报告',
+    path: '/review/report',
+    built: true,
+    roles: ['auditor'],
   },
   {
     key: 'trace',
     label: '审计追溯',
     path: '/review/trace',
     built: true,
+    roles: ['auditor', 'leader', 'engineer'],
   },
   {
+    // 偏差与回流 2026-10-24 移到领导查询：四象限/缺口编号是管理视角，
+    // 审核岗不需要（业务审计时确定的口径，见 设计/功能与角色规划_v0.1.md）
     key: 'deviation',
     label: '偏差与回流',
     path: '/review/deviation',
     built: true,
+    roles: ['leader'],
   },
 ]
 
@@ -146,23 +170,45 @@ export const SYS_NAV: NavItem[] = [
     label: '智能体工作台',
     path: '/sys/agents',
     built: true,
+    roles: ['admin'],
   },
   {
     key: 'llm',
     label: '大模型配置',
     path: '/sys/llm',
     built: true,
+    roles: ['admin'],
   },
   {
     key: 'startup',
     label: '系统自检',
     path: '/sys/startup',
     built: true,
+    roles: ['admin'],
+  },
+  {
+    // 用户与角色：一期为前端演示配置（后端无用户体系，缺口已登记）
+    key: 'users',
+    label: '用户与角色',
+    path: '/sys/users',
+    built: true,
+    roles: ['admin'],
+  },
+]
+
+export const DASH_NAV: NavItem[] = [
+  {
+    key: 'dash',
+    label: '总览看板',
+    path: '/dash',
+    built: true,
+    roles: ['leader'],
   },
 ]
 
 export const NAV: NavGroup[] = [
-  { key: 'asset', label: '领域知识资产', items: RA_NAV, path: '/asset' },
-  { key: 'review', label: '报账单 AI 审核', items: REVIEW_NAV },
-  { key: 'sys', label: '系统', items: SYS_NAV },
+  { key: 'dash', label: '总览', items: DASH_NAV, roles: ['leader'] },
+  { key: 'asset', label: '领域知识资产', items: RA_NAV, path: '/asset', roles: ['engineer'] },
+  { key: 'review', label: '报账单审核', items: REVIEW_NAV, roles: ['auditor', 'leader', 'engineer'] },
+  { key: 'sys', label: '系统', items: SYS_NAV, roles: ['admin'] },
 ]

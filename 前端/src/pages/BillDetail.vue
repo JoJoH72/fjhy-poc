@@ -28,6 +28,9 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import Async from '../components/Async.vue'
 import { api, type Attachment, type AttachmentClassifyItem } from '../api'
+import { useCollapse } from '../data/collapse'
+
+const bdDetails = useCollapse(), bdApprovals = useCollapse(), bdReviews = useCollapse()
 
 const route = useRoute()
 const no = computed(() => String(route.params.no))
@@ -112,6 +115,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
 </script>
 
 <template>
+  <div class="v2">
   <Async :load="() => api.bill(no)" :deps="no">
     <template #default="{ data, reload }">
       <h2>
@@ -158,8 +162,8 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
 
         <!-- 违规制度表 -->
         <div v-if="(data as any).latest_review.hits?.length" class="panel panel-violations">
-          <h3 style="color: var(--hit)">
-            违规制度（{{ (data as any).latest_review.hits.length }} 条命中）
+          <h3 class="p-h">
+            <i class="p-dot hit"></i>违规制度（{{ (data as any).latest_review.hits.length }} 条命中）
           </h3>
           <table>
             <thead>
@@ -189,8 +193,8 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
 
         <!-- 待人工项 -->
         <div v-if="(data as any).latest_review.pending?.length" class="panel panel-pending">
-          <h3 style="color: var(--pend)">
-            待人工判断（{{ (data as any).latest_review.pending.length }} 条）
+          <h3 class="p-h">
+            <i class="p-dot pend"></i>待人工判断（{{ (data as any).latest_review.pending.length }} 条）
           </h3>
           <table>
             <thead>
@@ -239,15 +243,22 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
 
       <div class="panel">
         <h3>费用明细（{{ (data as any).details.length }} 行）</h3>
-        <table>
-          <thead><tr><th>费用小类</th><th class="num">金额</th><th>分摊部门</th></tr></thead>
+        <table class="money">
+          <thead><tr><th>费用小类</th><th class="num" style="width: 160px">金额</th><th style="width: 200px">分摊部门</th></tr></thead>
           <tbody>
-            <tr v-for="(d, i) in (data as any).details" :key="i">
+            <tr v-for="(d, i) in bdDetails.view<any>((data as any).details)" :key="i">
               <td>{{ d.expense_item }}</td>
-              <td class="num">{{ d.amount }}</td>
+              <td class="num">{{ d.amount != null
+                ? Number(d.amount).toLocaleString('zh-CN', { minimumFractionDigits: 2 })
+                : '—' }}</td>
               <td>{{ d.alloc_dept || '—' }}</td>
             </tr>
-          </tbody>
+                        <tr v-if="bdDetails.more((data as any).details ).show">
+                <td :colspan="3" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="bdDetails.more((data as any).details ).toggle()">
+                  {{ bdDetails.more((data as any).details ).rest === -1 ? '收起' : `展开剩余 ${bdDetails.more((data as any).details ).rest} 条` }}（共 {{ (data as any).details.length }} 条）
+                </td>
+              </tr>
+</tbody>
         </table>
       </div>
 
@@ -370,7 +381,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               <!-- 读图结果：判不出 / 把握不够 时依据必须看得见，
                    否则使用者不知道「为什么没写入类型」。 -->
               <tr v-if="lastResult[a.id]">
-                <td colspan="8" class="muted" style="font-size: 11px; background: #fafcfe">
+                <td colspan="8" class="muted" style="font-size: 11px; background: var(--panel-2)">
                   模型 {{ lastResult[a.id].model }} ·
                   {{ lastResult[a.id].ok
                     ? (lastResult[a.id].type_code
@@ -384,7 +395,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               </tr>
               <!-- 大图。附件是扫描件，缩略图上看不清票面，而审核岗要看的正是票面 -->
               <tr v-if="openAtt === a.id">
-                <td colspan="8" style="background: #fafcfe">
+                <td colspan="8" style="background: var(--panel-2)">
                   <img :src="fileUrl(a.id)" :alt="a.file_name" class="full" />
                   <div class="muted" style="font-size: 11px; margin-top: 6px">
                     {{ a.file_name }}（{{ kb(a.byte_size) }}）·
@@ -404,7 +415,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
             <tr><th class="num">序</th><th>节点</th><th>审批人</th><th>意见</th><th>时间</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(a, i) in (data as any).approvals" :key="i">
+            <tr v-for="(a, i) in bdApprovals.view<any>((data as any).approvals)" :key="i">
               <td class="num">{{ a.seq }}</td>
               <td>
                 {{ a.node }}
@@ -414,7 +425,12 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
               <td>{{ a.opinion || '' }}</td>
               <td class="mono">{{ String(a.approved_at || '').slice(0, 19) }}</td>
             </tr>
-          </tbody>
+                        <tr v-if="bdApprovals.more((data as any).approvals ).show">
+                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="bdApprovals.more((data as any).approvals ).toggle()">
+                  {{ bdApprovals.more((data as any).approvals ).rest === -1 ? '收起' : `展开剩余 ${bdApprovals.more((data as any).approvals ).rest} 条` }}（共 {{ (data as any).approvals.length }} 条）
+                </td>
+              </tr>
+</tbody>
         </table>
       </div>
 
@@ -430,7 +446,7 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="r in (rv as any).items" :key="r.run_id">
+                <tr v-for="r in bdReviews.view<any>((rv as any).items)" :key="r.run_id">
                   <td class="mono">
                     <router-link :to="`/review/report/${r.run_id}`">{{ r.run_id }}</router-link>
                   </td>
@@ -441,13 +457,19 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
                   <td class="mono">{{ r.rule_set_version }}</td>
                   <td class="mono">{{ String(r.finished_at || '').slice(0, 19) }}</td>
                 </tr>
-              </tbody>
+                            <tr v-if="bdReviews.more((rv as any).items ).show">
+                <td :colspan="7" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="bdReviews.more((rv as any).items ).toggle()">
+                  {{ bdReviews.more((rv as any).items ).rest === -1 ? '收起' : `展开剩余 ${bdReviews.more((rv as any).items ).rest} 条` }}（共 {{ (rv as any).items.length }} 条）
+                </td>
+              </tr>
+</tbody>
             </table>
           </div>
         </template>
       </Async>
     </template>
   </Async>
+  </div>
 </template>
 
 <style scoped>
@@ -455,44 +477,60 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 20px;
+  padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 12px;
+  background: var(--panel); border: 1px solid var(--line);
   border-width: 1px;
   border-style: solid;
 }
-.banner-reject { background: #fff1f0; border-color: #ffa39e; }
-.banner-review { background: #fffbe6; border-color: #ffe58f; }
-.banner-pass   { background: #f6ffed; border-color: #b7eb8f; }
-.banner-left { display: flex; align-items: center; gap: 14px; }
+/* 结论横幅不再整幅染色：颜色只留在图标与结论文案上，容器是普通白卡。
+   原来这里三条 background 都写成了 `var(--panel)1f0` 这种非法值，
+   背景其实一直没生效——顺手一并删掉。 */
+.banner-left { display: flex; align-items: center; gap: 12px; }
 .banner-icon {
-  font-size: 28px;
+  font-size: 19px;
   line-height: 1;
   font-weight: 700;
+  width: 22px;
+  text-align: center;
 }
 .banner-reject .banner-icon { color: var(--hit, #c0392b); }
 .banner-review .banner-icon { color: var(--pend, #d48806); }
 .banner-pass   .banner-icon { color: var(--pass, #27ae60); }
-.banner-title { font-size: 16px; font-weight: 700; }
+.banner-title { font-size: 15px; font-weight: 600; }
 .banner-reject .banner-title { color: var(--hit, #c0392b); }
 .banner-review .banner-title { color: var(--pend, #d48806); }
 .banner-pass   .banner-title { color: var(--pass, #27ae60); }
-.banner-sub { font-size: 12px; margin-top: 2px; }
+.banner-sub { font-size: 12px; margin-top: 2px; color: var(--muted); }
 .banner-link { font-size: 13px; color: var(--brand, #1668dc); white-space: nowrap; }
-.panel-violations { border-left: 3px solid var(--hit, #c0392b); }
-.panel-pending    { border-left: 3px solid var(--pend, #d48806); }
+/* 两张卡去掉左侧 3px 竖线：标题前一个 6px 圆点就够了。
+   「待人工」的圆点用中性灰——金色在本系统里只该出现在表内的「告警」小标签上，
+   卡片级再铺一条棕色，整页会发黄。 */
+/* 三列金额表不撑满卡片（同审核报告页）：定宽靠左，空白留在表外 */
+.money { width: auto; }
+.money th:first-child { width: 260px; }
+
+/* 金额列与分摊部门之间留气口，和审核报告页同一口径 */
+.money th:nth-child(2), .money td:nth-child(2) { padding-right: 32px; }
+.money th:nth-child(3), .money td:nth-child(3) { padding-left: 32px; }
+
+.p-h { display: flex; align-items: center; gap: 8px; }
+.p-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; display: inline-block; }
+.p-dot.hit { background: var(--bad, #c0351f); }
+.p-dot.pend { background: #98a2b3; }
 
 /* 附件缩略图。扫描件在 72px 上只能看出「是张票还是张表」，
    看票面必须点开——所以缩略图给个明显的可点样式。 */
 .thumb {
-  width: 72px; height: 54px; object-fit: cover; cursor: pointer;
-  border: 1px solid var(--line); border-radius: var(--radius); background: #fff;
+  width: 96px; height: 96px; object-fit: cover; cursor: pointer;   /* 1:1 铺满（cover）：contain 会缩成一条横带，看着还是长方形 */
+  border: 1px solid var(--line); border-radius: var(--r-s, 6px); background: var(--panel-2, #fafbfd);
 }
 .thumb:hover { border-color: var(--brand-light); }
 /* 大图不设高度上限：出差申请单那种是整表一张长图，截断了等于没给。
    宽度跟随容器，窄屏上也能看全。 */
 .full {
   max-width: 100%; border: 1px solid var(--line);
-  border-radius: var(--radius); background: #fff;
+  border-radius: var(--radius); background: var(--panel);
 }
 </style>

@@ -231,9 +231,14 @@ def chat_ping(cfg):
     if not key and _needs_key(cfg):
         return Result("chat", False, err_kind="no_key", message=why or "没填 API Key")
 
+    # **不能用 16**：思考型模型（glm-5.3 等）会先输出 reasoning_content，
+    # 16 个 token 连思考都装不下，finish_reason=length、正文恒为空——
+    # 每个思考型模型都会被这个探针误报成「连不通」（2026-10-25 实测踩坑）。
+    # 实测一句话探针 completion=96 token；给 2048 留足余量——
+    # 探针按「实际生成量」计费，上限开多大都不多花钱，只是保险丝。
     body = {"model": model,
             "messages": [{"role": "user", "content": PING_PROMPT}],
-            "max_tokens": 16,
+            "max_tokens": 2048,
             "temperature": 0,
             "stream": False}
     t0 = time.time()
@@ -268,12 +273,25 @@ def chat_ping(cfg):
         content = str(content).strip()
 
     if not content:
-        # HTTP 200 但模型没说话。这是「只看状态码」会放过的那种失败。
+        # HTTP 200 但模型没说话。**三种成因要分开说**，笼统回「网关把错误包在 200 里」
+        # 会让人去查网络。实测（2026-10-25）：glm-5.3-flash 在 max_tokens 为默认值时，
+        # 先把预算全花在 reasoning_content 上，finish_reason=length，正文一个字都没有。
+        fr = str((choices[0] or {}).get("finish_reason") or "") if choices else ""
+        reasoning = str(((choices[0].get("message") or {}).get("reasoning_content")) or "") \
+            if choices and isinstance(choices[0], dict) else ""
+        if fr == "length":
+            why = ("输出被 max_tokens 用完了"
+                   + ("——这个型号会先输出「思考」(reasoning)，正文还没开始就被截断"
+                      if reasoning else "")
+                   + "。到「高级参数 → 最大输出」把值调到 2048 以上再测")
+        elif reasoning:
+            why = "只返回了「思考」内容、正文为空。该型号可能不适合这个用途，或需要关闭深度思考。"
+        else:
+            why = "多半是网关把错误包在 200 里了"
         return Result("chat", False, http_status=r.status_code, latency_ms=ms,
                       model_echo=echo, err_kind="parse",
-                      message=_scrub("HTTP 200 但回复是空的——"
-                                     "多半是网关把错误包在 200 里了。原文前 300 字："
-                                     + r.text[:300], key))
+                      message=_scrub("HTTP 200 但回复是空的——" + why +
+                                     "。原文前 300 字：" + r.text[:300], key))
 
     note = "通了"
     if echo and model and echo != model:
@@ -370,10 +388,26 @@ def chat_vision(cfg, system, user, image_path, max_tokens=4000):
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         content = str(content).strip()
     if not content:
+        # 「空回复」有三种成因，笼统说「网关把错误包在 200 里」会把人带偏。
+        # 实测（2026-10-25）：glm-5.3-flash 在 max_tokens 为默认值时，
+        # 先把预算全花在 reasoning_content 上，finish_reason=length，正文一个字都没有。
+        fr = str((choices[0] or {}).get("finish_reason") or "") if choices else ""
+        reasoning = ""
+        if choices and isinstance(choices[0], dict):
+            reasoning = str(((choices[0].get("message") or {}).get("reasoning_content")) or "")
+        if fr == "length":
+            why = ("输出被 max_tokens 用完了"
+                   + ("——这个型号会先输出「思考」(reasoning)，正文还没开始就被截断"
+                      if reasoning else "")
+                   + "。到「高级参数 → 最大输出」把值调到 2048 以上再测")
+        elif reasoning:
+            why = "只返回了「思考」内容、正文为空。该型号可能不适合这个用途，或需要关闭深度思考。"
+        else:
+            why = "多半是网关把错误包在 200 里了"
         return (Result("vision", False, http_status=r.status_code, latency_ms=ms,
                        model_echo=echo, err_kind="parse",
-                       message=_scrub("HTTP 200 但回复是空的——多半是网关把错误"
-                                      "包在 200 里了。原文前 300 字：" + r.text[:300], key)),
+                       message=_scrub("HTTP 200 但回复是空的——" + why +
+                                      "。原文前 300 字：" + r.text[:300], key)),
                 "", use)
     note = "已返回"
     if echo and model and echo != model:
@@ -427,6 +461,13 @@ def chat_json(cfg, system, user, max_tokens=1500):
             "max_tokens": int(max_tokens),
             "temperature": float(cfg.get("temperature") or 0),
             "stream": False}
+    # **关思考的参数必须真的发出去**（2026-10-25）：enable_thinking 在配置表里
+    # 存着、页面上能设，但从未进过请求体——glm-5.3 每次都长篇思考，实测一条
+    # 八要素草稿 25~34 秒，五条制度条款等两分半，使用者完全不能接受。
+    # 智谱 openai 兼容端点认 {"thinking":{"type":"disabled"}}；别家不认的回 400，
+    # 走下面和 response_format 同款的「退一次」路径——不静默降级，文案说明。
+    if cfg.get("enable_thinking") is False:
+        body["thinking"] = {"type": "disabled"}
     # json_object 不是所有厂商都支持，支持的那些能显著降低「回了一段解释文字」的概率。
     # 不支持的会 400，所以失败后要退一次普通模式——但**只退一次**，
     # 并且在 message 里说明，免得「悄悄降级」变成看不见的行为差异。
@@ -435,6 +476,8 @@ def chat_json(cfg, system, user, max_tokens=1500):
     r = None
     fallback_note = ""
     retry_note = ""
+    budget_note = ""
+    len_retried = [False]
 
     # 实际试了几次。**不能拿 TRANSPORT_TRIES 当「试了几次」用**——
     # 收口重试范围之后，不可重试的失败只试 1 次，而文案照着常量写就是
@@ -488,6 +531,32 @@ def chat_json(cfg, system, user, max_tokens=1500):
                 body.pop("response_format", None)
                 fallback_note = "该厂商不支持 json_object，已退回普通模式重发一次"
                 r, _ = _post(body, c)
+            if r.status_code == 400 and "thinking" in (r.text or ""):
+                body.pop("thinking", None)
+                fallback_note = ((fallback_note + "；") if fallback_note else "") + \
+                    "该厂商不支持 thinking 参数（关闭思考未生效），已去掉重发——时延会回到带思考的水平"
+            # ── 预算自愈（2026-10-25）：HTTP 200 但正文空、finish_reason=length——
+            # glm-5.3 这类会先输出「思考」的型号把预算烧光、正文一个字没出。
+            # 此前直接报错让人去调「高级参数」，等于把修复责任推给使用者；
+            # 这里自动加倍预算重发**一次**（有上限）。这次重试确实会再花一次钱，
+            # 但整批草稿返回空 JSON 的「假失败」比多一次调用贵得多。
+            if r.status_code // 100 == 2:
+                try:
+                    d0 = r.json()
+                    ch0 = (d0.get("choices") or [{}])
+                    fr0 = str((ch0[0] or {}).get("finish_reason") or "") if ch0 else ""
+                    m0 = (ch0[0].get("message") or {}) if ch0 and isinstance(ch0[0], dict) else {}
+                    c0 = str(m0.get("content") or "").strip()
+                    bigger = min(int(max_tokens) * 2, 12000)
+                    if (not c0 and fr0 == "length" and bigger > int(max_tokens)):
+                        body["max_tokens"] = bigger
+                        r, _ = _post(body, c)
+                        max_tokens = bigger
+                        len_retried[0] = True
+                        budget_note = ("正文为空（预算被思考用完）→ 已自动加倍 max_tokens=%d 重发一次"
+                                       % bigger)
+                except ValueError:
+                    pass
     except Exception as exc:                                  # noqa: BLE001
         kind, msg = _classify_transport(exc)
         return (Result("chat", False, latency_ms=int((time.time() - t0) * 1000),
@@ -523,12 +592,29 @@ def chat_json(cfg, system, user, max_tokens=1500):
         content = str(content).strip()
 
     if not content:
+        # 「空回复」有三种成因，笼统说「网关把错误包在 200 里」会把人带偏。
+        # 实测（2026-10-25）：glm-5.3-flash 在 max_tokens 为默认值时先把预算全花在
+        # reasoning_content 上，finish_reason=length，正文一个字都没有。
+        fr = str((choices[0] or {}).get("finish_reason") or "") if choices else ""
+        reasoning = str(((choices[0].get("message") or {}).get("reasoning_content")) or "") \
+            if choices and isinstance(choices[0], dict) else ""
+        if fr == "length":
+            why = ("输出被 max_tokens 用完了"
+                   + ("——这个型号会先输出「思考」(reasoning)，正文还没开始就被截断"
+                      if reasoning else "")
+                   + (("（已自动加倍预算重发过一次仍空，当前上限 %s）" % max_tokens)
+                      if len_retried[0] else "")
+                   + "。到「高级参数 → 最大输出」把值再调大后重试")
+        elif reasoning:
+            why = "只返回了「思考」内容、正文为空。该型号可能不适合这个用途，或需要关闭深度思考。"
+        else:
+            why = "多半是网关把错误包在 200 里了"
         return (Result("chat", False, http_status=r.status_code, latency_ms=ms,
                        model_echo=echo, err_kind="parse",
-                       message=_scrub("HTTP 200 但回复是空的——多半是网关把错误"
-                                      "包在 200 里了。原文前 300 字：" + r.text[:300], key)), "")
+                       message=_scrub("HTTP 200 但回复是空的——" + why +
+                                      "。原文前 300 字：" + r.text[:300], key)), "")
 
-    note = fallback_note or "已返回"
+    note = budget_note or fallback_note or "已返回"
     if retry_note:
         note = retry_note + ("；" + note if note else "")
     if echo and model and echo != model:

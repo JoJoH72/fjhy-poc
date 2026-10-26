@@ -11,6 +11,9 @@ import { useRoute } from 'vue-router'
 import Async from '../components/Async.vue'
 import Outcome from '../components/Outcome.vue'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
+
+const conceptList = useCollapse(), findingList = useCollapse()
 
 const route = useRoute()
 const id = computed(() => String(route.params.id))
@@ -19,6 +22,7 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
 </script>
 
 <template>
+  <div class="v2">
   <Async :load="() => api.rule(id)" :deps="id">
     <template #default="{ data }">
       <h2>{{ (data as any).rule_id }} {{ (data as any).rule_name }}</h2>
@@ -129,7 +133,7 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
             <tr><th>概念</th><th>名称</th><th>所属实体</th><th>可得性</th><th>缺口</th></tr>
           </thead>
           <tbody>
-            <tr v-for="c in (data as any).concepts" :key="c.concept_id">
+            <tr v-for="c in conceptList.view<any>((data as any).concepts)" :key="c.concept_id">
               <td class="mono">{{ c.concept_id }}</td>
               <td>{{ c.concept_name }}</td>
               <td class="mono">{{ c.entity_id }}</td>
@@ -140,7 +144,12 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
               </td>
               <td class="mono">{{ c.gap_id || '—' }}</td>
             </tr>
-          </tbody>
+                        <tr v-if="conceptList.more((data as any).concepts).show">
+                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="conceptList.more((data as any).concepts).toggle()">
+                  {{ conceptList.more((data as any).concepts).rest === -1 ? '收起' : `展开剩余 ${conceptList.more((data as any).concepts).rest} 条` }}（共 {{ (data as any).concepts.length }} 条）
+                </td>
+              </tr>
+</tbody>
         </table>
         <div v-if="(data as any).entities?.length" style="margin-top: 10px">
           <b>存在性判断引用的实体</b>
@@ -186,14 +195,19 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
         <table v-else>
           <thead><tr><th>单据</th><th>结果</th><th>说明</th></tr></thead>
           <tbody>
-            <tr v-for="(f, i) in (data as any).recent_findings" :key="i">
+            <tr v-for="(f, i) in findingList.view<any>((data as any).recent_findings)" :key="i">
               <td class="mono">
                 <router-link :to="`/review/report/${f.run_id}`">{{ f.bill_no }}</router-link>
               </td>
               <td><Outcome :outcome="f.outcome" /></td>
               <td>{{ f.message }}</td>
             </tr>
-          </tbody>
+                        <tr v-if="findingList.more((data as any).recent_findings).show">
+                <td :colspan="3" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="findingList.more((data as any).recent_findings).toggle()">
+                  {{ findingList.more((data as any).recent_findings).rest === -1 ? '收起' : `展开剩余 ${findingList.more((data as any).recent_findings).rest} 条` }}（共 {{ (data as any).recent_findings.length }} 条）
+                </td>
+              </tr>
+</tbody>
         </table>
       </div>
 
@@ -203,4 +217,5 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
       </div>
     </template>
   </Async>
+  </div>
 </template>

@@ -20,6 +20,9 @@ import { computed, onMounted, ref } from 'vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
 import type { PubIndex, RelAccess, RelDetail, RelRow, RelWorkspace, StorageRow } from '../api'
+import { useCollapse } from '../data/collapse'
+
+const pubList = useCollapse(), logList = useCollapse(), pubStoreList = useCollapse()
 
 type Tab = 'ws' | 'rel' | 'consume' | 'store'
 const tab = ref<Tab>('ws')
@@ -141,8 +144,9 @@ onMounted(() => loadWs())
 </script>
 
 <template>
+  <div class="v2">
   <h2>发布管理</h2>
-  <div class="row">
+  <div class="tabs">
     <button :class="{ on: tab === 'ws' }" @click="pickTab('ws')">工作区</button>
     <button :class="{ on: tab === 'rel' }" @click="pickTab('rel')">版本</button>
     <button :class="{ on: tab === 'consume' }" @click="pickTab('consume')">消费</button>
@@ -165,12 +169,12 @@ onMounted(() => loadWs())
     <div v-if="ws" class="panel">
       <h3>现在能发什么</h3>
       <div class="sub"><MarkText :text="ws.note" /></div>
-      <table>
+      <table class="rel-tbl">
         <thead>
           <tr>
             <th style="width: 30px">#</th><th style="width: 110px">层</th>
-            <th style="width: 58px">条目</th><th style="width: 56px">来源</th>
-            <th style="width: 150px">出处</th>
+            <th style="width: 58px">条目</th><th style="width: 72px">来源</th>
+            <th style="width: 320px">出处</th>
             <th style="width: 112px">内容校验</th>
             <th>这一层是什么</th>
           </tr>
@@ -459,7 +463,7 @@ onMounted(() => loadWs())
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in published" :key="p.release_id">
+          <tr v-for="p in pubList.view(published)" :key="p.release_id">
             <td class="mono">{{ p.rule_set_version }}</td>
             <td><span v-if="p.is_current" class="tag t-pass">当前</span></td>
             <td class="mono" style="font-size: 11px">
@@ -471,7 +475,12 @@ onMounted(() => loadWs())
               <a class="mini dl" :href="api.pubBundleUrl(p.rule_set_version)">下载资产包</a>
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="pubList.more(published).show">
+                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="pubList.more(published).toggle()">
+                  {{ pubList.more(published).rest === -1 ? '收起' : `展开剩余 ${pubList.more(published).rest} 条` }}（共 {{ published.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
     </div>
 
@@ -486,14 +495,19 @@ onMounted(() => loadWs())
           </tr>
         </thead>
         <tbody>
-          <tr v-for="l in log" :key="l.id">
+          <tr v-for="l in logList.view(log)" :key="l.id">
             <td class="mono" style="font-size: 11px">{{ l.at.toString().slice(0, 19) }}</td>
             <td class="mono" style="font-size: 11px">{{ l.rule_set_version || '—' }}</td>
             <td class="mono" style="font-size: 11px">{{ l.resource }}</td>
             <td style="font-size: 12px">{{ l.client || '—' }}</td>
             <td class="num">{{ l.bytes ?? '—' }}</td>
           </tr>
-        </tbody>
+                      <tr v-if="logList.more(log).show">
+                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="logList.more(log).toggle()">
+                  {{ logList.more(log).rest === -1 ? '收起' : `展开剩余 ${logList.more(log).rest} 条` }}（共 {{ log.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div v-else class="note">还没有人拉过。</div>
     </div>
@@ -512,7 +526,7 @@ onMounted(() => loadWs())
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in store.items" :key="t.table_name">
+          <tr v-for="t in pubStoreList.view(store.items)" :key="t.table_name">
             <td class="mono" style="font-size: 12px">{{ t.table_name }}</td>
             <td class="num">{{ t.rows ?? '—' }}</td>
             <td style="font-size: 12px">{{ t.what }}</td>
@@ -520,12 +534,18 @@ onMounted(() => loadWs())
             <td style="font-size: 12px">{{ t.on_recalc }}</td>
             <td class="muted" style="font-size: 12px"><MarkText :text="t.why" /></td>
           </tr>
-        </tbody>
+                      <tr v-if="pubStoreList.more(store.items).show">
+                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="pubStoreList.more(store.items).toggle()">
+                  {{ pubStoreList.more(store.items).rest === -1 ? '收起' : `展开剩余 ${pubStoreList.more(store.items).rest} 条` }}（共 {{ store.items.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div class="note"><MarkText :text="store.note" /></div>
     </div>
 
   </template>
+  </div>
 </template>
 
 <style scoped>
@@ -536,18 +556,21 @@ a.mini.dl {
   border: 1px solid var(--line); border-radius: 4px; text-decoration: none;
 }
 td.acts { white-space: nowrap; }
-tr.tri td { background: #f7fbf8; }
-tr.cur td { background: #fffdf5; }
+tr.tri td { background: var(--ok-bg); }
+tr.cur td { background: var(--warn-bg); }
 td.warn { color: var(--hit); }
-.detailcell { background: #fafbfc; }
+.detailcell { background: var(--panel-2); }
 .gates td { vertical-align: top; }
 .ok-note {
-  background: #f1f8f2; border: 1px solid var(--pass); border-radius: var(--radius);
+  background: var(--ok-bg); border: 1px solid var(--pass); border-radius: var(--radius);
   padding: 7px 9px; margin-bottom: 10px; font-size: 13px;
 }
 .snap {
-  max-height: 300px; overflow: auto; background: #fff; border: 1px solid var(--line);
+  max-height: 300px; overflow: auto; background: var(--panel); border: 1px solid var(--line);
   border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre;
 }
 .sep { margin: 0 4px; color: var(--line); }
+/* # 与 条目数 是短计数，居中；层/来源/出处/说明是文本，左对齐 */
+.rel-tbl th:nth-child(1), .rel-tbl td:nth-child(1),
+.rel-tbl th:nth-child(3), .rel-tbl td:nth-child(3) { text-align: center; }
 </style>

@@ -7,3 +7,10 @@ cryptography==44.0.0
 pytesseract==0.3.13
 Pillow==11.1.0
 python-multipart==0.0.20
+# 下面两个是装载客户 40 张真实单必需的，不是可选项：
+#   openpyxl —— app/demo/seed.py 读两份 xlsx 明细表
+#   PyMuPDF（import fitz）—— app/perception/approval_pdf.py 读三份审批意见 PDF，
+#     那是例外条款的唯一数据源，不解析就等于把 TR-D6-02/03/05/06、TR-D9-01 等
+#     12 条规则的例外出口全当成不存在，正常单会被成片误报。
+openpyxl==3.1.5
+PyMuPDF==1.28.0

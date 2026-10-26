@@ -1,13 +1,13 @@
 <script setup lang="ts">
 /**
- * 审计追溯：一张单的 S→D→A→F→I 全过程。
+ * 审计追溯（2026-10-24 改版）：S→D→A→F→I 竖向时间线。
  *
- * **五张审计表分开存的价值就在这一页上。**
- * 合成一张「日志表」之后，「模型看到的输入」和「模型造成的写入」
- * 就混在同一批行里，这里没法分开追——
- * 而出事后最关键的两个问题恰恰是：
- *   当时它看到的数据是什么？（没有 S 就只能靠猜）
- *   它到底写了什么？（没有 A 就要去业务表反查，而业务表已经被覆盖了）
+ * 改版保住的立页之本：五张审计表**分开呈现**，不合成一条日志——
+ * 「模型当时看到什么」（S）与「模型实际写了什么」（A）必须能分开追。
+ * 时间线只是把这些表的行按阶段串起来读，数据一行没合并。
+ *
+ * 空阶段的语义不许含糊：F 无记录 = 尚无人工结论可比对；
+ * I 无记录 = 该批次没有调参动作。都不是「没跑」。
  */
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -18,146 +18,120 @@ const route = useRoute()
 const router = useRouter()
 const billNo = ref(String(route.params.no || ''))
 watch(() => route.params.no, (v) => { billNo.value = String(v || '') })
-
 const key = computed(() => billNo.value)
 
 function go() {
   if (billNo.value) router.push(`/review/trace/${billNo.value}`)
 }
+
+const traceData = ref<any>(null)
+function exportPack() {
+  if (!traceData.value || !key.value) return
+  const blob = new Blob([JSON.stringify(traceData.value, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `审计包_${key.value}_${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+const STAGES = ['S', 'D', 'A', 'F', 'I'] as const
+type Stage = (typeof STAGES)[number]
+const STAGE_NAME: Record<Stage, string> = {
+  S: '感知 · 数据快照', D: '研判 · 判定周期', A: '落库 · 写入与信号',
+  F: '比对 · 偏差回流', I: '改进 · 参数调整',
+}
+
+/** 把五张表的行摊成时间线节点。空阶段给一个 wait 节点 + 语义说明 */
+function timeline(d: any): { stage: Stage; st: 'done' | 'wait'; title: string; desc: string; tags: string[]; ms?: string; tm: string }[] {
+  const out: ReturnType<typeof timeline> = []
+  const ms = (t: any) => (t == null ? '' : `${Math.round(t)} ms`)
+  for (const s of d.S_snapshots || []) {
+    out.push({ stage: 'S', st: 'done', title: STAGE_NAME.S,
+      desc: `输入快照 ${String(s.snapshot_id).slice(0, 18)} · 脱敏${s.masked ? '通过' : '未通过（泄露）'} · 读取 ${Object.keys(s.row_counts || {}).length} 类表`,
+      tags: ['data_pool_snapshot'], tm: String(s.taken_at).slice(5, 19) })
+  }
+  if (!(d.S_snapshots || []).length) out.push({ stage: 'S', st: 'wait', title: STAGE_NAME.S, desc: '无快照记录', tags: [], tm: '—' })
+
+  for (const c of d.D_cycles || []) {
+    const pt = c.phase_timings_ms || {}
+    out.push({ stage: 'D', st: 'done', title: STAGE_NAME.D,
+      desc: `${c.trigger_kind}触发 · 执行 ${c.rule_executed}/${c.rule_candidates} 条 · 结论 ${c.decision}`,
+      tags: ['cycle_log'], ms: `S${ms(pt.S) || '—'} · D${ms(pt.D) || '—'} · A${ms(pt.A) || '—'} · F${ms(pt.F) || '—'}`,
+      tm: String(c.started_at).slice(5, 19) })
+  }
+  if (!(d.D_cycles || []).length) out.push({ stage: 'D', st: 'wait', title: STAGE_NAME.D, desc: '无周期记录', tags: [], tm: '—' })
+
+  for (const a of d.A_actions || []) {
+    const wt = a.written_tables || {}
+    out.push({ stage: 'A', st: 'done', title: STAGE_NAME.A,
+      desc: `${a.action} ${a.target} · 写入 ${Object.entries(wt).map(([k, v]) => `${k}×${v}`).join(' ') || '无'}`,
+      tags: ['agent_signal_log'], tm: String(a.emitted_at).slice(5, 19) })
+  }
+  if (!(d.A_actions || []).length) out.push({ stage: 'A', st: 'wait', title: STAGE_NAME.A, desc: '无动作记录', tags: [], tm: '—' })
+
+  for (const f of d.F_feedback || []) {
+    out.push({ stage: 'F', st: 'done', title: STAGE_NAME.F,
+      desc: `${f.metric}：预期 ${f.expected} / 实际 ${f.actual} → ${f.deviation_kind || '无偏差'}`,
+      tags: ['feedback_log'], tm: String(f.observed_at).slice(5, 19) })
+  }
+  if (!(d.F_feedback || []).length) out.push({ stage: 'F', st: 'wait', title: STAGE_NAME.F,
+    desc: '尚无人工结论可比对（复核后回写）', tags: ['feedback_log'], tm: '待复核后' })
+
+  for (const i of d.I_improvements || []) {
+    out.push({ stage: 'I', st: i.rejected ? 'wait' : 'done', title: STAGE_NAME.I,
+      desc: i.rejected ? `越界调参被拒绝：${i.param} → ${i.new_value}（${i.rejected_why}）`
+                       : `调整 ${i.param}：${i.old_value} → ${i.new_value}`,
+      tags: ['improve_log'], tm: String(i.applied_at).slice(5, 19) })
+  }
+  if (!(d.I_improvements || []).length) out.push({ stage: 'I', st: 'wait', title: STAGE_NAME.I,
+    desc: '本批次无调参动作（I 按批次调参，不按单）', tags: ['improve_log'], tm: '按批次' })
+  return out
+}
 </script>
 
 <template>
-  <h2>审计追溯</h2>
-  <div class="sub">S 看到什么 → D 判了什么 → A 写了什么 → F 偏差多少 → I 调了什么</div>
+  <div class="v2">
+    <div class="card" style="margin-bottom: 16px">
+      <div class="card-head">
+        <h2>审计追溯</h2>
+        <input class="input" v-model="billNo" placeholder="单据编号，如 FJPG-BX2610132121"
+               style="width: 280px" @keyup.enter="go">
+        <button class="btn primary" @click="go">追溯</button>
+        <div class="grow"></div>
+        <button class="btn ghost" :disabled="!traceData" @click="exportPack">导出审计包</button>
+      </div>
+    </div>
 
-  <div class="panel">
-    <div class="row">
-      <input v-model="billNo" placeholder="单据编号，如 FJPG-BX2610132121" style="width: 280px" />
-      <button @click="go">追溯</button>
+    <Async v-if="key" :load="() => api.trace(key)" :deps="key">
+      <template #default="{ data }">
+        {{ void (traceData = data) }}
+        <div class="card">
+          <div class="tl">
+            <div v-for="(n, i) in timeline(data)" :key="i" class="tl-item" :class="n.st">
+              <div class="tl-dot" aria-hidden="true"></div>
+              <div class="tl-body">
+                <div class="l1">
+                  <b>{{ n.stage }}</b>
+                  <span class="ms num" v-if="n.ms">{{ n.ms }}</span>
+                  <span class="tm num">{{ n.tm }}</span>
+                </div>
+                <div class="desc" style="margin-top: 0">{{ n.desc }}</div>
+                <span v-for="t in n.tags" :key="t" class="tag">{{ t }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-if="(data as any).I_scope_note" class="card" style="margin-top: 16px">
+          <div class="card-head"><h2>I 阶段口径</h2></div>
+          <div style="padding: 14px 20px 20px; font-size: 12.5px; color: var(--muted)">
+            <MarkText :text="(data as any).I_scope_note" />
+          </div>
+        </div>
+      </template>
+    </Async>
+    <div v-else class="card">
+      <div style="padding: 40px; text-align: center; color: var(--weak)">输入单据编号开始追溯</div>
     </div>
   </div>
-
-  <Async v-if="key" :load="() => api.trace(key)" :deps="key">
-    <template #default="{ data }">
-      <div class="panel">
-        <h3>S · 看到的数据快照（{{ (data as any).S_snapshots.length }} 次）</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>快照号</th><th>时间</th><th>输入指纹</th>
-              <th>已脱敏</th><th>读了哪些表</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="s in (data as any).S_snapshots" :key="s.snapshot_id">
-              <td class="mono">{{ s.snapshot_id }}</td>
-              <td class="mono">{{ String(s.taken_at).slice(0, 19) }}</td>
-              <td class="mono">{{ String(s.payload_hash).slice(0, 12) }}…</td>
-              <td>
-                <span class="tag" :class="s.masked ? 't-pass' : 't-hit'">
-                  {{ s.masked ? '是' : '否（泄露）' }}
-                </span>
-              </td>
-              <td class="mono" style="font-size: 11px">{{ JSON.stringify(s.row_counts) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="panel">
-        <h3>D · 判定周期（{{ (data as any).D_cycles.length }} 次）</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>周期号</th><th>触发</th><th class="num">候选</th><th class="num">执行</th>
-              <th>结论</th><th>各阶段耗时</th><th>状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in (data as any).D_cycles" :key="c.cycle_id">
-              <td class="mono">{{ c.cycle_id }}</td>
-              <td><span class="tag t-na">{{ c.trigger_kind }}</span></td>
-              <td class="num">{{ c.rule_candidates }}</td>
-              <td class="num">{{ c.rule_executed }}</td>
-              <td class="mono">{{ c.decision?.conclusion }}</td>
-              <td class="mono" style="font-size: 11px">{{ JSON.stringify(c.phase_timings_ms) }}</td>
-              <td>
-                <span class="tag" :class="c.status === 'ok' ? 't-pass' : 't-hit'">{{ c.status }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="panel">
-        <h3>A · 实际写了什么（{{ (data as any).A_actions.length }} 次）</h3>
-        <table>
-          <thead><tr><th>时间</th><th>动作</th><th>目标</th><th>写了哪些表</th><th>幂等键</th></tr></thead>
-          <tbody>
-            <tr v-for="(a, i) in (data as any).A_actions" :key="i">
-              <td class="mono">{{ String(a.emitted_at).slice(0, 19) }}</td>
-              <td class="mono">{{ a.action }}</td>
-              <td class="mono">{{ a.target }}</td>
-              <td class="mono" style="font-size: 11px">{{ JSON.stringify(a.written_tables) }}</td>
-              <td class="mono" style="font-size: 11px">{{ a.idempotency_key }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="panel">
-        <h3>F · 偏差（{{ (data as any).F_feedback.length }} 条）</h3>
-        <table>
-          <thead><tr><th>时间</th><th>指标</th><th>期望</th><th>实际</th><th class="num">偏差</th><th>类型</th><th>来源</th></tr></thead>
-          <tbody>
-            <tr v-for="(f, i) in (data as any).F_feedback" :key="i">
-              <td class="mono">{{ String(f.observed_at).slice(0, 19) }}</td>
-              <td class="mono">{{ f.metric }}</td>
-              <td class="mono" style="font-size: 11px">{{ JSON.stringify(f.expected) }}</td>
-              <td class="mono" style="font-size: 11px">{{ JSON.stringify(f.actual) }}</td>
-              <td class="num">{{ f.deviation ?? '—' }}</td>
-              <td>
-                <span v-if="f.deviation_kind === 'false_positive'" class="tag t-hit">误报</span>
-                <span v-else-if="f.deviation_kind === 'false_negative'" class="tag t-hit">漏报</span>
-                <span v-else-if="f.deviation_kind === 'needs_review_only'" class="tag t-pend">仅待人工</span>
-                <span v-else class="tag t-pass">一致</span>
-              </td>
-              <td class="mono">{{ f.source }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="panel">
-        <h3>I · 参数调整（{{ (data as any).I_improvements.length }} 条）</h3>
-        <div v-if="(data as any).I_scope_note" class="note">
-          <MarkText :text="(data as any).I_scope_note" />
-        </div>
-        <div v-if="!(data as any).I_improvements.length" class="muted">
-          本单所涉 Agent 近期没有调参记录。
-        </div>
-        <table v-else>
-          <thead><tr><th>时间</th><th>参数</th><th>原值</th><th>新值</th><th>结果</th><th>理由</th></tr></thead>
-          <tbody>
-            <tr v-for="(x, i) in (data as any).I_improvements" :key="i">
-              <td class="mono">
-                {{ String(x.applied_at).slice(0, 19) }}
-                <span v-if="!x.per_cycle" class="tag t-na">批次级</span>
-              </td>
-              <td class="mono">{{ x.param }}</td>
-              <td class="mono">{{ JSON.stringify(x.old_value) }}</td>
-              <td class="mono">{{ JSON.stringify(x.new_value) }}</td>
-              <td>
-                <span class="tag" :class="x.rejected ? 't-hit' : 't-pass'">
-                  {{ x.rejected ? '已拒绝' : '已生效' }}
-                </span>
-                <div v-if="x.rejected_why" class="muted" style="font-size: 11px"><MarkText :text="x.rejected_why" /></div>
-              </td>
-              <td class="muted"><MarkText :text="x.reason" /></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </template>
-  </Async>
 </template>

@@ -60,6 +60,7 @@ onMounted(async () => {
 </script>
 
 <template>
+  <div class="v2">
   <h2>领域知识资产</h2>
 
   <div class="panel" style="margin-top: 16px">
@@ -174,6 +175,7 @@ onMounted(async () => {
       <b>口径</b>：{{ ov.scope_note }}
     </div>
   </div>
+  </div>
 </template>
 
 <style scoped>
@@ -198,14 +200,14 @@ onMounted(async () => {
   padding: 6px 14px;
   border: 1px solid var(--line, #e3e8ef);
   border-radius: 6px;
-  background: #fff;
+  background: var(--panel);
   cursor: pointer;
   font-size: 14px;
 }
 .pick.on {
   border-color: var(--brand, #1668dc);
   color: var(--brand, #1668dc);
-  background: #f3f8ff;
+  background: var(--brand-bg);
   font-weight: 600;
 }
 .pick:disabled { opacity: .5; cursor: not-allowed; }

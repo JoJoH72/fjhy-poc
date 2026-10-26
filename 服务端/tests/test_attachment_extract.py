@@ -288,12 +288,14 @@ def test_演示合成的附件不和抽出来的混在一起():
 # ─────────────────────────────────────────────────────────────────────────────
 def test_附件落在附件区不混进制度文件库(bill, tmp_path):
     """制度文件库是**规则的上游**，单据附件是**业务数据**。
-    混在一个目录下之后，「规则是从哪堆资料里抽的」就再也说不清。"""
+    混在一个目录下之后，「规则是从哪堆资料里抽的」就再也说不清。
+    2026-10-25 起 stored_path 存相对值，取全路径要走 resolve_stored_path
+    ——直接 abspath 相对值会落在进程 CWD 下，测出来的位置是错的。"""
     p = str(tmp_path / "t.xlsx")
     _make_xlsx(p, [bill], [(2, 1, _png("red"))])
     ax.extract_xlsx(p)
     path = db.scalar("SELECT stored_path FROM attachment WHERE bill_no=%s", (bill,))
-    full = os.path.abspath(path)
+    full = ax.resolve_stored_path(path)
     assert full.startswith(os.path.abspath(config.ATTACH_DIR)), full
     assert not full.startswith(os.path.abspath(config.DOCLIB_DIR)), \
         "单据附件落进了制度文件库的托管区"

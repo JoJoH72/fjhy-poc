@@ -1,10 +1,8 @@
 <script setup lang="ts">
 /**
- * 系统 · 智能体工作台。五段：总览 / 契约 / 协同与信号 / 运行 / 存储。
+ * 系统 · 智能体工作台。五段：运行拓扑 / 契约 / 协同与信号 / 运行 / 存储。
  *
- * 2026-10-19 按要求在系统一级菜单下新增。
- *
- * 做它的理由:全站 12 个 Agent 散在三处——契约在 config/agents/*.yaml、
+ * 做它的理由:全站 13 个 Agent 散在三处——契约在 config/agents/*.yaml、
  * 运行时状态在 agent_state、运行痕迹在 agent_signal_log 与 cycle_log，
  * 而编排分散在四条链上，每条链的入口挂在它自己那一栏的页面里。
  * **结果是没有一个地方能回答「现在有几个智能体、各自什么状态」。**
@@ -16,15 +14,22 @@
  * 不是这一页新造的能力。
  *
  * 页面上三条口径必须写出来，不写就是在说谎：
- *   · 契约 12 个，agent_state 只有 2 行——那不是缺数据，是两种编排方式的差别
- *   · 心跳全没跳过——**空不等于坏，等于没开**（没有常驻调度器在跑）
+ *   · 契约 13 个，agent_state 也 13 行——两种编排方式的差别写在 facts 里
+ *   · 心跳不适用——**空不等于坏，等于没开**（没有常驻调度器在跑）
  *   · 三条手工链的信号 2026-10-19 之前一条都没落库（实测的 bug，已修）
+ *
+ * 版面（2026-10-25 重做）：
+ *   页签在页首（不塞进卡片标题里），第一屏是 4 张指标卡 + 运行拓扑，
+ *   点节点开右侧详情抽屉；契约/信号/运行/存储四段保持原来的取数逻辑不变。
+ *   上一版把页签做进卡头、拓扑节点被全局按钮高度压成 30px，三层泳道互相压字。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { pro } from '../data/prose'
 import { api } from '../api'
-import type {
-  AgentChain, AgentCycleRow, AgentDetail, AgentOverview, AgentSignalRow, StorageRow,
-} from '../api'
+import { useCollapse } from '../data/collapse'
+import type { AgentChain, AgentDetail, AgentOverview, AgentRow, StorageRow } from '../api'
+
+const sigList = useCollapse(), storeList = useCollapse(), byAgentList = useCollapse()
 
 type Tab = 'all' | 'contract' | 'bus' | 'run' | 'store'
 const tab = ref<Tab>('all')
@@ -32,6 +37,7 @@ const tab = ref<Tab>('all')
 const ov = ref<AgentOverview | null>(null)
 const det = ref<AgentDetail | null>(null)
 const pick = ref('')
+const drawerId = ref('')
 const checks = ref<{ items: { check: string; ok: boolean; detail: string }[]
                      total: number; failed: number; note: string } | null>(null)
 const showAllChecks = ref(false)
@@ -66,19 +72,36 @@ const loadChains = () =>
     chainNote.value = r.note
   })
 
-const openAgent = (id: string) =>
+/** 取某个智能体的契约详情（抽屉与契约页签共用一份，避免重复请求） */
+async function loadDetail(id: string) {
+  pick.value = id
+  showYaml.value = false
+  if (det.value?.agent_id !== id) det.value = await api.agentDetail(id)
+}
+
+const openDrawer = (id: string) => run('d', async () => {
+  drawerId.value = id
+  await loadDetail(id)
+})
+
+function closeDrawer() {
+  drawerId.value = ''
+}
+
+/** 契约页签里选智能体 */
+const selectAgent = (id: string) =>
   run('d', async () => {
-    pick.value = id
-    showYaml.value = false
-    det.value = await api.agentDetail(id)
+    drawerId.value = ''
+    await loadDetail(id)
     tab.value = 'contract'
   })
 
 function pickTab(t: Tab) {
   tab.value = t
+  drawerId.value = ''
   if (t === 'all' && !ov.value) loadOv()
   if (t === 'contract' && !det.value && ov.value?.items.length)
-    openAgent(ov.value.items[0].agent_id)
+    run('d', () => loadDetail(ov.value!.items[0].agent_id))
   if (t === 'bus' && !sig.value) {
     run('s', async () => { sig.value = await api.agentSignals(50) })
   }
@@ -130,191 +153,268 @@ const startChain = (c: AgentChain) =>
     if (r.ok) poll(c.chain_id)
   })
 
-const LAYER_WHY: Record<string, string> = {
-  L0: '感知:只看见，不判断。感知层一旦下结论，「谁发现的」与「谁判的」就混在一起',
-  L1: '研判:在自己的领域里出结论',
-  L2: '协同:汇总与仲裁，不自己产内容',
-}
+const LAYER_CN: Record<string, string> = { L0: '感知层', L1: '执行层', L2: '协同层' }
+const LAYERS = ['L0', 'L1', 'L2'] as const
 const ST_CN: Record<string, string> = {
   idle: '未开始', running: '运行中', done: '已完成', failed: '失败',
 }
+/** 链名在节点上要短：卡片只有 158px 宽，写全称「本体构建（业务 / 流程本体）」没有意义 */
+const CHAIN_SHORT: Record<string, string> = {
+  review: '审核链', extract: '抽取链', onto_align: '规则本体链', onto_build: '业务本体链',
+}
+const TRIG_CN: Record<string, string> = {
+  subscribe: '订阅信号', heartbeat: '心跳', interval: '定时', event: '事件', message: '消息投递',
+}
 
 const triple = computed(() => ov.value?.items.filter((x) => x.no_judgement) || [])
+const cur = computed(() => ov.value?.items.find((x) => x.agent_id === drawerId.value) || null)
 
-onMounted(loadOv)
+/**
+ * 「活着」= 24 小时内跑过周期。
+ * 不能拿「有 agent_state 行」当运行中：那样 13 个全是运行中，
+ * 一个都没在跑的页面反而自称 13/13，比不显示更误导。
+ */
+function live(a: AgentRow | null): boolean {
+  if (!a?.last_cycle_at || !a.cycles) return false
+  const t = Date.parse(a.last_cycle_at)
+  return Number.isFinite(t) && Date.now() - t < 24 * 3600 * 1000
+}
+function liveTitle(a: AgentRow): string {
+  return a.last_cycle_at
+    ? `最近周期 ${a.last_cycle_at.replace('T', ' ').slice(0, 19)}`
+    : '还没有跑过周期'
+}
+
+/** 拓扑指标卡：口径全部来自 /api/agents 现有字段，不拼后端没有的指标 */
+const stats = computed(() => {
+  const items = ov.value?.items || []
+  const by = ov.value?.totals.by_layer || {}
+  return {
+    total: items.length,
+    l0: by.L0 || 0, l1: by.L1 || 0, l2: by.L2 || 0,
+    cycles: items.reduce((s, x) => s + (x.cycles || 0), 0),
+    signals: items.reduce((s, x) => s + (x.signals || 0), 0),
+    checks: ov.value?.totals.checks ?? 0,
+    failed: ov.value?.totals.failed ?? 0,
+    live: items.filter(live).length,
+  }
+})
+
+function agentsOf(lay: string) {
+  return (ov.value?.items || []).filter((x) => x.layer === lay)
+}
+function chainShort(a: AgentRow) {
+  return CHAIN_SHORT[a.chain_id || ''] || a.chain_name || '—'
+}
+/** 「素材感知（源头、规则资产装载）」→ 主名；括号补充只留在 title 里，
+    卡片宽 164px，括号挤在同一行会把主名压成省略号 */
+function nameMain(s: string) {
+  const i = s.indexOf('（')
+  return i > 0 ? s.slice(0, i) : s
+}
+/** 抽屉里的触发方式：把契约里的对象拍平成一行可读文字。只列启用的——
+    「message 未启用」这种占位行对读的人没有信息量，契约页签里能看到全量。 */
+function triggerRows(d: AgentDetail) {
+  return Object.entries(d.triggers)
+    .map(([k, v]) => {
+      const o = (v || {}) as Record<string, unknown>
+      const ch = (o.channels as string[] | undefined) || []
+      const iv = o.interval_seconds as number | undefined
+      return {
+        key: k,
+        label: TRIG_CN[k] || k,
+        detail: ch.length ? ch.join('、') : iv ? `每 ${iv} 秒` : '',
+        enabled: !!o.enabled,
+      }
+    })
+    .filter((t) => t.enabled)
+}
+const fmt = (s?: string | null) => (s ? s.replace('T', ' ').slice(0, 19) : '—')
+/** 写库台账 map → 「表 ×行数」，直接甩 JSON 在表格里没人愿意读 */
+function writtenText(w: Record<string, number> | null) {
+  if (!w) return '—'
+  const parts = Object.entries(w).map(([t, n]) => (n ? `${t} ×${n}` : t))
+  return parts.length ? parts.join('、') : '—'
+}
+
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && drawerId.value) closeDrawer()
+}
+
+onMounted(() => {
+  loadOv()
+  window.addEventListener('keydown', onKey)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey)
+  stop()
+})
 </script>
 
 <template>
-  <h2>智能体工作台</h2>
-  <div class="sub">
-    全站 {{ ov?.totals.agents ?? '—' }} 个智能体:契约在
-    <code>config/agents/*.yaml</code>、状态在 <code>agent_state</code>、
-    痕迹在 <code>agent_signal_log</code> 与 <code>cycle_log</code>。
-    <b>这一页只读</b>——不改参数、不投信号、不停 Agent。
-  </div>
-
-  <div class="row">
-    <button :class="{ on: tab === 'all' }" @click="pickTab('all')">总览</button>
-    <button :class="{ on: tab === 'contract' }" @click="pickTab('contract')">契约</button>
-    <button :class="{ on: tab === 'bus' }" @click="pickTab('bus')">协同与信号</button>
-    <button :class="{ on: tab === 'run' }" @click="pickTab('run')">运行</button>
-    <button :class="{ on: tab === 'store' }" @click="pickTab('store')">存储</button>
-    <span v-if="ov" class="muted" style="margin-left: auto">
-      L0 {{ ov.totals.by_layer.L0 }} · L1 {{ ov.totals.by_layer.L1 }} ·
-      L2 {{ ov.totals.by_layer.L2 }} ·
-      契约校验 {{ ov.totals.checks }} 项
-      <span class="tag" :class="ov.totals.failed ? 't-hit' : 't-pass'">
-        失败 {{ ov.totals.failed }}</span>
+  <div class="v2">
+  <div class="sysbar">
+    <div class="tabs" role="tablist">
+      <button :class="{ on: tab === 'all' }" @click="pickTab('all')">运行拓扑</button>
+      <button :class="{ on: tab === 'contract' }" @click="pickTab('contract')">契约</button>
+      <button :class="{ on: tab === 'bus' }" @click="pickTab('bus')">协同与信号</button>
+      <button :class="{ on: tab === 'run' }" @click="pickTab('run')">运行</button>
+      <button :class="{ on: tab === 'store' }" @click="pickTab('store')">存储</button>
+    </div>
+    <div class="grow"></div>
+    <span v-if="ov" class="pill num" :class="ov.totals.failed ? 'bad' : 'ok'">
+      契约校验 {{ ov.totals.checks }} 项 · 失败 {{ ov.totals.failed }}
     </span>
+    <button class="btn ghost" :disabled="!!busy" @click="loadOv">刷新</button>
   </div>
 
   <div v-if="err" class="err">{{ err }}</div>
   <div v-if="msg" class="ok-note">{{ msg }}</div>
 
-  <!-- ① 总览 ---------------------------------------------------------------->
+  <!-- ① 运行拓扑 -->
   <template v-if="tab === 'all'">
-    <!-- 原来这里是「实话先说」面板（契约数 vs agent_state 行数、心跳没跳过、
-         有运行痕迹的个数三条）。2026-10-21 按要求从页面去掉。
-         **数据本身没删**：/api/agents 的 facts 仍然返回这三条，
-         tests/test_agent_hub.py::test_实话必须带原因 还钉着「每条都要带 why」。
-         要用的时候把这个面板加回来就行，不必再去后端找口径。 -->
-
-    <div v-if="ov" class="panel">
-      <h3>{{ ov.totals.agents }} 个智能体</h3>
-      <div class="sub">
-        层级不是大小:<b>L0 只看见不判断</b>、L1 研判、L2 协同与仲裁。
-        点一行看它的完整契约。
+    <div v-if="ov" class="stats hub-stats">
+      <div class="stat">
+        <div class="k">运行中（近 24 小时）</div>
+        <div class="v num">{{ stats.live }}<small> / {{ stats.total }}</small></div>
+        <div class="d">感知 {{ stats.l0 }} · 执行 {{ stats.l1 }} · 协同 {{ stats.l2 }}</div>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 34px">层</th><th style="width: 160px">智能体</th>
-            <th style="width: 150px">所属链</th>
-            <th style="width: 120px">触发</th>
-            <th class="num" style="width: 40px">读</th>
-            <th class="num" style="width: 40px">写</th>
-            <th class="num" style="width: 44px">可调参</th>
-            <th style="width: 70px">状态行</th>
-            <th style="width: 80px">上次心跳</th>
-            <th class="num" style="width: 46px">信号</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="a in ov.items" :key="a.agent_id" class="clickable"
-              :class="{ on: pick === a.agent_id }" @click="openAgent(a.agent_id)">
-            <td>
-              <span class="tag" :class="a.layer === 'L0' ? 't-na'
-                : a.layer === 'L1' ? 't-pend' : 't-pass'">{{ a.layer }}</span>
-            </td>
-            <td>
-              <b>{{ a.agent_name }}</b>
-              <div class="muted mono" style="font-size: 10px">{{ a.agent_id }}</div>
-            </td>
-            <td style="font-size: 12px">{{ a.chain_name || '—' }}</td>
-            <td style="font-size: 11px">
-              {{ a.triggers.join('+') }}
-              <span v-if="a.heartbeat_seconds" class="muted">{{ a.heartbeat_seconds }}s</span>
-            </td>
-            <td class="num">{{ a.reads.length }}</td>
-            <td class="num">{{ a.writes.length }}</td>
-            <td class="num">{{ a.params }}</td>
-            <td>
-              <span v-if="a.has_state" class="tag t-pass">有</span>
-              <span v-else class="tag t-na">无</span>
-            </td>
-            <td class="muted" style="font-size: 11px">
-              <!-- 空显示「不适用」而不是「没跳过」：POC 里没有常驻调度器在跑，
-                   心跳本来就不该跳。「没跳过」读起来像「该跳而没跳」，是个故障描述；
-                   「不适用」才是实情——这一栏对这些 Agent 不成立。 -->
-              {{ a.last_beat_at ? a.last_beat_at.toString().slice(5, 16) : '不适用' }}
-            </td>
-            <td class="num" :class="{ muted: !a.signals }">{{ a.signals || '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="note">
-        <div v-for="(why, k) in LAYER_WHY" :key="k">
-          <b>{{ k }}</b> —— <MarkText :text="why" />
-        </div>
+      <div class="stat">
+        <div class="k">周期累计</div>
+        <div class="v num">{{ stats.cycles }}</div>
+        <div class="d">四条编排链合计</div>
+      </div>
+      <div class="stat">
+        <div class="k">信号累计</div>
+        <div class="v num">{{ stats.signals }}</div>
+        <div class="d">已落 agent_signal_log</div>
+      </div>
+      <div class="stat" :class="{ alert: stats.failed > 0 }">
+        <div class="k">契约校验</div>
+        <div class="v num">{{ stats.checks }}<small> 项</small></div>
+        <div class="d">{{ stats.failed ? `失败 ${stats.failed} 项` : '全部通过' }}</div>
       </div>
     </div>
 
-    <div v-if="triple.length" class="panel">
-      <h3>声明了「不下结论」的 {{ triple.length }} 个</h3>
-      <div class="sub">
-        <code>decide.no_judgement: true</code> 是契约里的一条自我约束,不是省事。
-        感知层开始下结论,出错时就分不清是**看漏了**还是**判错了**。
+    <div v-if="ov" class="card">
+      <div class="card-head">
+        <h2>运行拓扑</h2>
+        <span class="hint">感知只发现，执行出结论，协同做归并；点节点看这一条的运行情况</span>
+        <div class="grow"></div>
+        <div class="lg">
+          <span><i class="dg run"></i>24 小时内有周期</span>
+          <span><i class="dg idle"></i>待命</span>
+        </div>
       </div>
-      <div class="row" style="flex-wrap: wrap">
-        <code v-for="a in triple" :key="a.agent_id" class="chip"
-              @click="openAgent(a.agent_id)">{{ a.agent_name }}</code>
+
+      <div class="arch">
+        <template v-for="lay in LAYERS" :key="lay">
+          <div class="lane">
+            <div class="lane-head"><span class="lt">{{ LAYER_CN[lay] }}</span></div>
+            <div class="lane-body">
+              <button v-for="a in agentsOf(lay)" :key="a.agent_id" class="node"
+                      :class="{ sel: drawerId === a.agent_id }"
+                      :aria-label="`${a.agent_name} 详情`"
+                      @click="openDrawer(a.agent_id)">
+                <div class="top">
+                  <span class="chain" :class="{ k2: a.chain_id === 'extract' }"
+                        :title="a.chain_name || ''">{{ chainShort(a) }}</span>
+                  <span class="dot" :class="live(a) ? 'run' : 'idle'" :title="liveTitle(a)"></span>
+                </div>
+                <div class="nm" :title="a.agent_name">{{ nameMain(a.agent_name) }}</div>
+                <div class="ds" :title="a.desc || ''">{{ a.desc || '—' }}</div>
+                <div class="io">
+                  <span>周期 <b>{{ a.cycles || 0 }}</b></span>
+                  <span>信号 <b>{{ a.signals || 0 }}</b></span>
+                </div>
+              </button>
+            </div>
+          </div>
+          <div v-if="lay !== 'L2'" class="flow">
+            <span class="wire"></span>
+            <span class="sig">{{ lay === 'L0' ? '任务分发' : '产出移交' }}</span>
+            <span class="wire"></span>
+          </div>
+        </template>
+      </div>
+
+      <div class="arch-foot">
+        <span>
+          共 <b>{{ stats.total }}</b> 个智能体，其中 <b>{{ stats.live }}</b> 个近 24 小时跑过周期；
+          POC 没有常驻调度器，其余按需触发——<b>空不等于坏，等于没开</b>。
+        </span>
+        <span v-if="triple.length" class="foot-two">
+          声明不下结论的 {{ triple.length }} 个：
+          <button v-for="a in triple" :key="a.agent_id" class="chip" @click="openDrawer(a.agent_id)">
+            {{ nameMain(a.agent_name) }}
+          </button>
+        </span>
       </div>
     </div>
   </template>
 
   <!-- ② 契约 ---------------------------------------------------------------->
   <template v-if="tab === 'contract'">
-    <div class="panel">
-      <div class="row" style="flex-wrap: wrap; margin: 0">
-        <button v-for="a in ov?.items || []" :key="a.agent_id" class="mini"
-                :class="{ on: pick === a.agent_id }" @click="openAgent(a.agent_id)">
-          <span class="muted">{{ a.layer }}</span> {{ a.agent_name }}
-        </button>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>选择智能体</h2><div class="grow"></div>
+        <span class="hint">按层列出，共 {{ ov?.items.length || 0 }} 个</span></div>
+      <div class="pickgroups">
+        <div v-for="lay in LAYERS" :key="lay" class="pick-group">
+          <div class="pick-lt">{{ LAYER_CN[lay] }}</div>
+          <div class="chips">
+            <button v-for="a in agentsOf(lay)" :key="a.agent_id" class="chip"
+                    :class="{ on: pick === a.agent_id }" @click="selectAgent(a.agent_id)">
+              {{ nameMain(a.agent_name) }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
     <template v-if="det">
-      <div class="panel">
-        <h3>
-          {{ det.agent_name }}
-          <span class="tag" :class="det.layer === 'L0' ? 't-na'
-            : det.layer === 'L1' ? 't-pend' : 't-pass'">{{ det.layer }}</span>
-          <span class="muted mono" style="font-size: 12px">
-            {{ det.agent_id }} v{{ det.agent_version }}
-          </span>
-        </h3>
-        <div class="sub">{{ det.desc }}</div>
-        <div class="kv">
-          <b>所属链</b>
-          <span>{{ det.chain_name || '—' }}
-            <span class="muted" style="font-size: 12px">
-              （由哪个编排跑它;它订阅谁的信号见下面的触发器——两件事会不一样）
-            </span>
-          </span>
-          <b>执行策略</b><span>{{ det.execution_strategy }}</span>
-          <b>运行时参数</b>
-          <span>
-            <code>{{ JSON.stringify(det.state.params) }}</code>
-            <span class="muted" style="font-size: 12px; margin-left: 6px">
-              来自 {{ det.state.params_from }}</span>
-          </span>
-          <b>上次心跳</b>
-          <span>
-            {{ det.state.last_beat_at || '不适用' }}
-            <span v-if="!det.state.last_beat_at" class="muted" style="font-size: 12px">
-              —— POC 里没有常驻调度器在跑,**空不等于坏,等于没开**
-            </span>
-          </span>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head">
+          <h2>{{ det.agent_name }}</h2>
+          <span class="pill brand">{{ LAYER_CN[det.layer] || det.layer }}</span>
+          <span class="hint mono">{{ det.agent_id }} · v{{ det.agent_version }}</span>
+          <div class="grow"></div>
+          <span class="hint">{{ det.chain_name || '—' }}</span>
+        </div>
+        <div class="kvg">
+          <div><span class="k">职责</span><span class="v" style="white-space:normal">{{ det.desc || '—' }}</span></div>
+          <div><span class="k">执行策略</span><span class="v">{{ det.execution_strategy }}</span></div>
+          <div><span class="k">运行时参数来源</span><span class="v">{{ det.state.params_from }}</span></div>
+          <div>
+            <span class="k">上次心跳</span>
+            <span class="v">{{ det.state.last_beat_at ? fmt(det.state.last_beat_at) : '不适用' }}</span>
+          </div>
+        </div>
+        <div v-if="!det.state.last_beat_at" class="note" style="margin:0 20px 16px">
+          POC 里没有常驻调度器在跑，心跳为空是<b>没开</b>而不是坏了；
+          心跳仍是契约必填项——LISTEN/NOTIFY 是尽力而为的，断连期间的通知收不到且不报错。
         </div>
       </div>
 
-      <div class="panel">
-        <h3>触发器</h3>
-        <table>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head"><h2>触发方式</h2></div>
+        <table class="tbl">
           <thead>
             <tr>
-              <th style="width: 80px">类型</th><th style="width: 54px">启用</th>
-              <th style="width: 200px">通道 / 间隔</th><th>为什么这么设</th>
+              <th style="width: 140px">类型</th><th style="width: 90px">启用</th>
+              <th style="width: 220px">通道 / 间隔</th><th>为什么这么设</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(t, k) in det.triggers" :key="k">
-              <td class="mono">{{ k }}</td>
+              <td>
+                {{ TRIG_CN[k] || k }}
+                <span class="mono muted" style="font-size:11px"> {{ k }}</span>
+              </td>
               <td>
                 <span class="tag" :class="t.enabled ? 't-pass' : 't-na'">
                   {{ t.enabled ? '开' : '关' }}</span>
               </td>
-              <td class="mono" style="font-size: 11px">
+              <td class="mono" style="font-size: 12px">
                 {{ (t.channels as string[] | undefined)?.join('、')
                   || (t.interval_seconds ? t.interval_seconds + ' 秒' : '—') }}
               </td>
@@ -322,14 +422,13 @@ onMounted(loadOv)
             </tr>
           </tbody>
         </table>
-        <div class="note">
-          **心跳不是可选项**（契约校验强制）:LISTEN/NOTIFY 是尽力而为的,
-          连接断开期间的通知收不到**且不报错**。只靠消息触发会在重连窗口静默丢任务。
-        </div>
       </div>
 
-      <div class="panel">
-        <h3>S → D → A → F → I</h3>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head">
+          <h2>S → D → A → F → I</h2>
+          <span class="hint">读什么、怎么判、写哪里、量什么、能调什么</span>
+        </div>
         <div class="sdafi">
           <div class="blk">
             <b>S 读</b>
@@ -364,7 +463,7 @@ onMounted(loadOv)
           </div>
           <div class="blk">
             <b>F 量</b>
-            <table v-if="det.sdafi.F.metrics.length">
+            <table v-if="det.sdafi.F.metrics.length" class="tbl">
               <tbody>
                 <tr v-for="m in det.sdafi.F.metrics" :key="m.metric_name">
                   <td class="mono" style="width: 150px; font-size: 11px">
@@ -380,7 +479,7 @@ onMounted(loadOv)
           </div>
           <div class="blk">
             <b>I 调</b>
-            <table v-if="det.sdafi.I.params.length">
+            <table v-if="det.sdafi.I.params.length" class="tbl">
               <thead>
                 <tr>
                   <th style="width: 150px">参数</th><th style="width: 60px">默认</th>
@@ -404,78 +503,72 @@ onMounted(loadOv)
             </div>
           </div>
         </div>
-        <div class="note"><MarkText :text="det.note" /></div>
+        <div class="note" style="margin:12px 20px 16px"><MarkText :text="det.note" /></div>
       </div>
 
-      <div class="panel">
-        <div class="row" style="margin: 0">
-          <h3 style="margin: 0">
-            契约原文 <code class="muted">{{ det.contract_file.file }}</code>
-          </h3>
-          <span class="muted" style="font-size: 12px">
-            {{ det.contract_file.lines }} 行,其中 {{ det.contract_file.comment_lines }}
-            行是注释——<b>注释就是口径本身</b>
-          </span>
-          <button class="mini" style="margin-left: auto" @click="showYaml = !showYaml">
-            {{ showYaml ? '收起' : '看原文' }}
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head">
+          <h2>契约原文</h2>
+          <span class="hint">{{ det.contract_file.lines }} 行，其中 {{ det.contract_file.comment_lines }} 行是注释——注释就是口径本身</span>
+          <div class="grow"></div>
+          <span class="hint mono">{{ det.contract_file.file }}</span>
+          <button class="btn ghost" @click="showYaml = !showYaml">
+            {{ showYaml ? '收起原文' : '看原文' }}
           </button>
         </div>
         <pre v-if="showYaml" class="yaml">{{ det.contract_file.text }}</pre>
       </div>
     </template>
 
-    <div class="panel">
-      <div class="row" style="margin: 0">
-        <h3 style="margin: 0">契约校验</h3>
-        <button class="mini" :disabled="!!busy" @click="loadChecks">现跑一遍</button>
-        <span v-if="checks" class="muted" style="font-size: 12px">
-          {{ checks.total }} 项,失败
-          <b :style="{ color: checks.failed ? 'var(--hit)' : 'var(--pass)' }">
-            {{ checks.failed }}</b>
+    <div class="card">
+      <div class="card-head">
+        <h2>契约校验</h2>
+        <span v-if="checks" class="hint">
+          {{ checks.total }} 项，失败
+          <b :style="{ color: checks.failed ? 'var(--bad)' : 'var(--ok)' }">{{ checks.failed }}</b>
         </span>
-        <button v-if="checks" class="mini" @click="showAllChecks = !showAllChecks">
+        <div class="grow"></div>
+        <button v-if="checks" class="btn ghost" @click="showAllChecks = !showAllChecks">
           {{ showAllChecks ? '只看失败' : '看全部' }}
         </button>
+        <button class="btn ghost" :disabled="!!busy" @click="loadChecks">现跑一遍</button>
       </div>
-      <div v-if="checks">
-        <div class="note"><MarkText :text="checks.note" /></div>
-        <table v-if="showAllChecks || checks.failed">
-          <thead><tr><th style="width: 54px">结果</th><th style="width: 330px">检查项</th>
+      <div v-if="checks" class="checks">
+        <div v-if="!showAllChecks && !checks.failed" class="ok-line">
+          {{ checks.total }} 项全过。<b>和启动时跑的是同一套</b>——另写一份校验就会出现
+          「启动能过、页面报错」这种谁也说不清的状态。
+        </div>
+        <table v-else class="tbl">
+          <thead><tr><th style="width: 70px">结果</th><th style="width: 340px">检查项</th>
             <th>说明</th></tr></thead>
           <tbody>
             <tr v-for="(k, i) in checks.items.filter((x) => showAllChecks || !x.ok)"
                 :key="i">
               <td><span class="tag" :class="k.ok ? 't-pass' : 't-hit'">
-                {{ k.ok ? '过' : '失败' }}</span></td>
+                {{ k.ok ? '通过' : '失败' }}</span></td>
               <td style="font-size: 12px">{{ k.check }}</td>
-              <td class="muted" style="font-size: 11px"><MarkText :text="k.detail" /></td>
+              <td class="muted" style="font-size: 12px"><MarkText :text="k.detail" /></td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="note" style="background: #f1f8f2">
-          {{ checks.total }} 项全过。<b>和启动时跑的是同一套</b>——另写一份校验就会出现
-          「启动能过、页面报错」这种谁也说不清的状态。
-        </div>
+        <div class="note" style="margin:0"><MarkText :text="checks.note" /></div>
       </div>
     </div>
   </template>
 
   <!-- ③ 协同与信号 ---------------------------------------------------------->
   <template v-if="tab === 'bus'">
-    <div v-if="sig" class="panel">
-      <h3>数据池</h3>
-      <div class="sub">
-        <b>Agent 之间零直接调用</b>:上游写进数据池、发信号,下游从池子里读。
-        <code>agent_signal</code> 是在途的信号,<code>agent_signal_log</code> 是不可改的台账。
+    <div v-if="sig" class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>数据池</h2>
+        <span class="hint">Agent 之间零直接调用：上游写进池子、发信号，下游从池子里读</span></div>
+      <div class="kvlist">
+        <div v-for="f in sig.facts" :key="f.fact" class="kvrow">
+          <b>{{ f.fact }}</b><span><MarkText :text="f.why" /></span>
+        </div>
       </div>
-      <div class="kv">
-        <template v-for="f in sig.facts" :key="f.fact">
-          <b>{{ f.fact }}</b><span style="font-size: 12px"><MarkText :text="f.why" /></span>
-        </template>
-      </div>
-      <table v-if="sig.pool.length">
-        <thead><tr><th style="width: 220px">通道</th><th style="width: 90px">状态</th>
-          <th class="num" style="width: 60px">条数</th><th>最近一条</th></tr></thead>
+      <table v-if="sig.pool.length" class="tbl">
+        <thead><tr><th style="width: 260px">通道</th><th style="width: 100px">状态</th>
+          <th class="num" style="width: 80px">条数</th><th>最近一条</th></tr></thead>
         <tbody>
           <tr v-for="(p, i) in sig.pool" :key="i">
             <td class="mono" style="font-size: 12px">{{ p.channel }}</td>
@@ -484,7 +577,7 @@ onMounted(loadOv)
                 {{ p.status }}</span>
             </td>
             <td class="num">{{ p.n }}</td>
-            <td class="muted mono" style="font-size: 11px">
+            <td class="muted mono" style="font-size: 12px">
               {{ p.last?.toString().slice(0, 19) }}
             </td>
           </tr>
@@ -492,102 +585,107 @@ onMounted(loadOv)
       </table>
     </div>
 
-    <div v-if="sig" class="panel">
-      <h3>谁投过信号</h3>
-      <table>
-        <thead><tr><th style="width: 260px">智能体</th><th class="num" style="width: 60px">条数</th>
-          <th style="width: 150px">第一条</th><th>最近一条</th></tr></thead>
+    <div v-if="sig" class="card" style="margin-bottom:16px">
+      <div class="card-head"><h2>谁投过信号</h2></div>
+      <table class="tbl">
+        <thead><tr><th style="width: 300px">智能体</th><th class="num" style="width: 80px">条数</th>
+          <th style="width: 170px">第一条</th><th>最近一条</th></tr></thead>
         <tbody>
-          <tr v-for="a in sig.by_agent" :key="a.agent_id">
+          <tr v-for="a in byAgentList.view(sig.by_agent)" :key="a.agent_id">
             <td class="mono" style="font-size: 12px">{{ a.agent_id }}</td>
             <td class="num">{{ a.n }}</td>
-            <td class="muted mono" style="font-size: 11px">
+            <td class="muted mono" style="font-size: 12px">
               {{ a.first?.toString().slice(0, 19) }}
             </td>
-            <td class="muted mono" style="font-size: 11px">
+            <td class="muted mono" style="font-size: 12px">
               {{ a.last?.toString().slice(0, 19) }}
             </td>
           </tr>
+          <tr v-if="byAgentList.more(sig.by_agent).show">
+            <td :colspan="4" class="morecell" @click="byAgentList.more(sig.by_agent).toggle()">
+              {{ byAgentList.more(sig.by_agent).rest === -1 ? '收起' : `展开剩余 ${byAgentList.more(sig.by_agent).rest} 条` }}（共 {{ sig.by_agent.length }} 条）
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
 
-    <div v-if="sig" class="panel">
-      <h3>信号台账（最近 {{ sig.items.length }} 条）</h3>
-      <table>
+    <div v-if="sig" class="card">
+      <div class="card-head"><h2>信号台账</h2><div class="grow"></div>
+        <span class="hint">最近 {{ sig.items.length }} 条</span></div>
+      <table class="tbl">
         <thead>
           <tr>
-            <th style="width: 130px">时间</th><th style="width: 200px">智能体</th>
-            <th style="width: 100px">动作</th><th style="width: 180px">目标</th>
-            <th style="width: 150px">写了哪些表</th><th>幂等键</th>
+            <th style="width: 150px">时间</th><th style="width: 210px">智能体</th>
+            <th style="width: 110px">动作</th><th style="width: 190px">目标</th>
+            <th style="width: 160px">写了哪些表</th><th>幂等键</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in sig.items" :key="s.id">
-            <td class="mono" style="font-size: 11px">
+          <tr v-for="s in sigList.view(sig.items)" :key="s.id">
+            <td class="mono" style="font-size: 12px">
               {{ s.emitted_at.toString().slice(5, 19) }}
             </td>
-            <td class="mono" style="font-size: 11px">{{ s.agent_id }}</td>
+            <td class="mono" style="font-size: 12px" :title="s.agent_id">{{ s.agent_id }}</td>
             <td style="font-size: 12px">{{ s.action }}</td>
-            <td class="mono" style="font-size: 11px">{{ s.target }}</td>
-            <td class="mono muted" style="font-size: 10px">
-              {{ s.written_tables ? JSON.stringify(s.written_tables) : '—' }}
+            <td class="mono t-cut" style="font-size: 12px" :title="s.target || ''">{{ s.target }}</td>
+            <td class="mono muted t-cut" style="font-size: 11px" :title="writtenText(s.written_tables)">
+              {{ writtenText(s.written_tables) }}
             </td>
-            <td class="mono muted" style="font-size: 10px">{{ s.idempotency_key }}</td>
+            <td class="mono muted t-cut" style="font-size: 11px" :title="s.idempotency_key">{{ s.idempotency_key }}</td>
+          </tr>
+          <tr v-if="sigList.more(sig.items).show">
+            <td :colspan="6" class="morecell" @click="sigList.more(sig.items).toggle()">
+              {{ sigList.more(sig.items).rest === -1 ? '收起' : `展开剩余 ${sigList.more(sig.items).rest} 条` }}（共 {{ sig.items.length }} 条）
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
-
   </template>
 
   <!-- ④ 运行 ---------------------------------------------------------------->
   <template v-if="tab === 'run'">
-    <div class="panel">
-      <h3>四条链</h3>
-      <div class="sub">{{ chainNote }}</div>
-    </div>
-    <div v-for="c in chains" :key="c.chain_id" class="panel">
-      <div class="row" style="margin: 0 0 6px">
-        <h3 style="margin: 0">{{ c.chain_name }}</h3>
+    <div class="note lead"><MarkText :text="chainNote" /></div>
+    <div v-for="c in chains" :key="c.chain_id" class="card chaincard">
+      <div class="card-head">
+        <h2>{{ c.chain_name }}</h2>
         <span class="tag" :class="c.kind === '常驻编排' ? 't-pass' : 't-na'">{{ c.kind }}</span>
         <span v-if="c.status" class="tag" :class="c.status === 'running' ? 't-pend'
           : c.status === 'failed' ? 't-hit' : 't-na'">
           {{ ST_CN[c.status] || c.status }}
         </span>
-        <span v-if="c.pct !== undefined && c.status === 'running'" class="muted">
-          {{ c.pct }}%
-        </span>
-        <a class="mini dl" :href="c.page">去那一栏 →</a>
-        <button v-if="c.kind !== '常驻编排'" class="mini" style="margin-left: auto"
+        <span v-if="c.pct !== undefined && c.status === 'running'" class="hint num">{{ c.pct }}%</span>
+        <div class="grow"></div>
+        <a class="btn ghost" :href="c.page">去那一栏 →</a>
+        <button v-if="c.kind !== '常驻编排'" class="btn ghost"
                 :disabled="!!busy || c.status === 'running'" @click="startChain(c)">
           {{ c.status === 'running' ? '运行中…' : '在这里启动' }}
         </button>
-        <span v-else class="muted" style="margin-left: auto; font-size: 12px">
-          常驻,本页不启停
-        </span>
+        <span v-else class="hint">常驻，本页不启停</span>
       </div>
-      <div class="note" style="margin-top: 0"><MarkText :text="c.note" /></div>
-      <div class="row" style="flex-wrap: wrap; margin: 6px 0 0">
-        <span v-for="(a, i) in c.agents" :key="a.agent_id" class="step">
-          <span v-if="i" class="arrow">→</span>
-          <code class="chip" @click="openAgent(a.agent_id)">
-            <span class="muted">{{ a.layer }}</span> {{ a.agent_name }}
-          </code>
-        </span>
-      </div>
-      <div class="muted" style="font-size: 12px; margin-top: 6px">
-        <span v-if="c.signals !== undefined">台账 {{ c.signals }} 条信号</span>
-        <span v-if="c.signals_in_job !== undefined">
-          （本次作业 {{ c.signals_in_job }} 条）</span>
-        <span v-if="c.elapsed"> · 上次用时 {{ c.elapsed }} 秒</span>
-        <span v-if="c.job_id"> · 作业 {{ c.job_id }}</span>
-      </div>
-      <div v-if="c.error" class="err" style="margin-top: 6px">{{ c.error }}</div>
-      <div v-if="c.log_errors && c.log_errors.length" class="err" style="margin-top: 6px">
-        <b>信号落库失败 {{ c.log_errors.length }} 条</b>（链照常跑完,但台账缺了行）:
-        <div v-for="(e, i) in c.log_errors" :key="i" style="font-size: 12px">
-          {{ e.from }} → {{ e.channel }}:{{ e.error }}
+      <div class="chainbody">
+        <div class="note" style="margin:0 0 12px"><MarkText :text="c.note" /></div>
+        <div class="chainflow">
+          <template v-for="(a, i) in c.agents" :key="a.agent_id">
+            <span v-if="i" class="arrow">→</span>
+            <button class="chip" @click="selectAgent(a.agent_id)">
+              <span class="muted">{{ a.layer }}</span> {{ nameMain(a.agent_name) }}
+            </button>
+          </template>
+        </div>
+        <div class="hint" style="margin-top: 10px">
+          <span v-if="c.signals !== undefined">台账 {{ c.signals }} 条信号</span>
+          <span v-if="c.signals_in_job !== undefined">（本次作业 {{ c.signals_in_job }} 条）</span>
+          <span v-if="c.elapsed"> · 上次用时 {{ c.elapsed }} 秒</span>
+          <span v-if="c.job_id"> · 作业 {{ c.job_id }}</span>
+        </div>
+        <div v-if="c.error" class="err" style="margin-top: 8px">{{ c.error }}</div>
+        <div v-if="c.log_errors && c.log_errors.length" class="err" style="margin-top: 8px">
+          <b>信号落库失败 {{ c.log_errors.length }} 条</b>（链照常跑完，但台账缺了行）：
+          <div v-for="(e, i) in c.log_errors" :key="i" style="font-size: 12px">
+            {{ e.from }} → {{ e.channel }}：{{ e.error }}
+          </div>
         </div>
       </div>
     </div>
@@ -595,63 +693,227 @@ onMounted(loadOv)
 
   <!-- ⑤ 存储 ---------------------------------------------------------------->
   <template v-if="tab === 'store'">
-    <div v-if="store" class="panel">
-      <h3>存储</h3>
-      <table>
+    <div v-if="store" class="card">
+      <div class="card-head"><h2>存储</h2><div class="grow"></div>
+        <span class="hint">{{ store.items.length }} 张表 / 文件</span></div>
+      <table class="tbl">
         <thead>
           <tr>
-            <th style="width: 180px">表 / 文件</th><th class="num" style="width: 54px">行数</th>
-            <th style="width: 220px">存的是什么</th><th style="width: 150px">谁写的</th>
+            <th style="width: 200px">表 / 文件</th><th class="num" style="width: 70px">行数</th>
+            <th style="width: 230px">存的是什么</th><th style="width: 160px">谁写的</th>
             <th style="width: 130px">重算时</th><th>为什么这么存</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in store.items" :key="t.table_name">
+          <tr v-for="t in storeList.view(store.items)" :key="t.table_name">
             <td class="mono" style="font-size: 12px">{{ t.table_name }}</td>
             <td class="num">{{ t.rows ?? '—' }}</td>
-            <td style="font-size: 12px">{{ t.what }}</td>
-            <td class="muted" style="font-size: 12px">{{ t.written_by }}</td>
+            <td style="font-size: 12px"><MarkText :text="pro(t.what)" /></td>
+            <td class="muted" style="font-size: 12px">{{ pro(t.written_by) }}</td>
             <td style="font-size: 12px">{{ t.on_recalc }}</td>
-            <td class="muted" style="font-size: 12px"><MarkText :text="t.why" /></td>
+            <td class="muted" style="font-size: 12px"><MarkText :text="pro(t.why)" /></td>
+          </tr>
+          <tr v-if="storeList.more(store.items).show">
+            <td :colspan="6" class="morecell" @click="storeList.more(store.items).toggle()">
+              {{ storeList.more(store.items).rest === -1 ? '收起' : `展开剩余 ${storeList.more(store.items).rest} 条` }}（共 {{ store.items.length }} 条）
+            </td>
           </tr>
         </tbody>
       </table>
-      <div class="note"><MarkText :text="store.note" /></div>
+      <div class="note" style="margin:12px 20px 16px"><MarkText :text="store.note" /></div>
     </div>
   </template>
+
+  <!-- 节点详情抽屉 -->
+  <template v-if="drawerId">
+    <div class="dr-mask" @click.self="closeDrawer"></div>
+    <aside class="dr" role="dialog" aria-modal="true" aria-label="智能体详情">
+      <div class="dr-head">
+        <div>
+          <div class="dr-name">{{ cur?.agent_name || '—' }}</div>
+          <div class="dr-sub">
+            {{ LAYER_CN[cur?.layer || ''] || cur?.layer }} · {{ cur?.chain_name || '—' }}
+            · v{{ cur?.agent_version }}
+          </div>
+        </div>
+        <button class="dr-x" aria-label="关闭" @click="closeDrawer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="dr-body">
+        <div class="dr-sec">
+          <div class="dr-k">职责</div>
+          <div class="dr-v">{{ cur?.desc || '—' }}</div>
+        </div>
+
+        <div class="dr-metrics">
+          <div><b class="num">{{ cur?.cycles || 0 }}</b><span>周期累计</span></div>
+          <div><b class="num">{{ cur?.signals || 0 }}</b><span>信号累计</span></div>
+          <div><b class="num">{{ cur?.reads.length || 0 }}</b><span>可读表</span></div>
+          <div><b class="num">{{ cur?.writes.length || 0 }}</b><span>可写表</span></div>
+        </div>
+
+        <div v-if="!det" class="dr-loading">读取契约…</div>
+        <template v-else>
+          <div class="dr-sec">
+            <div class="dr-k">触发方式</div>
+            <div class="dr-tags">
+              <span v-for="t in triggerRows(det)" :key="t.key" class="tag"
+                    :class="t.enabled ? 't-pass' : 't-na'">
+                {{ t.label }}<em v-if="t.detail"> · {{ t.detail }}</em>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="det.sdafi.I.params.length" class="dr-sec">
+            <div class="dr-k">可调参数（改参数要走 improve，本页只读）</div>
+            <table class="tbl dr-tbl">
+              <thead><tr><th>参数</th><th class="num">默认</th><th>区间</th></tr></thead>
+              <tbody>
+                <tr v-for="p in det.sdafi.I.params" :key="p.param_name">
+                  <td class="mono">{{ p.param_name }}</td>
+                  <td class="num">{{ p.default }}</td>
+                  <td class="mono">[{{ p.lo }}, {{ p.hi }}]</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div v-if="det.sdafi.I.forbidden.length" class="dr-sec">
+            <div class="dr-k">禁止自调</div>
+            <div class="dr-tags">
+              <span v-for="f in det.sdafi.I.forbidden" :key="f" class="tag t-hit">{{ f }}</span>
+            </div>
+          </div>
+
+          <div class="dr-sec">
+            <div class="dr-k">最近周期</div>
+            <div class="dr-v mono">{{ fmt(cur?.last_cycle_at) }}</div>
+          </div>
+        </template>
+      </div>
+
+      <div class="dr-foot">
+        <button class="btn ghost" @click="closeDrawer">关闭</button>
+        <button class="btn primary" @click="selectAgent(drawerId)">查看完整契约</button>
+      </div>
+    </aside>
+  </template>
+  </div>
 </template>
 
 <style scoped>
-button.on { background: var(--brand); color: #fff; }
-button.mini { padding: 2px 7px; font-size: 12px; }
-a.mini.dl {
-  display: inline-block; padding: 2px 7px; font-size: 12px;
-  border: 1px solid var(--line); border-radius: 4px; text-decoration: none;
+/* 页签行：与内容区同宽、不塞进卡片，右侧挂契约校验结论 */
+.sysbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.sysbar .tabs { margin-bottom: 0; }
+.hub-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .hub-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.hint { font-size: 12px; color: var(--weak); line-height: 1.5; }
+.lg { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.lg span { display: inline-flex; align-items: center; gap: 6px; }
+.dg { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dg.run { background: var(--ok); }
+.dg.idle { background: var(--weak); }
+
+/* 深色下用亮一档的蓝：--brand 被契约测试钉死为深蓝，不能改绑定，
+   深蓝落在 #151c26 的卡片上等于没有颜色 */
+[data-theme='dark'] .lane-head .lt,
+[data-theme='dark'] .node .chain { color: #7cb2f0; }
+[data-theme='dark'] .node .chain.k2 { color: #d9b25c; }
+
+/* 拓扑脚注：运行口径 + 不下结论的感知体 */.arch-foot {
+  margin: 4px 20px 0; padding: 12px 0 16px; border-top: 1px dashed var(--panel-2);
+  font-size: 12px; color: var(--weak); display: flex; flex-direction: column; gap: 8px;
+  line-height: 1.6;
 }
-tr.clickable { cursor: pointer; }
-tr.clickable:hover td { background: #f7fafd; }
-tr.on td { background: #fffdf5; }
-td.warn { color: var(--hit); }
-code.chip {
-  display: inline-block; padding: 1px 6px; margin: 2px 4px 2px 0; font-size: 11px;
-  background: #f3f6fa; border: 1px solid var(--line); border-radius: 3px; cursor: pointer;
+.arch-foot b { color: var(--text); font-weight: 600; }
+.foot-two { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 契约页签的智能体选择器 */
+.pickgroups { padding: 4px 20px 16px; }
+.pick-group { padding: 10px 0; }
+.pick-group + .pick-group { border-top: 1px solid var(--panel-2); }
+.pick-lt { font-size: 12px; color: var(--weak); margin-bottom: 8px; }
+
+/* 详情抽屉 */
+.dr-mask { position: fixed; inset: 0; background: rgba(10, 16, 24, .38); z-index: 70; }
+.dr {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 430px; max-width: 94vw;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-2); z-index: 71; display: flex; flex-direction: column;
+  animation: drin .18s ease-out;
 }
-.sdafi .blk {
-  border-left: 3px solid var(--line); padding: 2px 0 8px 9px; margin-bottom: 10px;
+@keyframes drin { from { transform: translateX(18px); opacity: .5; } to { transform: none; opacity: 1; } }
+.dr-head {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 18px 20px 14px; border-bottom: 1px solid var(--panel-2);
 }
-.sdafi .blk > b { font-size: 14px; }
+.dr-name { font-size: 16px; font-weight: 600; color: var(--text); }
+.dr-sub { font-size: 12px; color: var(--weak); margin-top: 3px; }
+.dr-head .dr-x {
+  margin-left: auto; padding: 0; width: 28px; min-height: 28px; height: 28px;
+  border-radius: 6px; border: 0; background: none; color: var(--weak);
+  display: grid; place-items: center;
+}
+.dr-head .dr-x:hover { background: var(--panel-2); color: var(--text); border-color: transparent; }
+.dr-body { flex: 1; overflow: auto; padding: 16px 20px 8px; }
+.dr-sec { margin-bottom: 18px; }
+.dr-k { font-size: 12px; color: var(--weak); margin-bottom: 6px; }
+.dr-v { font-size: 13px; color: var(--text); line-height: 1.65; }
+.dr-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
+.dr-metrics > div { background: var(--panel-2); border-radius: var(--r-s); padding: 10px 12px; min-width: 0; }
+.dr-metrics b { display: block; font-size: 18px; color: var(--text); line-height: 1.2; }
+.dr-metrics span { font-size: 11px; color: var(--weak); }
+.dr-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.dr-tags .tag em { font-style: normal; opacity: .8; }
+.dr-tbl td, .dr-tbl th { padding: 6px 8px; font-size: 12px; }
+.dr-loading { font-size: 13px; color: var(--weak); padding: 6px 0 16px; }
+.dr-foot {
+  padding: 12px 20px; border-top: 1px solid var(--panel-2);
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+
+/* 契约表格里的长文本 */
+.checks { padding-bottom: 4px; }
+.ok-line {
+  margin: 14px 20px; padding: 10px 14px; border-radius: var(--r-s);
+  background: var(--ok-bg); color: var(--ok); font-size: 12.5px;
+}
+.morecell { text-align: center; color: var(--brand); cursor: pointer; font-size: 13px; }
+
+/* 协同与信号：口径清单 */
+.kvlist { padding: 4px 20px 12px; }
+.kvrow { display: grid; grid-template-columns: 280px 1fr; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--panel-2); font-size: 12.5px; }
+.kvrow:last-child { border-bottom: 0; }
+.kvrow b { color: var(--text); font-weight: 600; }
+.kvrow span { color: var(--muted); line-height: 1.6; }
+
+/* 运行页签：链卡 */
+.note.lead { margin-bottom: 16px; }
+.chainbody { padding: 16px 20px; }
+.chainflow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chainflow .arrow { color: var(--weak); font-size: 12px; }
+.chainflow .chip { display: inline-flex; align-items: center; gap: 4px; }
+
+/* S → D → A → F → I */
+.sdafi { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin: 16px 20px 0; }
+.sdafi .blk { background: var(--panel-2); border-radius: var(--r-s); padding: 12px 14px; min-width: 0; }
+.sdafi .blk > b { font-size: 14px; display: block; margin-bottom: 6px; color: var(--text); }
+.sdafi .blk .chip { cursor: default; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; margin: 2px 4px 2px 0; font-size: 11px; display: inline-block; }
 .pre {
-  margin: 4px 0 0; padding: 6px 8px; background: #fafbfc; border: 1px solid var(--line);
+  margin: 6px 0 0; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 4px; font-size: 11px; line-height: 1.55; white-space: pre-wrap;
+  color: var(--muted); overflow-wrap: anywhere;
 }
 .yaml {
-  max-height: 440px; overflow: auto; background: #fafbfc; border: 1px solid var(--line);
-  border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre;
+  margin: 0 20px 16px; max-height: 440px; overflow: auto; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px;
+  font-size: 11.5px; line-height: 1.55; white-space: pre; color: var(--muted);
 }
-.step { display: inline-flex; align-items: center; }
-.arrow { color: var(--muted); margin: 0 4px; }
 .ok-note {
-  background: #f1f8f2; border: 1px solid var(--pass); border-radius: var(--radius);
-  padding: 7px 9px; margin-bottom: 10px; font-size: 13px;
+  background: var(--ok-bg); border: 1px solid #abefc6; border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 12px; font-size: 12.5px; color: var(--ok);
 }
 </style>

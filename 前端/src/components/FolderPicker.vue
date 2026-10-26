@@ -120,7 +120,7 @@ onMounted(() => go())
   max-height: 240px;
   overflow-y: auto;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--panel);
   margin-top: 8px;
 }
 .dirrow {
@@ -132,6 +132,6 @@ onMounted(() => go())
   cursor: pointer;
 }
 .dirrow:last-child { border-bottom: 0; }
-.dirrow:hover { background: #f5f8fc; }
+.dirrow:hover { background: var(--panel-2); }
 .dirrow .nm { flex: 1; }
 </style>

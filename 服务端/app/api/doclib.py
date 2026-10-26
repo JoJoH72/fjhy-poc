@@ -264,17 +264,21 @@ def file_detail(file_id: str, chars: int = Query(4000, ge=200, le=50000)):
 @router.delete("/files/{file_id}")
 def delete_file(file_id: str,
                 confirm: str = Query("", description="必须传 confirm=yes"),
-                by: str = Query(None, description="操作人署名")):
+                by: str = Query(None, description="操作人署名"),
+                purge: bool = Query(False,
+                    description="连产出一并作废删除（条款/草稿/明细/读图）。"
+                                "仅适用于传错的文件——产出本就不该存在时才用")):
     """删掉**托管目录**里的一份文件。
 
     三道闸，缺一道就会出事：
       · 引用目录里的文件一律拒删（那是客户的资料，本系统只读）→ 400
-      · 已产出条款 / 规则明细 / 已签字读图的拒删（会断证据链）→ 409
+      · 已产出条款 / 规则明细 / 已签字读图的默认拒删（会断证据链）→ 409；
+        传错文件的例外出路是 purge=yes：产出一并作废后删除
       · 磁盘文件删掉，**登记行按「消失」保留**（删行会级联清空四张派生表）
     """
     if confirm != "yes":
         raise HTTPException(400, "删除文件需要二次确认，请传 confirm=yes")
-    r = _guard(doclib.delete_managed_file, file_id, by)
+    r = _guard(doclib.delete_managed_file, file_id, by, purge)
     return must_exist(r, "文件 " + file_id)
 
 
@@ -283,7 +287,6 @@ def delete_file(file_id: str,
 # 27 页就是三分钟起步。扫描要快到可以随时重跑，重扫一慢就没人跑，
 # 快照也就不再反映现状。
 from .. import ocr as ocr_mod   # noqa: E402
-
 
 @router.get("/ocr/engine")
 def ocr_engine():
@@ -301,6 +304,25 @@ def run_ocr(body: dict = Body(None)):
         return ocr_mod.run(file_ids=b.get("file_ids"),
                            dpi=int(b.get("dpi") or ocr_mod.DEFAULT_DPI),
                            limit=int(b.get("limit") or 5))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+# ── 视觉转文字（多模态模型 OCR）─────────────────────────────────────────────
+# 与本机 tesseract 并列的第二条转文字通道：扫描件的页发给 vision_read 用途的
+# 模型逐页转写，**真出网、真计费、页间并行**；文本落 doclib_ocr 同一条管道，
+# 切条款/AI 草稿全部复用。每页出网调用落 doc_page_vision 审计。
+from .. import vision_ocr as vocr   # noqa: E402
+
+
+@router.post("/vision-ocr")
+def run_vision_ocr(body: dict = Body(None)):
+    """扫描件 → 视觉模型逐页转写（出网计费，页间并行）。"""
+    b = body or {}
+    try:
+        return vocr.run(file_ids=b.get("file_ids"),
+                        limit=int(b.get("limit") or 3),
+                        config_id=b.get("config_id"))
     except RuntimeError as e:
         raise HTTPException(400, str(e))
 
@@ -526,6 +548,38 @@ def details_review(detail_id: str, body: dict = Body(...)):
         raise HTTPException(400, str(e))
     must_exist(ok or None, "规则明细 " + detail_id)
     return {"detail_id": detail_id, "state": body.get("state"), "ok": True}
+
+
+# ── 审定人清单 ───────────────────────────────────────────────────────────────
+# 审定署名从「手工输入姓名」改成「从账号里选」（2026-10-25 演示待办④）。
+# 数据源是 IAM 的 sys_user（迁移 0040），不是前端 localStorage——
+# 手输可以填任何字串，选出来的署名才对得上一个真实账号、留得下审计痕。
+# **只给 name/dept/role，不给手机号**：审定场景用不到它，多给一个字段
+# 就多一次泄露面（iam.py 的账号管理接口是 admin-only 的，这里是登录即可读，
+# 两边的返回字段刻意不一样）。
+@ex_router.get("/reviewers")
+def reviewers():
+    try:
+        # 字段名刻意用 user_label 不用 name：mask 的 M01 按**字段名**打星
+        # （name/reviewer/... →「何*」），而这个端点的用途就是让前端选一个
+        # **真名**写进审定留痕——打過星的名字落库，审计上等于签名被涂掉，
+        # 还分不清「林*」是谁。iam/auth 路径有整段豁免（mask.py），这里
+        # 用字段名避开是同一个意思：选定署名属于账号管理语义，不是业务
+        # 数据里需要保护的客户个人信息。留痕**展示**时 reviewer 字段照样
+        # 按 M01 打星，那是出口策略的事，与这里给真名不矛盾。
+        rows = db.query("""
+            SELECT u.account, u.user_name AS user_label, u.dept, u.role_key, r.role_name
+              FROM sys_user u JOIN sys_role r ON r.role_key = u.role_key
+             WHERE u.enabled
+             ORDER BY r.role_key, u.account""")
+    except Exception:
+        # 0040_iam 还没跑到（比如某个旧环境只迁了库没迁全）——回空清单加说明，
+        # 让前端把原因显示出来，而不是一个永远空着的下拉。
+        return {"items": [], "note": "账号表不可用（sys_user 不存在或无权限）。"
+                "审定署名暂时无法从账号清单选择，请先跑数据库迁移 0040_iam。"}
+    return {"items": rows,
+            "note": "审定人从系统账号里选。署名会随审定记录一起留档"
+                    "（reviewer / reviewed_at / 驳回原因）。"}
 
 
 @ex_router.post("/details/{detail_id}/tags")

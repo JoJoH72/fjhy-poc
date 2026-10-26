@@ -38,13 +38,17 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import Async from '../components/Async.vue'
+import { pro } from '../data/prose'
 import FolderPicker from '../components/FolderPicker.vue'
 import Uploader from '../components/Uploader.vue'
 import { api } from '../api'
+import { useCollapse } from '../data/collapse'
 import type {
   DlChange, DlFile, DlRoot, DlScanResult, DlStats, DlStorage, DlUploadItem,
   DlUploadResult, VisionCross, VisionPage, VisionRead,
 } from '../api'
+
+const fileList = useCollapse(), ledgerList = useCollapse(), changeList = useCollapse()
 
 type Tab = 'roots' | 'files' | 'uploads' | 'changes' | 'vision'
 const tab = ref<Tab>('roots')
@@ -160,7 +164,9 @@ const loadUploads = () =>
   })
 
 /** 上传完刷新三处：根（文件数变了）、清单、台账。
- *  只刷一处会让另外两处显示旧数字，而使用者不知道哪个是真的。 */
+ *  只刷一处会让另外两处显示旧数字，而使用者不知道哪个是真的。
+ *  2026-10-26：上传的扫描件（需OCR 的 pdf）自动走视觉转文字——人工转文字
+ *  这一环不再存在。真出网真计费如实播报；失败如实显示，退回「需OCR」。 */
 const afterUpload = (r: DlUploadResult) =>
   run('after-upload', async () => {
     msg.value = `上传完成：进库 ${r.ok_count} 份`
@@ -168,17 +174,56 @@ const afterUpload = (r: DlUploadResult) =>
     await loadRoots()
     await loadFiles()
     if (tab.value === 'uploads') await loadUploads()
+    const scans = files.value.filter(
+      (f) => f.parse_state === '需OCR' && f.ext === '.pdf'
+        && (r.items || []).some((i) => i.file_id === f.file_id || i.rel_path === f.rel_path))
+    if (scans.length) await visionOcr(scans.map((f) => f.file_id))
+  })
+
+/** 视觉转文字：页间并行、计费播报。上传后自动触发，也可对清单里的
+ *  「需OCR」文件单独点（手动按钮在操作列）。 */
+const visionOcr = (fileIds: string[]) =>
+  run('voc', async () => {
+    msg.value = `对 ${fileIds.length} 份扫描件调视觉模型逐页转写（真出网、真计费，页间并行）…`
+    const r = await api.dlVisionOcr({ file_ids: fileIds })
+    const ok = r.items.filter((i) => i.ok)
+    const bad = r.items.filter((i) => !i.ok)
+    msg.value = `视觉转写：${ok.length} 份完成`
+      + (ok.length ? `（${ok.reduce((s, i) => s + (i.chars || 0), 0)} 字 · ${r.elapsed_s}s · ${r.engine}）` : '')
+      + (bad.length ? `，${bad.length} 份失败（见「上传台账」原因）` : '')
+      + '。转写文本可信度比原生低一档，数字需人工复核——已可进入规则抽取。'
+    await loadRoots()
+    await loadFiles()
   })
 
 /** 删一份托管文件。**引用目录的删不了**，后端回 400；
- *  已产出条款/规则明细的回 409，理由里带着挂了多少条。 */
+ *  已产出条款/规则明细的回 409——若确认是传错的文件，升级为
+ *  「连产出一并作废删除」（409 的产出此时本就是垃圾，证据链保护对它无意义）。 */
 const delFile = (f: DlFile) =>
   run(f.file_id + ':del', async () => {
-    const d = await api.dlDeleteFile(f.file_id, 'ui')
+    let d: Awaited<ReturnType<typeof api.dlDeleteFile>>
+    try {
+      d = await api.dlDeleteFile(f.file_id, 'ui')
+    } catch (e) {
+      const detail = (e as { status?: number; detail?: string })
+      if (detail.status === 409) {
+        // 传错文件的出路：确认后连产出一起作废删除（后端一个事务级联清）
+        const ok = window.confirm(detail.detail
+          + '\n\n若是传错的文件，可选择「连产出一并作废删除」——'
+          + '上面列出的条款/草稿/明细/读图会随文件一起清掉（它们出自误传文件，本就不该存在）。\n确认连产出一起删除？')
+        if (!ok) { msg.value = '已取消。要按正规流程处理，去「规则抽取」栏把产出作废后再删。'; return }
+        d = await api.dlDeleteFile(f.file_id, 'ui', true)
+      } else {
+        throw e
+      }
+    }
     pendingDel.value = ''
+    const purgedTxt = d.purged && Object.keys(d.purged).length
+      ? '已一并作废：' + Object.entries(d.purged).map(([k, v]) => `${v} 条${k}`).join('、') + '。'
+      : ''
     msg.value = `已删除「${d.file_name}」。`
       + (d.removed_from_disk ? '磁盘文件已删，' : '磁盘上本来就没有这个文件，')
-      + '登记行按「消失」保留——删登记会连带级联清空 OCR、读图、条款、规则明细。'
+      + '登记行按「消失」保留。' + purgedTxt
     await loadRoots()
     await loadFiles()
   })
@@ -305,10 +350,11 @@ onMounted(loadRoots)
 </script>
 
 <template>
+  <div class="v2">
   <h2>制度文件库</h2>
 
   <div v-if="stats" class="panel">
-    <div class="stat">
+    <div class="stat stat-oneline">
       <div><b>{{ stats.files }}</b><span>在库文件</span></div>
       <div><b>{{ byOrigin['上传'] }}</b><span>客户端上传</span></div>
       <div><b>{{ byOrigin['扫描'] }}</b><span>引用目录扫描</span></div>
@@ -317,16 +363,14 @@ onMounted(loadRoots)
       <div><b>{{ unreadable - needOcr }}</b><span>取不到正文</span></div>
       <div><b>{{ kb(stats.bytes) }}</b><span>总体积</span></div>
       <div><b>{{ stats.missing }}</b><span>已消失</span></div>
-    </div>
-    <!-- 过滤边界必须写在页面上。只写在后端的 note 里，看页面的人会以为
-         全站都按实例过滤过——那是迁移 0034 刻意留下的边界，不是漏做。 -->
-    <div v-if="stats.instance_label" class="note" style="margin-bottom: 0">
-      以上数字是 <b>{{ stats.domain_label }} / {{ stats.instance_label }}</b> 的。
-      <MarkText :text="scopeNote" />
+      <div v-if="stats.instance_label" style="margin-left: auto; align-self: center;
+                  font-size: 11px; color: var(--weak); white-space: nowrap">
+        {{ stats.domain_label }} / {{ stats.instance_label }}
+      </div>
     </div>
   </div>
 
-  <div class="row">
+  <div class="tabs">
     <button :class="{ on: tab === 'roots' }" @click="pickTab('roots')">文件来源</button>
     <button :class="{ on: tab === 'files' }" @click="pickTab('files')">文件清单</button>
     <button :class="{ on: tab === 'uploads' }" @click="pickTab('uploads')">上传台账</button>
@@ -349,13 +393,16 @@ onMounted(loadRoots)
 
     <div v-if="managedRoots.length" class="panel">
       <h3>托管目录（上传落在这里，可写可删）</h3>
-      <table>
+      <table class="root-tbl">
         <thead>
           <tr>
-            <th style="width: 56px">启用</th><th style="width: 180px">名称</th>
-            <th>服务器路径</th><th class="num" style="width: 70px">文件数</th>
-            <th class="num" style="width: 80px">占用</th>
-            <th style="width: 150px">上次扫描</th>
+            <th style="width: 56px">启用</th><th style="width: 210px">名称</th>
+            <!-- 路径列不设自适应：路径是长字符串，自适应会独占三四百像素，
+                 而折行后第二行只用到一小截，看着就是「路径和数字之间一大片空白」。
+                 定宽 300 让它折成两行、把宽度用满，省下的给右边三个数字列。 -->
+            <th style="width: 300px">服务器路径</th><th class="num" style="width: 90px">文件数</th>
+            <th class="num" style="width: 105px">占用</th>
+            <th style="width: 175px">上次扫描</th>
           </tr>
         </thead>
         <tbody>
@@ -367,7 +414,7 @@ onMounted(loadRoots)
                 {{ r.kind }}
               </span>
             </td>
-            <td>
+            <td class="pathcell">
               <code class="mono">{{ r.abs_path }}</code>
               <div v-if="!r.exists" class="tag t-hit" style="margin-top: 3px">
                 目录已不存在（下一次上传会自动重建）
@@ -534,7 +581,7 @@ onMounted(loadRoots)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(f, i) in files" :key="f.file_id">
+          <tr v-for="(f, i) in fileList.view(files)" :key="f.file_id">
             <td class="num">{{ i + 1 }}</td>
             <td>
               <a href="#" @click.prevent="open(f)">{{ f.file_name }}</a>
@@ -577,6 +624,12 @@ onMounted(loadRoots)
             </td>
             <td class="muted" style="font-size: 12px"><MarkText :text="f.recognize?.note || f.parse_reason || ''" /></td>
             <td>
+              <!-- 需OCR 的扫描件：视觉转文字一键进抽取链（真出网计费，页间并行）。
+                   上传后已自动跑过一次；这里是补跑/手动入口（预置扫描件用）。 -->
+              <button v-if="f.parse_state === '需OCR' && f.ext === '.pdf'" :disabled="!!busy"
+                      style="margin-bottom: 4px"
+                      title="把每一页发给多模态模型逐页转写（真出网、真计费，页间并行）；转写后即可进入规则抽取"
+                      @click="visionOcr([f.file_id])">视觉转文字</button>
               <!-- 删除只对托管文件开放。引用目录里的文件是客户的资料，
                    本系统对它只读——按钮直接不给，而不是点了再报错。 -->
               <template v-if="f.deletable">
@@ -593,7 +646,12 @@ onMounted(loadRoots)
               </span>
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="fileList.more(files).show">
+                <td :colspan="10" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="fileList.more(files).toggle()">
+                  {{ fileList.more(files).rest === -1 ? '收起' : `展开剩余 ${fileList.more(files).rest} 条` }}（共 {{ files.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div v-else class="muted">没有符合条件的文件</div>
 
@@ -617,6 +675,14 @@ onMounted(loadRoots)
           <span class="muted" style="margin-left: 8px"><MarkText :text="opened.parse_reason" /></span>
         </span>
         <b>正文字数</b><span>{{ opened.text_chars }}{{ opened.truncated ? '（预览已截断）' : '' }}</span>
+      </div>
+      <!-- 正文预览：完成要求是「页面内即可看到清单及文件，不依赖打开本地文件夹」。
+           后端一直返回 preview，此前只显示了字数没显示内容——客户对着档案卡
+           还是得去文件夹里翻原件。需OCR 的扫描件没有正文，如实说明，不装作有。 -->
+      <pre v-if="opened.preview" class="doc-preview">{{ opened.preview }}</pre>
+      <div v-else class="muted" style="margin-top: 8px; font-size: 12.5px">
+        这份文件没有可预览的正文：{{ opened.parse_reason || '解析状态为 ' + opened.parse_state }}
+        <template v-if="opened.parse_state === '需OCR'">——扫描件先在清单里点「跑 OCR」（本机、不出网、不计费）</template>
       </div>
     </div>
   </template>
@@ -691,7 +757,7 @@ onMounted(loadRoots)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(u, i) in ledger" :key="u.batch_id + i">
+          <tr v-for="(u, i) in ledgerList.view(ledger)" :key="u.batch_id + i">
             <td class="mono" style="font-size: 11px">{{ t(u.uploaded_at) }}</td>
             <td>
               <div class="mono">{{ u.rel_path || u.file_name }}</div>
@@ -710,7 +776,12 @@ onMounted(loadRoots)
               <MarkText :text="u.reason || '—'" />
             </td>
           </tr>
-        </tbody>
+                      <tr v-if="ledgerList.more(ledger).show">
+                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="ledgerList.more(ledger).toggle()">
+                  {{ ledgerList.more(ledger).rest === -1 ? '收起' : `展开剩余 ${ledgerList.more(ledger).rest} 条` }}（共 {{ ledger.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div v-else class="muted">还没有上传过文件</div>
       <div class="note" style="margin-bottom: 0">
@@ -737,7 +808,7 @@ onMounted(loadRoots)
             <th style="width: 150px">记录时间</th></tr>
         </thead>
         <tbody>
-          <tr v-for="c in changes" :key="c.id">
+          <tr v-for="c in changeList.view(changes)" :key="c.id">
             <td><span class="tag" :class="CHANGE_CLS[c.change]">{{ c.change }}</span></td>
             <td>
               {{ c.file_name }}
@@ -746,7 +817,12 @@ onMounted(loadRoots)
             <td class="muted"><MarkText :text="c.detail" /></td>
             <td class="mono" style="font-size: 11px">{{ t(c.noted_at) }}</td>
           </tr>
-        </tbody>
+                      <tr v-if="changeList.more(changes).show">
+                <td :colspan="4" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="changeList.more(changes).toggle()">
+                  {{ changeList.more(changes).rest === -1 ? '收起' : `展开剩余 ${changeList.more(changes).rest} 条` }}（共 {{ changes.length }} 条）
+                </td>
+              </tr>
+</tbody>
       </table>
       <div v-else class="muted">最近一次扫描没有变化</div>
     </div>
@@ -860,10 +936,10 @@ onMounted(loadRoots)
             <tbody>
               <tr v-for="x in (data as any).items" :key="x.table_name">
                 <td class="mono" style="font-size: 12px">{{ x.table_name }}</td>
-                <td style="font-size: 12px">{{ x.what }}</td>
-                <td class="muted" style="font-size: 12px">{{ x.written_by }}</td>
+                <td style="font-size: 12px">{{ pro(x.what) }}</td>
+                <td class="muted" style="font-size: 12px">{{ pro(x.written_by) }}</td>
                 <td style="font-size: 12px">{{ x.on_recalc }}</td>
-                <td class="muted" style="font-size: 12px"><MarkText :text="x.why" /></td>
+                <td class="muted" style="font-size: 12px"><MarkText :text="pro(x.why)" /></td>
               </tr>
             </tbody>
           </table>
@@ -872,20 +948,25 @@ onMounted(loadRoots)
       </template>
     </Async>
   </template>
+  </div>
 </template>
 
 <style scoped>
+/* 反斜杠路径在 CSS 里不是断行点，只在空格处断 → 行尾留半行空白。
+   break-all 让它按字符断，列宽才被真正用满。 */
+.pathcell code { word-break: break-all; line-height: 1.5; }
+
 .readblk { border-left: 3px solid var(--line); padding: 4px 0 6px 9px; margin: 8px 0; }
 .vtext {
-  max-height: 320px; overflow: auto; background: #fafbfc; border: 1px solid var(--line);
+  max-height: 320px; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.55;
   white-space: pre-wrap; margin: 0;
 }
-.detailcell { background: #fafbfc; }
+.detailcell { background: var(--panel-2); }
 td.acts { white-space: nowrap; }
 td.warn { color: var(--hit); }
 .ok-note {
-  background: #f1f8f2; border: 1px solid var(--pass); border-radius: var(--radius);
+  background: var(--ok-bg); border: 1px solid var(--pass); border-radius: var(--radius);
   padding: 7px 9px; margin-bottom: 10px; font-size: 13px;
 }
 button.on {
@@ -899,11 +980,36 @@ pre.body {
   margin: 8px 0 0;
   padding: 9px;
   border: 1px solid var(--line);
-  background: #fafbfc;
+  background: var(--panel-2);
   font-family: inherit;
   font-size: 12px;
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-all;
+}
+/* 统计条一行排：九个指标并排，不再折两行（2026-10-24 用户要求） */
+.stat-oneline {
+  display: flex !important;
+  flex-wrap: nowrap;
+  gap: 28px;
+  overflow-x: auto;
+}
+.stat-oneline > div { min-width: 0; white-space: nowrap; }
+/* 启用列的勾选框居中；文件数/占用保持右对齐（数字），路径左对齐 */
+.root-tbl th:nth-child(1), .root-tbl td:nth-child(1) { text-align: center; }
+/* 文件正文预览：等宽 + 限高滚动，长文档（截断到 4000 字）也能在面板内读完 */
+.doc-preview {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 340px;
+  overflow: auto;
 }
 </style>

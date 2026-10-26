@@ -25,6 +25,7 @@ async function run() {
   error.value = ''
   try {
     data.value = await props.load()
+    emit('loaded', data.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
     data.value = null
@@ -36,6 +37,8 @@ async function run() {
 onMounted(run)
 watch(() => props.deps, run)
 defineExpose({ reload: run })
+
+const emit = defineEmits<{ loaded: [value: T] }>()
 </script>
 
 <template>

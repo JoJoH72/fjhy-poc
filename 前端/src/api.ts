@@ -50,6 +50,12 @@ async function handle<T>(path: string, resp: Response): Promise<T> {
     body = { detail: text.slice(0, 300) }
   }
   if (!resp.ok) {
+    // 会话失效：清掉本地身份并回登录页。
+    // **不能只是抛错让页面显示「没有数据」**——那会让人以为数据丢了。
+    if (resp.status === 401) {
+      localStorage.removeItem('fjhy-session')
+      if (!location.hash.startsWith('#/login')) location.hash = '#/login'
+    }
     const d = (body as { detail?: string })?.detail ?? text.slice(0, 300)
     throw new ApiError(resp.status, d || resp.statusText)
   }
@@ -764,6 +770,14 @@ export interface ExStats {
   by_feature: { feature: string; n: number }[]
   coverage_blind: number; note: string
 }
+/** 审定人 —— 从系统账号里选（演示待办④：取消手工输入姓名）。
+ *  user_label 刻意不用 name：后端 mask 按字段名打星，name 会变「何*」，
+ *  打过星的名字落进审定留痕等于签名被涂掉；真名只在选定署名这个语义下给。 */
+export interface ExReviewer {
+  account: string; user_label: string; dept: string
+  role_key: string; role_name: string
+}
+
 export interface ExDraft {
   draft_id: string; task_id: string; clause_id: string; rulable: boolean | null
   draft: Record<string, unknown>
@@ -906,6 +920,22 @@ export interface Bill {
   rule_executed: number | null
   rule_candidates: number | null
   finished_at: string | null
+  /** 最新一条人工复核结论（null=还没复核过）。后端 2026-10-25 回流：
+   *  AI 结论与人工结论并列，谁判的一目了然 */
+  manual_decision: 'agree' | 'agree_with_note' | 'return' | null
+  manual_decided_at: string | null
+}
+
+/** 人工复核留痕（manual_review 表，只读出口）。署名字段是 user_label——
+ *  后端 mask 按字段名 M01 打星，叫 reviewer 署名会变「陈*」，留痕等于签名作废 */
+export interface ManualReview {
+  id: number
+  run_id: string | null
+  decision: 'agree' | 'agree_with_note' | 'return'
+  user_label: string
+  decided_at: string
+  return_reason: string | null
+  disagree_with: string[] | null
 }
 
 /**
@@ -1051,6 +1081,8 @@ export interface Finding {
 
 export interface ReviewReport {
   run: Record<string, unknown> & { run_id: string; bill_no: string; conclusion: string }
+  /** 该轮的人工结论（null=还没复核）。与 run.conclusion（AI 结论）并列 */
+  manual: ManualReview | null
   coverage: {
     candidates: number
     executed: number
@@ -1150,10 +1182,59 @@ export interface LlmTestRow {
   message: string | null
 }
 
+
+// ── 登录身份 / IAM ───────────────────────────────────────────────────────────
+export interface Me {
+  account: string
+  userName: string
+  dept: string
+  roleKey: string
+  roleName: string
+  home: string
+  scope: string
+}
+export interface IamRoleDto {
+  key: string; name: string; desc: string; builtin: boolean
+  perms: string[]; scope: 'all' | 'dept' | 'self'; home: string; members: number
+}
+export interface IamUserDto {
+  id: string; name: string; account: string; phone: string; dept: string
+  roleKey: string; enabled: boolean; createdAt: string; lastLogin: string | null
+}
+
 // ── 规则资产 ─────────────────────────────────────────────────────────────────
 export const api = {
   health: () => request<Record<string, unknown>>('/health'),
   startupReport: () => request<Record<string, unknown>>('/api/startup-report'),
+
+  // ── 登录与用户角色（真表，见服务端 app/api/iam.py）─────────────────────────
+  // 会话走 HttpOnly Cookie，前端不接触 token；401 由 request() 统一处理。
+  authLogin: (account: string, password: string) =>
+    request<Me>('/api/auth/login', { method: 'POST', body: JSON.stringify({ account, password }) }),
+  authLogout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST', body: '{}' }),
+  authMe: () => request<Me>('/api/auth/me'),
+
+  iamRoles: () => request<{ items: IamRoleDto[] }>('/api/iam/roles'),
+  iamUsers: () => request<{ items: IamUserDto[] }>('/api/iam/users'),
+  iamCreateUser: (b: Record<string, unknown>) =>
+    request<IamUserDto>('/api/iam/users', { method: 'POST', body: JSON.stringify(b) }),
+  iamUpdateUser: (account: string, b: Record<string, unknown>) =>
+    request<IamUserDto>(`/api/iam/users/${encodeURIComponent(account)}`,
+      { method: 'PUT', body: JSON.stringify(b) }),
+  iamDeleteUser: (account: string) =>
+    request<{ ok: boolean }>(`/api/iam/users/${encodeURIComponent(account)}`, { method: 'DELETE' }),
+  iamResetPwd: (account: string, password: string) =>
+    request<{ ok: boolean }>(`/api/iam/users/${encodeURIComponent(account)}/password`,
+      { method: 'POST', body: JSON.stringify({ password }) }),
+  iamCreateRole: (b: Record<string, unknown>) =>
+    request<IamRoleDto>('/api/iam/roles', { method: 'POST', body: JSON.stringify(b) }),
+  iamUpdateRole: (key: string, b: Record<string, unknown>) =>
+    request<IamRoleDto>(`/api/iam/roles/${encodeURIComponent(key)}`,
+      { method: 'PUT', body: JSON.stringify(b) }),
+  iamDeleteRole: (key: string) =>
+    request<{ ok: boolean }>(`/api/iam/roles/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  iamReset: () => request<{ ok: boolean }>('/api/iam/reset', { method: 'POST', body: '{}' }),
+
 
   assetNav: () => request<{ items: NavCount[]; banner: DemoBanner }>('/api/asset/nav'),
 
@@ -1274,6 +1355,8 @@ export const api = {
     request<AttachmentPerception>(`/api/attachments/perception${qs({ failures })}`),
   billReviews: (no: string) =>
     request<{ items: Record<string, unknown>[] }>(`/api/bills/${encodeURIComponent(no)}/reviews`),
+  billManuals: (no: string) =>
+    request<{ items: ManualReview[] }>(`/api/bills/${encodeURIComponent(no)}/manuals`),
   review: (runId: string) =>
     request<ReviewReport>(`/api/reviews/${encodeURIComponent(runId)}`),
   submitManual: (runId: string, body: Record<string, unknown>) =>
@@ -1373,10 +1456,11 @@ export const api = {
   dlStorage: () => request<DlStorage>('/api/doclib/storage'),
   /** 删托管目录里的一份文件。引用目录的会被后端拒（400），
    *  已产出条款/规则明细/已签字读图的会被拒（409）。 */
-  dlDeleteFile: (fileId: string, by?: string) =>
+  dlDeleteFile: (fileId: string, by?: string, purge = false) =>
     request<{ file_id: string; file_name: string; removed_from_disk: boolean
-              refs: Record<string, number>; note: string }>(
-      `/api/doclib/files/${encodeURIComponent(fileId)}${qs({ confirm: 'yes', by })}`,
+              refs: Record<string, number>; purged: Record<string, number>
+              note: string }>(
+      `/api/doclib/files/${encodeURIComponent(fileId)}${qs({ confirm: 'yes', by, ...(purge ? { purge: 'yes' } : {}) })}`,
       { method: 'DELETE' }),
   dlSetRoot: (rootId: string, patch: { enabled?: boolean; label?: string }) =>
     request<Record<string, unknown>>(`/api/doclib/roots/${encodeURIComponent(rootId)}`,
@@ -1404,6 +1488,14 @@ export const api = {
     '/api/doclib/ocr/stats'),
   dlOcr: (body: { file_ids?: string[]; limit?: number; dpi?: number } = {}) =>
     request<DlOcrResult>('/api/doclib/ocr', { method: 'POST', body: JSON.stringify(body) }),
+  /** 扫描件 → 视觉模型逐页转写（真出网、真计费、页间并行）。
+   *  文本与 tesseract OCR 同管道落库，切条款/AI 草稿直接复用。 */
+  dlVisionOcr: (body: { file_ids?: string[]; limit?: number } = {}) =>
+    request<{ engine: string; elapsed_s: number; done: number; failed: number
+              items: { file_id: string; file_name: string; ok: boolean
+                       pages?: number; chars?: number; vision_pages?: number
+                       error?: string }[]; note: string }>(
+      '/api/doclib/vision-ocr', { method: 'POST', body: JSON.stringify(body) }),
   dlOcrPages: (fileId: string) =>
     request<{ file_id: string; pages: DlOcrPage[]; total: number; note: string }>(
       `/api/doclib/ocr/${encodeURIComponent(fileId)}`),
@@ -1475,6 +1567,9 @@ export const api = {
     request<Record<string, unknown>>(
       `/api/extract/drafts/${encodeURIComponent(draftId)}/review`,
       { method: 'POST', body: JSON.stringify({ state, reviewer, reason }) }),
+  /** 审定人清单（系统账号）。署名从这里选，不再手工输入。 */
+  exReviewers: () => request<{ items: ExReviewer[]; note: string }>(
+    '/api/extract/reviewers'),
   signals: () => request<Record<string, unknown>>('/api/debug/signals'),
   agentState: () => request<Record<string, unknown>>('/api/debug/agent-state'),
 
