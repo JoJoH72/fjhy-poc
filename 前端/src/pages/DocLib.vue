@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 栏目一 · 制度文件库。规则的唯一上游。
+ * 栏目一 · 制度文件库（2026-10-27 AntD 换装版）。规则的唯一上游。
  *
  * 五个页签对应五件不同的事，**刻意不合并**：
  *   文件来源   上传制度文件；或纳入服务器上已有的目录；扫描
@@ -12,29 +12,15 @@
  * 2026-10-21 文件进库改成**以客户端上传为主**（迁移 0034，用户决策「双模式并存」）：
  *   托管目录   客户端上传 → 服务器 var/doclib/{领域id}/{实例id}/，可写可删
  *   引用目录   服务器上已有的目录 → 原地只读扫描，一个字节都不写
- * 原来只有「浏览服务器本机目录」这一条路，而浏览器和服务不在同一台机器上时
- * 那里根本选不到使用者自己的文件——客户给制度文件的常态恰恰是「我这边有一堆 PDF」。
- * 所以上传是默认入口，FolderPicker 退为折叠起来的补充手段。
- *
- * 2026-10-21 删掉了第五个页签「已入库制度文件」（原 policy_doc 链路）。
- * 它读的是 /api/asset/docs，和本页其余四个页签的「只读扫描目录」口径不同，
- * 两套口径摆在同一页上分不清哪份文件算库里的。接口与数据都还在，只是不再出现在这一页。
- * 另外它当时挂的是 `v-else` 兜底分支，而「读图」是独立的 `v-if`——
- * 于是切到读图页签时这张表会跟着渲染一遍。删掉同时修掉了这个串页。
  *
  * 两条口径必须在界面上写死，否则一定被读错：
  *
  * 1. **「只读」是这一栏的地基。** 本系统绝不向被扫描的目录写入任何东西，
  *    「移出文件库」只删登记。客户的资料目录是证据，不是工作区。
  *
- * 2. **「需OCR」不等于「不能识别」。** 前者是 PDF 没有文字层、本机装了
- *    tesseract、下一步办得到；后者（「未解析」）是格式本身取不到、要换路子。
- *    合成一个状态，没人知道该去跑 OCR 还是该去转格式。
- *    而把任何一种记成「正文为空」最坏——下游会以为制度里没写过那件事。
- *
- * 3. **本栏的数字按当前实例过滤，而抽取/本体/发布那三栏是全库数字。**
- *    这条边界必须显示出来（stats.scope_note）：让人以为全站都过滤过，
- *    等于埋一个将来说不清的坑。见迁移 0034 的「过滤边界」。
+ * 2. **「需OCR」不等于「不能识别」。** 前者是 PDF 没有文字层、下一步办得到；
+ *    后者（「未解析」）是格式本身取不到、要换路子。合成一个状态，
+ *    没人知道该去跑 OCR 还是该去转格式。
  */
 import { computed, onMounted, ref } from 'vue'
 import Async from '../components/Async.vue'
@@ -42,13 +28,10 @@ import { pro } from '../data/prose'
 import FolderPicker from '../components/FolderPicker.vue'
 import Uploader from '../components/Uploader.vue'
 import { api } from '../api'
-import { useCollapse } from '../data/collapse'
 import type {
   DlChange, DlFile, DlRoot, DlScanResult, DlStats, DlStorage, DlUploadItem,
   DlUploadResult, VisionCross, VisionPage, VisionRead,
 } from '../api'
-
-const fileList = useCollapse(), ledgerList = useCollapse(), changeList = useCollapse()
 
 type Tab = 'roots' | 'files' | 'uploads' | 'changes' | 'vision'
 const tab = ref<Tab>('roots')
@@ -94,30 +77,25 @@ const fstate = ref('')
 const fkind = ref('')
 const forigin = ref('')
 
-/** 解析状态 → 标签样式。六态各有各的颜色，合并就等于合并了处置动作。 */
-const STATE_CLS: Record<string, string> = {
-  已解析: 't-pass',
-  需OCR: 't-pend',
-  未解析: 't-na',
-  空文件: 't-na',
-  解析失败: 't-hit',
-  未扫描: 't-na',
+/** 解析状态 → 标签颜色。六态各有各的颜色，合并就等于合并了处置动作。 */
+const STATE_COLOR: Record<string, string> = {
+  已解析: 'success', 需OCR: 'warning', 未解析: 'default',
+  空文件: 'default', 解析失败: 'error', 未扫描: 'default',
 }
-/** 文件类别。单据和范本不是制度——混在一张清单里看不出来，
- *  下游「制度里还有多少条没变成规则」的数字就会把它们一起算进去。 */
-const KIND_CLS: Record<string, string> = {
-  制度: 't-pass', 范本: 't-na', 单据: 't-demo', 其他: 't-na',
+/** 文件类别。单据和范本不是制度——混在一张清单里看不出来。 */
+const KIND_COLOR: Record<string, string> = {
+  制度: 'success', 范本: 'default', 单据: 'processing', 其他: 'default',
 }
-const CHANGE_CLS: Record<string, string> = {
-  新增: 't-pass', 修改: 't-pend', 消失: 't-hit',
+const CHANGE_COLOR: Record<string, string> = {
+  新增: 'success', 修改: 'warning', 消失: 'error',
 }
 /** 根的类型。**托管可写、引用只读**，这是只读纪律的边界，必须一眼可辨。 */
-const KIND_ROOT_CLS: Record<string, string> = { 托管: 't-pass', 引用: 't-na' }
+const KIND_ROOT_COLOR: Record<string, string> = { 托管: 'success', 引用: 'default' }
 /** 上传结果七态。「同名另存」与「同内容已存在」是相反的两件事，颜色也要分开。 */
-const RESULT_CLS: Record<string, string> = {
-  已入库: 't-pass', 同名另存: 't-demo', 同内容已存在: 't-na',
-  扩展名不支持: 't-hit', 超过大小上限: 't-hit',
-  文件名不合法: 't-hit', 写盘失败: 't-hit',
+const RESULT_COLOR: Record<string, string> = {
+  已入库: 'success', 同名另存: 'processing', 同内容已存在: 'default',
+  扩展名不支持: 'error', 超过大小上限: 'error',
+  文件名不合法: 'error', 写盘失败: 'error',
 }
 
 async function run(tag: string, fn: () => Promise<void>) {
@@ -141,7 +119,6 @@ const loadRoots = () =>
     scopeNote.value = s.scope_note || ''
   })
 
-
 const loadFiles = () =>
   run('files', async () => {
     files.value = (await api.dlFiles({
@@ -163,10 +140,8 @@ const loadUploads = () =>
     storage.value = st
   })
 
-/** 上传完刷新三处：根（文件数变了）、清单、台账。
- *  只刷一处会让另外两处显示旧数字，而使用者不知道哪个是真的。
- *  2026-10-26：上传的扫描件（需OCR 的 pdf）自动走视觉转文字——人工转文字
- *  这一环不再存在。真出网真计费如实播报；失败如实显示，退回「需OCR」。 */
+/** 上传完刷新三处：根（文件数变了）、清单、台账。只刷一处会让另外两处显示旧数字。
+ *  2026-10-26：上传的扫描件（需OCR 的 pdf）自动走视觉转文字。 */
 const afterUpload = (r: DlUploadResult) =>
   run('after-upload', async () => {
     msg.value = `上传完成：进库 ${r.ok_count} 份`
@@ -180,8 +155,7 @@ const afterUpload = (r: DlUploadResult) =>
     if (scans.length) await visionOcr(scans.map((f) => f.file_id))
   })
 
-/** 视觉转文字：页间并行、计费播报。上传后自动触发，也可对清单里的
- *  「需OCR」文件单独点（手动按钮在操作列）。 */
+/** 视觉转文字：页间并行、计费播报。上传后自动触发，也可单独补跑。 */
 const visionOcr = (fileIds: string[]) =>
   run('voc', async () => {
     msg.value = `对 ${fileIds.length} 份扫描件调视觉模型逐页转写（真出网、真计费，页间并行）…`
@@ -198,7 +172,7 @@ const visionOcr = (fileIds: string[]) =>
 
 /** 删一份托管文件。**引用目录的删不了**，后端回 400；
  *  已产出条款/规则明细的回 409——若确认是传错的文件，升级为
- *  「连产出一并作废删除」（409 的产出此时本就是垃圾，证据链保护对它无意义）。 */
+ *  「连产出一并作废删除」。 */
 const delFile = (f: DlFile) =>
   run(f.file_id + ':del', async () => {
     let d: Awaited<ReturnType<typeof api.dlDeleteFile>>
@@ -332,8 +306,7 @@ const byOrigin = computed(() => {
   for (const o of stats.value?.by_origin || []) m[o.origin] = o.n
   return m
 })
-/** 托管根与引用根分开列：**两者的权限与可靠性都不一样**。
- *  托管的在我们自己手里；引用的明天可能被客户改了或移走了（只能标消失）。 */
+/** 托管根与引用根分开列：**两者的权限与可靠性都不一样**。 */
 const managedRoots = computed(() => roots.value.filter((r) => r.kind === '托管'))
 const refRoots = computed(() => roots.value.filter((r) => r.kind === '引用'))
 
@@ -346,15 +319,56 @@ function t(s: string | null | undefined) {
   return s ? String(s).replace('T', ' ').slice(0, 19) : '—'
 }
 
+const rootCols = [
+  { title: '启用', key: 'on', width: 56, align: 'center' as const },
+  { title: '名称', key: 'label', width: 220 },
+  { title: '服务器路径', key: 'path', width: 300 },
+  { title: '文件数', dataIndex: 'files', width: 80, align: 'right' as const },
+  { title: '占用', key: 'size', width: 96, align: 'right' as const },
+  { title: '上次扫描', key: 'scan', width: 160 },
+]
+const fileCols = [
+  { title: '文件', key: 'name' },
+  { title: '类别', key: 'kind', width: 80, align: 'center' as const },
+  { title: '来源', key: 'origin', width: 90, align: 'center' as const },
+  { title: '文号 / 标题', key: 'docno', width: 170 },
+  { title: '格式', dataIndex: 'ext', width: 56, align: 'center' as const },
+  { title: '大小', key: 'size', width: 84, align: 'right' as const },
+  { title: '能否识别', key: 'rec', width: 130 },
+  { title: '备注', key: 'note' },
+  { title: '操作', key: 'op', width: 180 },
+]
+const ledgerCols = [
+  { title: '时间', key: 'at', width: 150 },
+  { title: '文件', key: 'name' },
+  { title: '结果', key: 'result', width: 110 },
+  { title: '大小', key: 'size', width: 84, align: 'right' as const },
+  { title: '上传人', key: 'by', width: 96 },
+  { title: '说明', key: 'reason' },
+]
+const changeCols = [
+  { title: '变化', key: 'change', width: 76, align: 'center' as const },
+  { title: '文件', key: 'name' },
+  { title: '说明', key: 'detail' },
+  { title: '记录时间', key: 'at', width: 150 },
+]
+const visionCols = [
+  { title: '文件', dataIndex: 'file_name' },
+  { title: '页', dataIndex: 'page_no', width: 50, align: 'center' as const },
+  { title: 'OCR 字', key: 'chars', width: 76, align: 'right' as const },
+  { title: 'OCR 置信', dataIndex: 'mean_conf', width: 84, align: 'right' as const },
+  { title: '表格', key: 'table', width: 96, align: 'center' as const },
+  { title: '已读', key: 'reads', width: 60, align: 'right' as const },
+  { title: '操作', key: 'op', width: 200 },
+]
+
 onMounted(loadRoots)
 </script>
 
 <template>
-  <div class="v2">
-  <h2>制度文件库</h2>
-
-  <div v-if="stats" class="panel">
-    <div class="stat stat-oneline">
+  <div class="dl">
+  <a-card v-if="stats" size="small" class="statbar">
+    <div class="stat-oneline">
       <div><b>{{ stats.files }}</b><span>在库文件</span></div>
       <div><b>{{ byOrigin['上传'] }}</b><span>客户端上传</span></div>
       <div><b>{{ byOrigin['扫描'] }}</b><span>引用目录扫描</span></div>
@@ -363,653 +377,477 @@ onMounted(loadRoots)
       <div><b>{{ unreadable - needOcr }}</b><span>取不到正文</span></div>
       <div><b>{{ kb(stats.bytes) }}</b><span>总体积</span></div>
       <div><b>{{ stats.missing }}</b><span>已消失</span></div>
-      <div v-if="stats.instance_label" style="margin-left: auto; align-self: center;
-                  font-size: 11px; color: var(--weak); white-space: nowrap">
+      <div v-if="stats.instance_label" class="scope">
         {{ stats.domain_label }} / {{ stats.instance_label }}
       </div>
     </div>
-  </div>
+  </a-card>
 
-  <div class="tabs">
-    <button :class="{ on: tab === 'roots' }" @click="pickTab('roots')">文件来源</button>
-    <button :class="{ on: tab === 'files' }" @click="pickTab('files')">文件清单</button>
-    <button :class="{ on: tab === 'uploads' }" @click="pickTab('uploads')">上传台账</button>
-    <button :class="{ on: tab === 'changes' }" @click="pickTab('changes')">变化台账</button>
-    <button :class="{ on: tab === 'vision' }" @click="pickTab('vision')">读图</button>
-    <span v-if="busy" class="muted">{{ busy }} 处理中…</span>
-  </div>
+  <a-card size="small" style="margin-top: 16px">
+    <a-tabs v-model:active-key="tab" @change="(k: any) => pickTab(k as Tab)">
+      <template #rightExtra>
+        <span v-if="busy" class="dim">{{ busy }} 处理中…</span>
+      </template>
 
-  <div v-if="err" class="err">{{ err }}</div>
-  <div v-if="msg" class="note">{{ msg }}</div>
+      <a-tab-pane key="roots" tab="文件来源">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <a-alert v-if="msg" type="success" show-icon closable :message="msg" style="margin-bottom: 12px" />
 
-  <!-- ── 文件来源 ───────────────────────────────────────────────────────── -->
-  <template v-if="tab === 'roots'">
-    <!-- 上传放在最前：它是默认入口。浏览器和服务不在同一台机器上时，
-         下面那个「纳入服务器已有目录」根本选不到使用者自己的文件。 -->
-    <div class="panel">
-      <h3>上传制度文件</h3>
-      <Uploader :storage="storage" @done="afterUpload" />
-    </div>
+        <!-- 上传放在最前：它是默认入口。 -->
+        <h3 class="sec">上传制度文件</h3>
+        <Uploader :storage="storage" @done="afterUpload" />
 
-    <div v-if="managedRoots.length" class="panel">
-      <h3>托管目录（上传落在这里，可写可删）</h3>
-      <table class="root-tbl">
-        <thead>
-          <tr>
-            <th style="width: 56px">启用</th><th style="width: 210px">名称</th>
-            <!-- 路径列不设自适应：路径是长字符串，自适应会独占三四百像素，
-                 而折行后第二行只用到一小截，看着就是「路径和数字之间一大片空白」。
-                 定宽 300 让它折成两行、把宽度用满，省下的给右边三个数字列。 -->
-            <th style="width: 300px">服务器路径</th><th class="num" style="width: 90px">文件数</th>
-            <th class="num" style="width: 105px">占用</th>
-            <th style="width: 175px">上次扫描</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in managedRoots" :key="r.root_id">
-            <td><input type="checkbox" :checked="r.enabled" @change="toggleRoot(r)" /></td>
-            <td>
-              {{ r.label }}
-              <span class="tag" :class="KIND_ROOT_CLS[r.kind]" style="margin-left: 5px">
-                {{ r.kind }}
-              </span>
-            </td>
-            <td class="pathcell">
-              <code class="mono">{{ r.abs_path }}</code>
-              <div v-if="!r.exists" class="tag t-hit" style="margin-top: 3px">
-                目录已不存在（下一次上传会自动重建）
-              </div>
-            </td>
-            <td class="num">{{ r.files }}</td>
-            <td class="num">
-              {{ (storage?.dirs || []).find(d => d.root_id === r.root_id)?.size_text || '—' }}
-            </td>
-            <td class="mono" style="font-size: 11px">{{ t(r.last_scan_at) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="note" style="margin-bottom: 0">
-        托管目录是<b>本系统自己的工作区</b>，所以允许写入与删除；
-        而下面的引用目录是<b>客户的资料目录</b>，本系统对它只读，一个字节都不写。
-        托管目录由系统按当前实例自动创建，<b>不提供整体移出</b>——
-        整体移出会把条款、OCR、读图结果、规则明细一起级联删掉，
-        而磁盘上的文件会留下来变成没人认领的孤儿。要清空请在「文件清单」里逐份删。
-      </div>
-    </div>
-
-    <details class="panel" :open="picking || refRoots.length > 0">
-      <summary>
-        纳入服务器上已有的目录（引用，原地只读扫描）· 已纳入 {{ refRoots.length }} 个
-      </summary>
-
-      <div class="note">
-        <b>这不是上传。</b>它要求路径在<b>服务器</b>上存在，适合「资料已经在服务器上了」
-        的情况。如果浏览器和服务不在同一台机器上，这里选不到你本机的文件，请用上面的上传。
-        纳入只登记路径，<b>不复制、不移动、不修改磁盘上的任何文件</b>。
-      </div>
-
-      <FolderPicker v-if="picking" @add="addRoots" @close="picking = false" />
-
-      <table v-if="refRoots.length">
-        <thead>
-          <tr>
-            <th style="width: 56px">启用</th><th style="width: 160px">名称</th>
-            <th>路径</th><th class="num" style="width: 70px">文件数</th>
-            <th style="width: 150px">上次扫描</th><th style="width: 130px">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in refRoots" :key="r.root_id">
-            <td><input type="checkbox" :checked="r.enabled" @change="toggleRoot(r)" /></td>
-            <td>
-              {{ r.label }}
-              <span class="tag" :class="KIND_ROOT_CLS[r.kind]" style="margin-left: 5px">
-                {{ r.kind }}
-              </span>
-            </td>
-            <td>
-              <code class="mono">{{ r.abs_path }}</code>
-              <div v-if="!r.exists" class="tag t-hit" style="margin-top: 3px">
-                文件夹已不存在
-              </div>
-              <div v-if="r.note" class="muted" style="font-size: 11px"><MarkText :text="r.note" /></div>
-            </td>
-            <td class="num">{{ r.files }}</td>
-            <td class="mono" style="font-size: 11px">{{ t(r.last_scan_at) || '未扫描' }}</td>
-            <td>
-              <button v-if="pendingRemove !== r.root_id" :disabled="!!busy"
-                      @click="pendingRemove = r.root_id">移出</button>
-              <template v-else>
-                <button :disabled="!!busy" @click="removeRoot(r)">确认移出</button>
-                <button :disabled="!!busy" @click="pendingRemove = ''">取消</button>
+        <template v-if="managedRoots.length">
+          <h3 class="sec">托管目录（上传落在这里，可写可删）</h3>
+          <a-table :columns="rootCols" :data-source="managedRoots" row-key="root_id"
+            size="small" :pagination="false">
+            <template #bodyCell="{ column, record: r }">
+              <template v-if="column.key === 'on'">
+                <a-checkbox :checked="r.enabled" @change="toggleRoot(r)" />
               </template>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="muted">尚未纳入任何服务器目录</div>
+              <template v-else-if="column.key === 'label'">
+                {{ r.label }}
+                <a-tag :color="KIND_ROOT_COLOR[r.kind]" style="margin-left: 5px">{{ r.kind }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'path'">
+                <code class="pathcode">{{ r.abs_path }}</code>
+                <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在（下一次上传会自动重建）</a-tag></div>
+              </template>
+              <template v-else-if="column.key === 'size'">
+                {{ (storage?.dirs || []).find(d => d.root_id === r.root_id)?.size_text || '—' }}
+              </template>
+              <template v-else-if="column.key === 'scan'">
+                <span class="dim">{{ t(r.last_scan_at) }}</span>
+              </template>
+            </template>
+          </a-table>
+          <div class="blk-note">
+            托管目录是<b>本系统自己的工作区</b>，所以允许写入与删除；
+            而下面的引用目录是<b>客户的资料目录</b>，本系统对它只读，一个字节都不写。
+            托管目录由系统按当前实例自动创建，<b>不提供整体移出</b>——
+            整体移出会把条款、OCR、读图结果、规则明细一起级联删掉，
+            而磁盘上的文件会留下来变成没人认领的孤儿。要清空请在「文件清单」里逐份删。
+          </div>
+        </template>
 
-      <div class="row" style="margin-top: 12px">
-        <button @click="picking = !picking">
-          {{ picking ? '收起选择器' : '＋ 浏览服务器目录' }}
-        </button>
-      </div>
-    </details>
+        <h3 class="sec">纳入服务器上已有的目录（引用，原地只读扫描）· 已纳入 {{ refRoots.length }} 个</h3>
+        <div class="blk-note">
+          <b>这不是上传。</b>它要求路径在<b>服务器</b>上存在，适合「资料已经在服务器上了」
+          的情况。如果浏览器和服务不在同一台机器上，这里选不到你本机的文件，请用上面的上传。
+          纳入只登记路径，<b>不复制、不移动、不修改磁盘上的任何文件</b>。
+        </div>
+        <FolderPicker v-if="picking" @add="addRoots" @close="picking = false" />
+        <a-table v-if="refRoots.length" :columns="rootCols.filter(c => c.key !== 'size')"
+          :data-source="refRoots" row-key="root_id" size="small" :pagination="false">
+          <template #bodyCell="{ column, record: r }">
+            <template v-if="column.key === 'on'">
+              <a-checkbox :checked="r.enabled" @change="toggleRoot(r)" />
+            </template>
+            <template v-else-if="column.key === 'label'">
+              {{ r.label }}
+              <a-tag :color="KIND_ROOT_COLOR[r.kind]" style="margin-left: 5px">{{ r.kind }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'path'">
+              <code class="pathcode">{{ r.abs_path }}</code>
+              <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">文件夹已不存在</a-tag></div>
+              <div v-if="r.note" class="dim" style="font-size: 11px"><MarkText :text="r.note" /></div>
+            </template>
+            <template v-else-if="column.key === 'scan'">
+              <span class="dim">{{ t(r.last_scan_at) || '未扫描' }}</span>
+            </template>
+          </template>
+        </a-table>
+        <div v-else class="dim" style="margin: 8px 0">尚未纳入任何服务器目录</div>
+        <div class="row" style="margin: 12px 0 20px">
+          <a-button @click="picking = !picking">
+            {{ picking ? '收起选择器' : '＋ 浏览服务器目录' }}
+          </a-button>
+        </div>
 
-    <div class="panel">
-      <h3>扫描</h3>
-      <div class="note">
-        上传之后会<b>自动扫描一次</b>，不用手点。这里的按钮给两种情况：
-        引用目录里的文件被客户改过了；或者改过解析器要全量重跑（强制重扫）。
-        不指定范围时<b>只扫当前实例的根</b>。
-      </div>
-      <div class="row" style="margin-bottom: 0">
-        <button :disabled="!!busy || !roots.length" @click="scan(false)">
-          {{ busy === 'scan' ? '扫描中…' : '扫描' }}
-        </button>
-        <button :disabled="!!busy || !roots.length" @click="scan(true)">
-          {{ busy === 'rescan' ? '重扫中…' : '强制重扫' }}
-        </button>
-      </div>
+        <h3 class="sec">扫描</h3>
+        <div class="blk-note">
+          上传之后会<b>自动扫描一次</b>，不用手点。这里的按钮给两种情况：
+          引用目录里的文件被客户改过了；或者改过解析器要全量重跑（强制重扫）。
+          不指定范围时<b>只扫当前实例的根</b>。
+        </div>
+        <div class="row">
+          <a-button :loading="busy === 'scan'" :disabled="!!busy || !roots.length" @click="scan(false)">扫描</a-button>
+          <a-button :loading="busy === 'rescan'" :disabled="!!busy || !roots.length" @click="scan(true)">强制重扫</a-button>
+        </div>
 
-      <div v-if="lastScan" class="note" style="margin-top: 10px">
-        <b>本次扫描 {{ t(lastScan.scanned_at) }}（{{ lastScan.mode }}）：</b>
-        新增 <b>{{ lastScan.added }}</b>、修改 <b>{{ lastScan.updated }}</b>、
-        未变 {{ lastScan.unchanged }}、消失 <b>{{ lastScan.missing }}</b>
-        <div v-for="w in lastScan.warnings" :key="w" class="err" style="margin-top: 4px">{{ w }}</div>
-        <table v-if="lastScan.changes.length" style="margin-top: 8px">
-          <thead><tr><th style="width: 70px">变化</th><th>文件</th><th>说明</th></tr></thead>
-          <tbody>
-            <tr v-for="c in lastScan.changes.slice(0, 50)" :key="c.file_id + c.change">
-              <td><span class="tag" :class="CHANGE_CLS[c.change]">{{ c.change }}</span></td>
-              <td>
-                {{ c.file_name }}
-                <div class="muted mono" style="font-size: 11px">{{ c.rel_path }}</div>
-              </td>
-              <td class="muted"><MarkText :text="c.detail" /></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </template>
+        <div v-if="lastScan" class="blk-note">
+          <b>本次扫描 {{ t(lastScan.scanned_at) }}（{{ lastScan.mode }}）：</b>
+          新增 <b>{{ lastScan.added }}</b>、修改 <b>{{ lastScan.updated }}</b>、
+          未变 {{ lastScan.unchanged }}、消失 <b>{{ lastScan.missing }}</b>
+          <div v-for="w in lastScan.warnings" :key="w" class="warn-text">{{ w }}</div>
+        </div>
+      </a-tab-pane>
 
-  <!-- ── 文件清单 ───────────────────────────────────────────────────────── -->
-  <template v-else-if="tab === 'files'">
-    <div class="panel">
-      <h3>文件清单（{{ files.length }} 份）</h3>
-      <div class="row">
-        <input v-model="fq" placeholder="按文件名筛选" style="flex: 1; min-width: 160px"
-               @keyup.enter="loadFiles" />
-        <select v-model="fext" @change="loadFiles">
-          <option value="">全部类型</option>
-          <option v-for="e in stats?.by_ext || []" :key="e.ext" :value="e.ext">
-            {{ e.ext }}（{{ e.n }}）
-          </option>
-        </select>
-        <select v-model="fstate" @change="loadFiles">
-          <option value="">全部识别状态</option>
-          <option v-for="s in stats?.by_recognize || []" :key="s.label" :value="s.label">
-            {{ s.label }}（{{ s.n }}）
-          </option>
-        </select>
-        <select v-model="fkind" @change="loadFiles">
-          <option value="">全部类别</option>
-          <option v-for="k in stats?.by_kind || []" :key="k.kind" :value="k.kind">
-            {{ k.kind }}（{{ k.n }}）
-          </option>
-        </select>
-        <select v-model="forigin" @change="loadFiles">
-          <option value="">全部来源</option>
-          <option v-for="o in stats?.by_origin || []" :key="o.origin" :value="o.origin">
-            {{ o.origin }}（{{ o.n }}）
-          </option>
-        </select>
-        <button @click="loadFiles">筛选</button>
-      </div>
+      <a-tab-pane key="files" tab="文件清单">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <a-alert v-if="msg" type="success" show-icon closable :message="msg" style="margin-bottom: 12px" />
+        <div class="row" style="margin-bottom: 12px">
+          <a-input v-model:value="fq" placeholder="按文件名筛选" style="flex: 1; min-width: 160px"
+                   @keyup.enter="loadFiles" />
+          <a-select v-model:value="fext" style="width: 140px" @change="loadFiles"
+            :options="[{ value: '', label: '全部类型' },
+              ...(stats?.by_ext || []).map((e: any) => ({ value: e.ext, label: `${e.ext}（${e.n}）` }))]" />
+          <a-select v-model:value="fstate" style="width: 150px" @change="loadFiles"
+            :options="[{ value: '', label: '全部识别状态' },
+              ...(stats?.by_recognize || []).map((s: any) => ({ value: s.label, label: `${s.label}（${s.n}）` }))]" />
+          <a-select v-model:value="fkind" style="width: 130px" @change="loadFiles"
+            :options="[{ value: '', label: '全部类别' },
+              ...(stats?.by_kind || []).map((k: any) => ({ value: k.kind, label: `${k.kind}（${k.n}）` }))]" />
+          <a-select v-model:value="forigin" style="width: 130px" @change="loadFiles"
+            :options="[{ value: '', label: '全部来源' },
+              ...(stats?.by_origin || []).map((o: any) => ({ value: o.origin, label: `${o.origin}（${o.n}）` }))]" />
+          <a-button type="primary" @click="loadFiles">筛选</a-button>
+        </div>
 
-      <table v-if="files.length">
-        <thead>
-          <tr>
-            <th style="width: 40px">#</th><th>文件</th>
-            <th style="width: 58px">类别</th>
-            <th style="width: 72px">来源</th>
-            <th style="width: 160px">文号 / 标题</th>
-            <th style="width: 50px">格式</th><th class="num" style="width: 72px">大小</th>
-            <th style="width: 130px">能否识别</th><th>备注</th>
-            <th style="width: 120px">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(f, i) in fileList.view(files)" :key="f.file_id">
-            <td class="num">{{ i + 1 }}</td>
-            <td>
-              <a href="#" @click.prevent="open(f)">{{ f.file_name }}</a>
-              <div class="muted mono" style="font-size: 11px">{{ f.rel_path }}</div>
-              <!-- 同名的另一个版本：同名不同内容时上传不覆盖，另存为 xxx(2).pdf。
-                   不标出来，使用者会以为自己传的新版本把旧的替换掉了。 -->
-              <div v-if="f.name_copies > 1" class="tag t-demo" style="margin-top: 3px">
+        <a-table v-if="files.length" :columns="fileCols" :data-source="files" row-key="file_id"
+          size="small" :pagination="files.length > 10 ? { pageSize: 10, showTotal: (n: number) => `共 ${n} 份` } : false">
+          <template #bodyCell="{ column, record: f, index }">
+            <template v-if="column.key === 'name'">
+              <a style="cursor: pointer" @click.prevent="open(f)">{{ f.file_name }}</a>
+              <div class="dim pathcode">{{ f.rel_path }}</div>
+              <!-- 同名的另一个版本：不标出来，使用者会以为新版本替换了旧的。 -->
+              <a-tag v-if="f.name_copies > 1" color="processing" style="margin-top: 3px">
                 同名另有 {{ f.name_copies - 1 }} 个版本
-              </div>
-            </td>
-            <td>
-              <span class="tag" :class="KIND_CLS[f.doc_kind || '其他'] || 't-na'">
-                {{ f.doc_kind || '其他' }}
-              </span>
-            </td>
-            <td>
-              <span class="tag" :class="f.origin === '上传' ? 't-pass' : 't-na'">
-                {{ f.origin }}
-              </span>
-              <div v-if="f.uploaded_by" class="muted" style="font-size: 11px">
-                {{ f.uploaded_by }}
-              </div>
-            </td>
-            <td>
-              <div v-if="f.doc_number" class="mono" style="font-size: 11px">
-                {{ f.doc_number }}
-              </div>
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'kind'">
+              <a-tag :color="KIND_COLOR[f.doc_kind || '其他'] || 'default'">{{ f.doc_kind || '其他' }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'origin'">
+              <a-tag :color="f.origin === '上传' ? 'success' : 'default'">{{ f.origin }}</a-tag>
+              <div v-if="f.uploaded_by" class="dim" style="font-size: 11px">{{ f.uploaded_by }}</div>
+            </template>
+            <template v-else-if="column.key === 'docno'">
+              <div v-if="f.doc_number" class="dim">{{ f.doc_number }}</div>
               <div v-if="f.doc_title" style="font-size: 11px">《{{ f.doc_title }}》</div>
-              <span v-if="!f.doc_number && !f.doc_title" class="muted">—</span>
-            </td>
-            <td class="mono">{{ f.ext }}</td>
-            <td class="num">{{ kb(f.file_size) }}</td>
-            <td>
-              <span class="tag" :class="'t-' + (f.recognize?.cls || 'na')">
-                {{ f.recognize?.label || f.parse_state }}
-              </span>
-              <div class="muted" style="font-size: 11px; margin-top: 2px">
-                {{ f.recognize?.how }}
-              </div>
-            </td>
-            <td class="muted" style="font-size: 12px"><MarkText :text="f.recognize?.note || f.parse_reason || ''" /></td>
-            <td>
-              <!-- 需OCR 的扫描件：视觉转文字一键进抽取链（真出网计费，页间并行）。
+              <span v-if="!f.doc_number && !f.doc_title" class="dim">—</span>
+            </template>
+            <template v-else-if="column.key === 'size'">{{ kb(f.file_size) }}</template>
+            <template v-else-if="column.key === 'rec'">
+              <a-tag :color="STATE_COLOR[f.parse_state] || 'default'"
+                >{{ f.recognize?.label || f.parse_state }}</a-tag>
+              <div class="dim" style="font-size: 11px; margin-top: 2px">{{ f.recognize?.how }}</div>
+            </template>
+            <template v-else-if="column.key === 'note'">
+              <span class="dim"><MarkText :text="f.recognize?.note || f.parse_reason || ''" /></span>
+            </template>
+            <template v-else-if="column.key === 'op'">
+              <!-- 需OCR 的扫描件：视觉转文字一键进抽取链（真出网计费）。
                    上传后已自动跑过一次；这里是补跑/手动入口（预置扫描件用）。 -->
-              <button v-if="f.parse_state === '需OCR' && f.ext === '.pdf'" :disabled="!!busy"
-                      style="margin-bottom: 4px"
-                      title="把每一页发给多模态模型逐页转写（真出网、真计费，页间并行）；转写后即可进入规则抽取"
-                      @click="visionOcr([f.file_id])">视觉转文字</button>
+              <a-button v-if="f.parse_state === '需OCR' && f.ext === '.pdf'" size="small"
+                        style="margin-bottom: 4px"
+                        title="把每一页发给多模态模型逐页转写（真出网、真计费，页间并行）"
+                        @click="visionOcr([f.file_id])">视觉转文字</a-button>
               <!-- 删除只对托管文件开放。引用目录里的文件是客户的资料，
                    本系统对它只读——按钮直接不给，而不是点了再报错。 -->
               <template v-if="f.deletable">
-                <button v-if="pendingDel !== f.file_id" :disabled="!!busy"
-                        @click="pendingDel = f.file_id">删除</button>
+                <a-popconfirm v-if="pendingDel !== f.file_id" title="确认删除这份托管文件？"
+                  @confirm="delFile(f)" @cancel="pendingDel = ''"
+                  :open="pendingDel === f.file_id"
+                  ok-text="确认删除" cancel-text="取消"
+                  @show="() => {}">
+                  <a-button danger size="small" :disabled="!!busy"
+                            @click="pendingDel = f.file_id">删除</a-button>
+                </a-popconfirm>
                 <template v-else>
-                  <button :disabled="!!busy" @click="delFile(f)">确认删除</button>
-                  <button :disabled="!!busy" @click="pendingDel = ''">取消</button>
+                  <a-button danger size="small" :disabled="!!busy" @click="delFile(f)">确认删除</a-button>
+                  <a-button size="small" :disabled="!!busy" style="margin-left: 4px"
+                            @click="pendingDel = ''">取消</a-button>
                 </template>
               </template>
-              <span v-else class="muted" style="font-size: 11px"
-                    title="引用目录是客户的资料目录，本系统对它只读">
-                引用 · 只读
-              </span>
-            </td>
-          </tr>
-                      <tr v-if="fileList.more(files).show">
-                <td :colspan="10" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="fileList.more(files).toggle()">
-                  {{ fileList.more(files).rest === -1 ? '收起' : `展开剩余 ${fileList.more(files).rest} 条` }}（共 {{ files.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-      <div v-else class="muted">没有符合条件的文件</div>
+              <a-tooltip v-else title="引用目录是客户的资料目录，本系统对它只读">
+                <span class="dim">引用 · 只读</span>
+              </a-tooltip>
+            </template>
+          </template>
+          <template #emptyText>
+            <a-empty :image-style="{ height: '40px' }" description="没有符合条件的文件" />
+          </template>
+        </a-table>
+        <a-empty v-else :image-style="{ height: '40px' }" description="没有符合条件的文件" />
 
-      <div class="note" style="margin-bottom: 0">
-        <b>删除</b>只对托管目录里的文件开放，而且<b>已产出条款、规则明细或已签字读图的会被拒</b>——
-        删掉原文之后那些条款会指向一份不存在的文件，而页面上它们看着仍然有出处，
-        这种断链基本查不出来。删除成功时<b>磁盘文件删掉、登记行按「消失」保留</b>：
-        删登记行会连带级联清空 OCR、读图、条款、规则明细，
-        而「这份资料曾经在库里」是溯源的一部分，只能作废不能蒸发。
-      </div>
-    </div>
+        <div class="blk-note">
+          <b>删除</b>只对托管目录里的文件开放，而且<b>已产出条款、规则明细或已签字读图的会被拒</b>——
+          删掉原文之后那些条款会指向一份不存在的文件，而页面上它们看着仍然有出处，
+          这种断链基本查不出来。删除成功时<b>磁盘文件删掉、登记行按「消失」保留</b>：
+          删登记行会连带级联清空 OCR、读图、条款、规则明细，
+          而「这份资料曾经在库里」是溯源的一部分，只能作废不能蒸发。
+        </div>
 
-    <div v-if="opened" class="panel">
-      <h3>{{ opened.file_name }}</h3>
-      <div class="kv">
-        <b>路径</b><span class="mono">{{ opened.abs_path }}</span>
-        <b>解析状态</b>
-        <span>
-          <span class="tag" :class="STATE_CLS[opened.parse_state] || 't-na'">
-            {{ opened.parse_state }}</span>
-          <span class="muted" style="margin-left: 8px"><MarkText :text="opened.parse_reason" /></span>
-        </span>
-        <b>正文字数</b><span>{{ opened.text_chars }}{{ opened.truncated ? '（预览已截断）' : '' }}</span>
-      </div>
-      <!-- 正文预览：完成要求是「页面内即可看到清单及文件，不依赖打开本地文件夹」。
-           后端一直返回 preview，此前只显示了字数没显示内容——客户对着档案卡
-           还是得去文件夹里翻原件。需OCR 的扫描件没有正文，如实说明，不装作有。 -->
-      <pre v-if="opened.preview" class="doc-preview">{{ opened.preview }}</pre>
-      <div v-else class="muted" style="margin-top: 8px; font-size: 12.5px">
-        这份文件没有可预览的正文：{{ opened.parse_reason || '解析状态为 ' + opened.parse_state }}
-        <template v-if="opened.parse_state === '需OCR'">——扫描件先在清单里点「跑 OCR」（本机、不出网、不计费）</template>
-      </div>
-    </div>
-  </template>
+        <template v-if="opened">
+          <h3 class="sec">{{ opened.file_name }}</h3>
+          <div class="kv">
+            <b>路径</b><span class="pathcode">{{ opened.abs_path }}</span>
+            <b>解析状态</b>
+            <span>
+              <a-tag :color="STATE_COLOR[opened.parse_state] || 'default'">{{ opened.parse_state }}</a-tag>
+              <span class="dim" style="margin-left: 8px"><MarkText :text="opened.parse_reason" /></span>
+            </span>
+            <b>正文字数</b><span>{{ opened.text_chars }}{{ opened.truncated ? '（预览已截断）' : '' }}</span>
+          </div>
+          <!-- 正文预览：完成要求是「页面内即可看到清单及文件，不依赖打开本地文件夹」。
+               需OCR 的扫描件没有正文，如实说明，不装作有。 -->
+          <pre v-if="opened.preview" class="doc-preview">{{ opened.preview }}</pre>
+          <div v-else class="dim" style="margin-top: 8px; font-size: 12.5px">
+            这份文件没有可预览的正文：{{ opened.parse_reason || '解析状态为 ' + opened.parse_state }}
+            <template v-if="opened.parse_state === '需OCR'">——扫描件可在清单里点「视觉转文字」（真出网、真计费）</template>
+          </div>
+        </template>
+      </a-tab-pane>
 
-  <!-- ── 上传台账 ───────────────────────────────────────────────────────── -->
-  <!-- 这一页存在的理由只有一个：**客户传了 20 份而库里只多 17 份时，
-       差的 3 份去哪了必须答得上来。** 所以被拒的文件也在台账里留行，
-       而「成功 17 份」那种总数是答不了这个问题的。 -->
-  <template v-else-if="tab === 'uploads'">
-    <div v-if="storage" class="panel">
-      <h3>托管区占用</h3>
-      <div class="stat">
-        <div><b>{{ storage.total_files }}</b><span>托管文件</span></div>
-        <div><b>{{ kb(storage.total_bytes) }}</b><span>占用磁盘</span></div>
-        <div><b>{{ storage.limits.max_upload_bytes_text }}</b><span>单份上限</span></div>
-        <div><b>{{ storage.limits.max_upload_files }}</b><span>单次份数上限</span></div>
-      </div>
-      <div class="kv" style="margin-top: 12px">
-        <b>托管区根目录</b><span class="mono">{{ storage.root_dir }}</span>
-        <b>允许的扩展名</b><span class="mono">{{ storage.limits.allowed_ext.join(' ') }}</span>
-      </div>
-      <table v-if="storage.dirs.length" style="margin-top: 12px">
-        <thead>
-          <tr>
-            <th style="width: 200px">归属</th><th>目录</th>
-            <th class="num" style="width: 70px">文件</th>
-            <th class="num" style="width: 80px">占用</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="d in storage.dirs" :key="d.root_id">
-            <td>{{ d.domain_label }} / {{ d.instance_label }}</td>
-            <td>
-              <code class="mono">{{ d.abs_path }}</code>
-              <div v-if="!d.exists" class="tag t-hit" style="margin-top: 3px">目录已不存在</div>
-            </td>
-            <td class="num">{{ d.files }}</td>
-            <td class="num">{{ d.size_text }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <!-- 暂存区本该是空的。非空说明有一次上传崩在中途，必须报出来，
-           不能悄悄留着占磁盘——那些文件没有任何登记指向它们。 -->
-      <div v-if="storage.staging_stale.length" class="err">
-        <b>暂存区有 {{ storage.staging_stale.length }} 个残留文件</b>（{{ storage.staging_dir }}）：
-        每份上传要么移入托管目录、要么当场删掉，残留说明有一次上传崩在中途。
-        这些文件没有任何登记指向它们，可以直接删。
-      </div>
-      <div v-else class="note" style="margin-bottom: 0"><MarkText :text="storage.note" /></div>
-    </div>
+      <!-- 上传台账：客户传了 20 份而库里只多 17 份时，差的 3 份去哪了必须答得上来。 -->
+      <a-tab-pane key="uploads" tab="上传台账">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <a-alert v-if="msg" type="success" show-icon closable :message="msg" style="margin-bottom: 12px" />
 
-    <div class="panel">
-      <h3>上传台账（{{ ledger.length }} 行）</h3>
-      <div class="row">
-        <label>
-          <input v-model="onlyRejected" type="checkbox" @change="loadUploads" />
-          只看未入库的
-        </label>
-        <button :disabled="!!busy" @click="loadUploads">刷新</button>
-        <span v-for="b in ledgerBy" :key="b.result" class="tag"
-              :class="RESULT_CLS[b.result] || 't-na'">
-          {{ b.result }} {{ b.n }}
-        </span>
-      </div>
-      <table v-if="ledger.length">
-        <thead>
-          <tr>
-            <th style="width: 150px">时间</th><th>文件</th>
-            <th style="width: 100px">结果</th>
-            <th class="num" style="width: 72px">大小</th>
-            <th style="width: 80px">上传人</th><th>说明</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(u, i) in ledgerList.view(ledger)" :key="u.batch_id + i">
-            <td class="mono" style="font-size: 11px">{{ t(u.uploaded_at) }}</td>
-            <td>
-              <div class="mono">{{ u.rel_path || u.file_name }}</div>
-              <div v-if="u.stored_name && u.stored_name !== u.file_name"
-                   class="muted" style="font-size: 11px">
+        <template v-if="storage">
+          <h3 class="sec">托管区占用</h3>
+          <a-row :gutter="16">
+            <a-col :span="6"><a-statistic title="托管文件" :value="storage.total_files" /></a-col>
+            <a-col :span="6"><a-statistic title="占用磁盘" :value="kb(storage.total_bytes)" /></a-col>
+            <a-col :span="6"><a-statistic title="单份上限" :value="storage.limits.max_upload_bytes_text" /></a-col>
+            <a-col :span="6"><a-statistic title="单次份数上限" :value="storage.limits.max_upload_files" /></a-col>
+          </a-row>
+          <div class="kv" style="margin-top: 12px">
+            <b>托管区根目录</b><span class="pathcode">{{ storage.root_dir }}</span>
+            <b>允许的扩展名</b><span class="pathcode">{{ storage.limits.allowed_ext.join(' ') }}</span>
+          </div>
+          <a-table v-if="storage.dirs.length" :data-source="storage.dirs" row-key="root_id"
+            size="small" :pagination="false" style="margin-top: 12px"
+            :columns="[
+              { title: '归属', key: 'own', width: 220 },
+              { title: '目录', key: 'dir' },
+              { title: '文件', dataIndex: 'files', width: 70, align: 'right' },
+              { title: '占用', key: 'size', width: 90, align: 'right' },
+            ]">
+            <template #bodyCell="{ column, record: d }">
+              <template v-if="column.key === 'own'">{{ d.domain_label }} / {{ d.instance_label }}</template>
+              <template v-else-if="column.key === 'dir'">
+                <code class="pathcode">{{ d.abs_path }}</code>
+                <div v-if="!d.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在</a-tag></div>
+              </template>
+              <template v-else-if="column.key === 'size'">{{ d.size_text }}</template>
+            </template>
+          </a-table>
+          <!-- 暂存区本该是空的。非空说明有一次上传崩在中途，必须报出来。 -->
+          <a-alert v-if="storage.staging_stale.length" type="error" show-icon style="margin-top: 12px"
+            :message="`暂存区有 ${storage.staging_stale.length} 个残留文件（${storage.staging_dir}）：每份上传要么移入托管目录、要么当场删掉，残留说明有一次上传崩在中途。这些文件没有任何登记指向它们，可以直接删。`" />
+          <div v-else class="blk-note"><MarkText :text="storage.note" /></div>
+        </template>
+
+        <h3 class="sec">上传台账（{{ ledger.length }} 行）</h3>
+        <div class="row" style="margin-bottom: 12px">
+          <a-checkbox v-model:checked="onlyRejected" @change="loadUploads">只看未入库的</a-checkbox>
+          <a-button :disabled="!!busy" @click="loadUploads">刷新</a-button>
+          <a-tag v-for="b in ledgerBy" :key="b.result" :color="RESULT_COLOR[b.result] || 'default'">
+            {{ b.result }} {{ b.n }}
+          </a-tag>
+        </div>
+        <a-table v-if="ledger.length" :columns="ledgerCols" :data-source="ledger"
+          :row-key="(_: any, i: number) => i" size="small"
+          :pagination="ledger.length > 10 ? { pageSize: 10, showTotal: (n: number) => `共 ${n} 条` } : false">
+          <template #bodyCell="{ column, record: u }">
+            <template v-if="column.key === 'at'"><span class="dim">{{ t(u.uploaded_at) }}</span></template>
+            <template v-else-if="column.key === 'name'">
+              <div class="pathcode">{{ u.rel_path || u.file_name }}</div>
+              <div v-if="u.stored_name && u.stored_name !== u.file_name" class="dim" style="font-size: 11px">
                 落盘名 → <b>{{ u.stored_name }}</b>
               </div>
-            </td>
-            <td>
-              <span class="tag" :class="RESULT_CLS[u.result] || 't-na'">{{ u.result }}</span>
-              <div v-if="u.missing" class="muted" style="font-size: 11px">已删除</div>
-            </td>
-            <td class="num">{{ u.file_size == null ? '—' : kb(u.file_size) }}</td>
-            <td>{{ u.uploaded_by || '—' }}</td>
-            <td class="muted" style="font-size: 12px; max-width: 380px">
-              <MarkText :text="u.reason || '—'" />
-            </td>
-          </tr>
-                      <tr v-if="ledgerList.more(ledger).show">
-                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="ledgerList.more(ledger).toggle()">
-                  {{ ledgerList.more(ledger).rest === -1 ? '收起' : `展开剩余 ${ledgerList.more(ledger).rest} 条` }}（共 {{ ledger.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-      <div v-else class="muted">还没有上传过文件</div>
-      <div class="note" style="margin-bottom: 0">
-        <b>「同名另存」和「同内容已存在」是相反的两件事。</b>
-        前者=文件名一样但内容不同，已按新版本落盘（制度换了一版，旧的没被覆盖）；
-        后者=字节完全相同，什么都没落盘（重复点了上传）。
-        合成一个「重复」，使用者就不知道自己刚传的新版本到底进没进库。
-      </div>
-    </div>
-  </template>
-
-  <!-- ── 变化台账 ───────────────────────────────────────────────────────── -->
-  <template v-else-if="tab === 'changes'">
-    <div class="panel">
-      <h3>变化台账</h3>
-      <div v-if="changeScan" class="note">
-        最近一次扫描 <code class="mono">{{ changeScan.scan_id }}</code>
-        ｜{{ t(changeScan.started_at as string) }}｜{{ changeScan.mode }}
-        ｜新增 {{ changeScan.added }}·修改 {{ changeScan.updated }}·消失 {{ changeScan.missing }}
-      </div>
-      <table v-if="changes.length">
-        <thead>
-          <tr><th style="width: 70px">变化</th><th>文件</th><th>说明</th>
-            <th style="width: 150px">记录时间</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="c in changeList.view(changes)" :key="c.id">
-            <td><span class="tag" :class="CHANGE_CLS[c.change]">{{ c.change }}</span></td>
-            <td>
-              {{ c.file_name }}
-              <div class="muted mono" style="font-size: 11px">{{ c.rel_path }}</div>
-            </td>
-            <td class="muted"><MarkText :text="c.detail" /></td>
-            <td class="mono" style="font-size: 11px">{{ t(c.noted_at) }}</td>
-          </tr>
-                      <tr v-if="changeList.more(changes).show">
-                <td :colspan="4" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="changeList.more(changes).toggle()">
-                  {{ changeList.more(changes).rest === -1 ? '收起' : `展开剩余 ${changeList.more(changes).rest} 条` }}（共 {{ changes.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-      <div v-else class="muted">最近一次扫描没有变化</div>
-    </div>
-  </template>
-
-  <!-- 读图 -------------------------------------------------------------->
-  <template v-if="tab === 'vision'">
-    <div class="panel">
-      <h3>多模态读图</h3>
-      <div v-if="vsum" class="kv">
-        <b>已调用</b>
-        <span>
-          {{ vsum.totals.calls }} 次（失败 {{ vsum.totals.failed }}）·
-          {{ vsum.totals.models }} 个型号 ·
-          入 {{ vsum.totals.pt }} token / 出 {{ vsum.totals.ct }} token
-        </span>
-        <b>口径</b><span style="font-size: 12px"><MarkText :text="vsum.note" /></span>
-      </div>
-      <div class="row">
-        <input v-model="vwho" placeholder="签字人署名" style="width: 150px" />
-      </div>
-      <div v-if="vmsg" class="ok-note">{{ vmsg }}</div>
-      <table>
-        <thead>
-          <tr>
-            <th>文件</th><th style="width: 46px">页</th>
-            <th style="width: 54px">OCR 字</th><th style="width: 60px">OCR 置信</th>
-            <th style="width: 54px">表格</th><th style="width: 58px">已读</th>
-            <th style="width: 170px"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <template v-for="p in vpages" :key="p.file_id + ':' + p.page_no">
-            <tr>
-              <td style="font-size: 12px">{{ p.file_name }}</td>
-              <td class="num">{{ p.page_no }}</td>
-              <td class="num" :class="{ warn: !p.chars }">{{ p.chars }}</td>
-              <td class="num">{{ p.mean_conf ?? '—' }}</td>
-              <td>
-                <span v-if="p.has_table" class="tag t-pend">表格</span>
-                <span v-else class="tag t-hit">没认出字</span>
-              </td>
-              <td class="num" :class="{ muted: !p.read_times }">
-                {{ p.read_times || '—' }}
-              </td>
-              <td class="acts">
-                <button class="mini" :disabled="!!busy" @click="readPage(p)">
-                  读一页（出网）
-                </button>
-                <button class="mini" :disabled="!!busy" @click="openPage(p)">
-                  {{ vopen === p.file_id + ':' + p.page_no ? '收起' : '看结果' }}
-                </button>
-              </td>
-            </tr>
-            <tr v-if="vopen === p.file_id + ':' + p.page_no">
-              <td colspan="7" class="detailcell">
-                <div v-if="vcross" class="kv">
-                  <b>互相印证</b>
-                  <span>
-                    <span class="tag" :class="vcross.agree === true ? 't-pass'
-                      : vcross.agree === false ? 't-hit' : 't-na'">
-                      {{ vcross.verdict }}</span>
-                    <span v-if="vcross.a" class="muted" style="margin-left: 6px">
-                      {{ vcross.a.model_name }}（{{ vcross.a.numbers }} 个数字 /
-                      {{ vcross.a.rows }} 行 / 看不清 {{ vcross.a.unreadable }}）
-                      vs {{ vcross.b?.model_name }}（{{ vcross.b?.numbers }} /
-                      {{ vcross.b?.rows }} / {{ vcross.b?.unreadable }}）
-                    </span>
-                  </span>
-                  <b>怎么用</b><span style="font-size: 12px"><MarkText :text="vcross.note" /></span>
-                  <template v-if="vcross.agree === false">
-                    <b>只有前者有</b>
-                    <span class="mono" style="font-size: 11px">
-                      {{ (vcross.only_a || []).join('、') || '—' }}</span>
-                    <b>只有后者有</b>
-                    <span class="mono" style="font-size: 11px">
-                      {{ (vcross.only_b || []).join('、') || '—' }}</span>
-                  </template>
-                </div>
-                <div v-for="r in vreads" :key="r.model_name" class="readblk">
-                  <div class="row" style="margin: 0 0 4px">
-                    <b>{{ r.model_name }}</b>
-                    <span class="muted" style="font-size: 12px">
-                      第 {{ r.attempt }} 次 · {{ r.rows_parsed }} 行 ·
-                      看不清 {{ r.unreadable }} 格 · {{ r.latency_ms }}ms ·
-                      token {{ r.prompt_tokens }}/{{ r.completion_tokens }}
-                    </span>
-                  </div>
-                  <pre class="vtext">{{ r.content }}</pre>
-                </div>
-                <div v-if="!vreads.length" class="muted">还没读过这一页。</div>
-              </td>
-            </tr>
+            </template>
+            <template v-else-if="column.key === 'result'">
+              <a-tag :color="RESULT_COLOR[u.result] || 'default'">{{ u.result }}</a-tag>
+              <div v-if="u.missing" class="dim" style="font-size: 11px">已删除</div>
+            </template>
+            <template v-else-if="column.key === 'size'">
+              {{ u.file_size == null ? '—' : kb(u.file_size) }}
+            </template>
+            <template v-else-if="column.key === 'by'">{{ u.uploaded_by || '—' }}</template>
+            <template v-else-if="column.key === 'reason'">
+              <span class="dim"><MarkText :text="u.reason || '—'" /></span>
+            </template>
           </template>
-        </tbody>
-      </table>
-    </div>
-
-    <Async :load="() => api.visionStorage()">
-      <template #default="{ data }">
-        <div class="panel">
-          <h3>读图 → 印证 → <b>人工签字</b> → 才谈得上录入</h3>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 150px">表</th><th style="width: 230px">存的是什么</th>
-                <th style="width: 170px">谁写的</th><th style="width: 120px">重算时</th>
-                <th>为什么这么存</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="x in (data as any).items" :key="x.table_name">
-                <td class="mono" style="font-size: 12px">{{ x.table_name }}</td>
-                <td style="font-size: 12px">{{ pro(x.what) }}</td>
-                <td class="muted" style="font-size: 12px">{{ pro(x.written_by) }}</td>
-                <td style="font-size: 12px">{{ x.on_recalc }}</td>
-                <td class="muted" style="font-size: 12px"><MarkText :text="pro(x.why)" /></td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="note"><MarkText :text="(data as any).note" /></div>
+        </a-table>
+        <a-empty v-else :image-style="{ height: '40px' }" description="还没有上传过文件" />
+        <div class="blk-note">
+          <b>「同名另存」和「同内容已存在」是相反的两件事。</b>
+          前者=文件名一样但内容不同，已按新版本落盘（制度换了一版，旧的没被覆盖）；
+          后者=字节完全相同，什么都没落盘（重复点了上传）。
+          合成一个「重复」，使用者就不知道自己刚传的新版本到底进没进库。
         </div>
-      </template>
-    </Async>
-  </template>
+      </a-tab-pane>
+
+      <a-tab-pane key="changes" tab="变化台账">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <div v-if="changeScan" class="blk-note">
+          最近一次扫描 <code class="pathcode">{{ changeScan.scan_id }}</code>
+          ｜{{ t(changeScan.started_at as string) }}｜{{ changeScan.mode }}
+          ｜新增 {{ changeScan.added }}·修改 {{ changeScan.updated }}·消失 {{ changeScan.missing }}
+        </div>
+        <a-table v-if="changes.length" :columns="changeCols" :data-source="changes" row-key="id"
+          size="small" :pagination="changes.length > 10 ? { pageSize: 10 } : false">
+          <template #bodyCell="{ column, record: c }">
+            <template v-if="column.key === 'change'">
+              <a-tag :color="CHANGE_COLOR[c.change]">{{ c.change }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'name'">
+              {{ c.file_name }}
+              <div class="dim pathcode" style="font-size: 11px">{{ c.rel_path }}</div>
+            </template>
+            <template v-else-if="column.key === 'detail'">
+              <span class="dim"><MarkText :text="c.detail" /></span>
+            </template>
+            <template v-else-if="column.key === 'at'">
+              <span class="dim">{{ t(c.noted_at) }}</span>
+            </template>
+          </template>
+          <template #emptyText>
+            <a-empty :image-style="{ height: '40px' }" description="最近一次扫描没有变化" />
+          </template>
+        </a-table>
+        <a-empty v-else :image-style="{ height: '40px' }" description="最近一次扫描没有变化" />
+      </a-tab-pane>
+
+      <a-tab-pane key="vision" tab="读图">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <h3 class="sec">多模态读图</h3>
+        <div v-if="vsum" class="kv">
+          <b>已调用</b>
+          <span>
+            {{ vsum.totals.calls }} 次（失败 {{ vsum.totals.failed }}）·
+            {{ vsum.totals.models }} 个型号 ·
+            入 {{ vsum.totals.pt }} token / 出 {{ vsum.totals.ct }} token
+          </span>
+          <b>口径</b><span class="dim"><MarkText :text="vsum.note" /></span>
+        </div>
+        <div class="row" style="margin: 8px 0">
+          <a-input v-model:value="vwho" placeholder="签字人署名" style="width: 150px" />
+        </div>
+        <a-alert v-if="vmsg" type="info" show-icon :message="vmsg" style="margin-bottom: 12px" />
+        <a-table :columns="visionCols" :data-source="vpages"
+          :row-key="(p: any) => p.file_id + ':' + p.page_no" size="small"
+          :pagination="vpages.length > 10 ? { pageSize: 10 } : false"
+          :expanded-row-keys="vopen ? [vopen] : []"
+          @expand="(_e: any, p: any) => openPage(p)">
+          <template #bodyCell="{ column, record: p }">
+            <template v-if="column.key === 'chars'">
+              <span :style="!p.chars ? 'color:#faad14' : ''">{{ p.chars }}</span>
+            </template>
+            <template v-else-if="column.key === 'table'">
+              <a-tag v-if="p.has_table" color="warning">表格</a-tag>
+              <a-tag v-else color="error">没认出字</a-tag>
+            </template>
+            <template v-else-if="column.key === 'reads'">
+              <span :class="{ dim: !p.read_times }">{{ p.read_times || '—' }}</span>
+            </template>
+            <template v-else-if="column.key === 'op'">
+              <a-button size="small" :disabled="!!busy" @click="readPage(p)">读一页（出网）</a-button>
+              <a-button size="small" :disabled="!!busy" style="margin-left: 4px" @click="openPage(p)">
+                {{ vopen === p.file_id + ':' + p.page_no ? '收起' : '看结果' }}
+              </a-button>
+            </template>
+          </template>
+          <template #expandedRowRender="{ record: p }">
+            <div v-if="vcross" class="kv">
+              <b>互相印证</b>
+              <span>
+                <a-tag :color="vcross.agree === true ? 'success' : vcross.agree === false ? 'error' : 'default'">
+                  {{ vcross.verdict }}</a-tag>
+                <span v-if="vcross.a" class="dim" style="margin-left: 6px">
+                  {{ vcross.a.model_name }}（{{ vcross.a.numbers }} 个数字 /
+                  {{ vcross.a.rows }} 行 / 看不清 {{ vcross.a.unreadable }}）
+                  vs {{ vcross.b?.model_name }}（{{ vcross.b?.numbers }} /
+                  {{ vcross.b?.rows }} / {{ vcross.b?.unreadable }}）
+                </span>
+              </span>
+              <b>怎么用</b><span class="dim"><MarkText :text="vcross.note" /></span>
+              <template v-if="vcross.agree === false">
+                <b>只有前者有</b>
+                <span class="pathcode">{{ (vcross.only_a || []).join('、') || '—' }}</span>
+                <b>只有后者有</b>
+                <span class="pathcode">{{ (vcross.only_b || []).join('、') || '—' }}</span>
+              </template>
+            </div>
+            <div v-for="r in vreads" :key="r.model_name" class="readblk">
+              <div class="row" style="margin: 0 0 4px">
+                <b>{{ r.model_name }}</b>
+                <span class="dim">
+                  第 {{ r.attempt }} 次 · {{ r.rows_parsed }} 行 ·
+                  看不清 {{ r.unreadable }} 格 · {{ r.latency_ms }}ms ·
+                  token {{ r.prompt_tokens }}/{{ r.completion_tokens }}
+                </span>
+              </div>
+              <pre class="vtext">{{ r.content }}</pre>
+            </div>
+            <div v-if="!vreads.length" class="dim">还没读过这一页。</div>
+          </template>
+          <template #emptyText>
+            <a-empty :image-style="{ height: '40px' }" description="暂无待读图页面" />
+          </template>
+        </a-table>
+
+        <Async :load="() => api.visionStorage()">
+          <template #default="{ data }">
+            <h3 class="sec">读图 → 印证 → <b>人工签字</b> → 才谈得上录入</h3>
+            <a-table :data-source="(data as any).items" row-key="table_name" size="small"
+              :pagination="false"
+              :columns="[
+                { title: '表', dataIndex: 'table_name', width: 170 },
+                { title: '存的是什么', key: 'what', width: 240 },
+                { title: '谁写的', key: 'by', width: 170 },
+                { title: '重算时', dataIndex: 'on_recalc', width: 120 },
+                { title: '为什么这么存', key: 'why' },
+              ]">
+              <template #bodyCell="{ column, record: x }">
+                <template v-if="column.key === 'what'"><span class="dim">{{ pro(x.what) }}</span></template>
+                <template v-else-if="column.key === 'by'"><span class="dim">{{ pro(x.written_by) }}</span></template>
+                <template v-else-if="column.key === 'why'"><span class="dim"><MarkText :text="pro(x.why)" /></span></template>
+              </template>
+            </a-table>
+            <div class="blk-note"><MarkText :text="(data as any).note" /></div>
+          </template>
+        </Async>
+      </a-tab-pane>
+    </a-tabs>
+  </a-card>
   </div>
 </template>
 
 <style scoped>
-/* 反斜杠路径在 CSS 里不是断行点，只在空格处断 → 行尾留半行空白。
-   break-all 让它按字符断，列宽才被真正用满。 */
-.pathcell code { word-break: break-all; line-height: 1.5; }
+.statbar :deep(.ant-card-body) { padding: 12px 16px; }
+/* 统计条一行排：九个指标并排（2026-10-24 用户要求），窄屏横向滚动 */
+.stat-oneline { display: flex; flex-wrap: nowrap; gap: 32px; overflow-x: auto; align-items: baseline; }
+.stat-oneline > div { min-width: 0; white-space: nowrap; }
+.stat-oneline b { font-size: 18px; font-weight: 600; display: block; font-variant-numeric: tabular-nums; }
+.stat-oneline span { font-size: 11.5px; color: rgba(0, 0, 0, .45); }
+.stat-oneline .scope { margin-left: auto; align-self: center; font-size: 11px; color: rgba(0, 0, 0, .4); }
 
-.readblk { border-left: 3px solid var(--line); padding: 4px 0 6px 9px; margin: 8px 0; }
+.sec { font-size: 14px; font-weight: 600; margin: 18px 0 10px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.dim { font-size: 12px; color: rgba(0, 0, 0, .45); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
+.kv b { color: rgba(0, 0, 0, .45); font-weight: 500; align-self: baseline; }
+.blk-note { font-size: 12px; color: rgba(0, 0, 0, .55); margin: 8px 0 12px; line-height: 1.7; }
+.warn-text { color: #ff4d4f; margin-top: 4px; font-size: 12px; }
+/* 反斜杠路径不是 CSS 断行点，break-all 按字符断，列宽才被真正用满 */
+.pathcode { font-size: 11px; word-break: break-all; line-height: 1.5; background: #fafafa; padding: 1px 4px; border-radius: 3px; }
+
+.readblk { border-left: 3px solid #e5e7eb; padding: 4px 0 6px 9px; margin: 8px 0; }
 .vtext {
-  max-height: 320px; overflow: auto; background: var(--panel-2); border: 1px solid var(--line);
-  border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.55;
+  max-height: 320px; overflow: auto; background: #fafafa; border: 1px solid #f0f0f0;
+  border-radius: 6px; padding: 8px; font-size: 11px; line-height: 1.55;
   white-space: pre-wrap; margin: 0;
 }
-.detailcell { background: var(--panel-2); }
-td.acts { white-space: nowrap; }
-td.warn { color: var(--hit); }
-.ok-note {
-  background: var(--ok-bg); border: 1px solid var(--pass); border-radius: var(--radius);
-  padding: 7px 9px; margin-bottom: 10px; font-size: 13px;
-}
-button.on {
-  background: var(--brand);
-  color: #fff;
-  border-color: var(--brand);
-}
-pre.body {
-  max-height: 340px;
-  overflow: auto;
-  margin: 8px 0 0;
-  padding: 9px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-/* 统计条一行排：九个指标并排，不再折两行（2026-10-24 用户要求） */
-.stat-oneline {
-  display: flex !important;
-  flex-wrap: nowrap;
-  gap: 28px;
-  overflow-x: auto;
-}
-.stat-oneline > div { min-width: 0; white-space: nowrap; }
-/* 启用列的勾选框居中；文件数/占用保持右对齐（数字），路径左对齐 */
-.root-tbl th:nth-child(1), .root-tbl td:nth-child(1) { text-align: center; }
 /* 文件正文预览：等宽 + 限高滚动，长文档（截断到 4000 字）也能在面板内读完 */
 .doc-preview {
-  margin-top: 10px;
-  padding: 12px 14px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  margin-top: 10px; padding: 12px 14px; background: #fafafa;
+  border: 1px solid #f0f0f0; border-radius: 6px;
   font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 340px;
-  overflow: auto;
+  font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-all;
+  max-height: 340px; overflow: auto;
 }
 </style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 栏目五 · 发布管理。四段：工作区 / 版本 / 消费 / 存储。
+ * 发布管理（2026-10-27 AntD 换装版）。四段：工作区 / 版本 / 消费 / 存储。
  *
  * 用户 2026-10-19 的原话：
  *   「发布管理，就是当前的 文件 → 规则 → 三元本体 以版本的形式资产化。
@@ -17,12 +17,10 @@
  * 而且**发布与生效是两件事**：签字只是入库，还要再切一次指针才生效。
  */
 import { computed, onMounted, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
 import type { PubIndex, RelAccess, RelDetail, RelRow, RelWorkspace, StorageRow } from '../api'
-import { useCollapse } from '../data/collapse'
-
-const pubList = useCollapse(), logList = useCollapse(), pubStoreList = useCollapse()
 
 type Tab = 'ws' | 'rel' | 'consume' | 'store'
 const tab = ref<Tab>('ws')
@@ -46,11 +44,11 @@ const busy = ref('')
 const err = ref('')
 const msg = ref('')
 
-const ST: Record<string, { label: string; cls: string }> = {
-  draft: { label: '草稿', cls: 't-na' },
-  reviewing: { label: '审阅中', cls: 't-pend' },
-  published: { label: '已发布', cls: 't-pass' },
-  rolled_back: { label: '已回滚', cls: 't-hit' },
+const ST: Record<string, { label: string; color: string }> = {
+  draft: { label: '草稿', color: 'default' },
+  reviewing: { label: '审阅中', color: 'processing' },
+  published: { label: '已发布', color: 'success' },
+  rolled_back: { label: '已回滚', color: 'error' },
 }
 
 async function run(tag: string, fn: () => Promise<void>) {
@@ -93,14 +91,11 @@ function pickTab(t: Tab) {
 
 const canFreeze = computed(() => !!ws.value && ws.value.gates.every((g) => g.ok))
 const published = computed(() => rows.value.filter((r) => r.status === 'published'))
-const current = computed(() => rows.value.find((r) => r.is_current) || null)
 
 const doFreeze = () =>
   run('freeze', async () => {
     const r = await api.relFreeze({ version: version.value, by: who.value, note: note.value })
-    msg.value = `已冻结 ${r.release_id}（${r.rule_set_version}）：${r.layers} 层，`
-      + `包级校验 ${r.bundle_sha256.slice(0, 12)}…；`
-      + `差异 新增 ${r.diff.added} / 改 ${r.diff.modified} / 退 ${r.diff.retired}`
+    message.success(`已冻结 ${r.release_id}（${r.rule_set_version}）：新增 ${r.diff.added} / 改 ${r.diff.modified} / 退 ${r.diff.retired}`)
     version.value = ''
     note.value = ''
     await Promise.all([loadWs(), loadRel()])
@@ -110,7 +105,7 @@ const doFreeze = () =>
 const act = (label: string, fn: () => Promise<unknown>) =>
   run('act', async () => {
     const r = (await fn()) as { note?: string }
-    msg.value = label + (r?.note ? '：' + r.note : '')
+    message.success(label + (r?.note ? '：' + r.note : ''))
     await Promise.all([loadRel(), loadWs()])
     if (openId.value) detail.value = await api.relRelease(openId.value)
   })
@@ -140,437 +135,403 @@ const CHANGE: Record<string, string> = {
   added: '新增', modified: '修改', retired: '退役', unchanged: '未变',
 }
 
+const wsCols = [
+  { title: '#', dataIndex: 'ord', width: 40, align: 'center' as const },
+  { title: '层', key: 'layer', width: 130 },
+  { title: '条目', dataIndex: 'item_count', width: 64, align: 'center' as const },
+  { title: '来源', dataIndex: 'source_kind', width: 80 },
+  { title: '出处', dataIndex: 'source_ref', width: 220 },
+  { title: '内容校验', key: 'sha', width: 120 },
+  { title: '说明', key: 'note' },
+]
+const relCols = [
+  { title: '发布号', key: 'rid', width: 110 },
+  { title: '版本号', key: 'ver', width: 170 },
+  { title: '状态', key: 'st', width: 84, align: 'center' as const },
+  { title: '层', dataIndex: 'layers', width: 56, align: 'center' as const },
+  { title: '规则', dataIndex: 'rule_count', width: 60, align: 'center' as const },
+  { title: '可编译', dataIndex: 'compiled_count', width: 68, align: 'center' as const },
+  { title: '签字人', key: 'by', width: 96 },
+  { title: '被拉取', dataIndex: 'accesses', width: 68, align: 'center' as const },
+  { title: '操作', key: 'op', width: 240 },
+]
+const epCols = [
+  { title: '接口', dataIndex: 'path', width: 330 },
+  { title: '给的是什么', dataIndex: 'what' },
+]
+const layerCols = [
+  { title: '#', dataIndex: 'ord', width: 40, align: 'center' as const },
+  { title: '层名', key: 'layer', width: 120 },
+  { title: 'URL 别名', key: 'alias', width: 160 },
+  { title: '说明', key: 'note' },
+]
+const pubCols = [
+  { title: '版本号', dataIndex: 'rule_set_version', width: 130 },
+  { title: '当前', key: 'cur', width: 64, align: 'center' as const },
+  { title: '包级校验', key: 'sha', width: 120 },
+  { title: '签字人', dataIndex: 'reviewed_by', width: 96 },
+  { title: '取法', key: 'how' },
+]
+const logCols = [
+  { title: '时间', key: 'at', width: 150 },
+  { title: '版本', dataIndex: 'rule_set_version', width: 130 },
+  { title: '资源', dataIndex: 'resource', width: 180 },
+  { title: '调用方自报', dataIndex: 'client', width: 150 },
+  { title: '字节', dataIndex: 'bytes', width: 76, align: 'right' as const },
+]
+const storeCols = [
+  { title: '表', dataIndex: 'table_name', width: 230 },
+  { title: '行数', dataIndex: 'rows', width: 60, align: 'right' as const },
+  { title: '存的是什么', dataIndex: 'what', width: 190 },
+  { title: '谁写的', dataIndex: 'written_by', width: 130 },
+  { title: '重算时', dataIndex: 'on_recalc', width: 140 },
+  { title: '为什么这么存', key: 'why' },
+]
+const dt = (s: unknown) => String(s || '—').slice(0, 19).replace('T', ' ')
+
 onMounted(() => loadWs())
 </script>
 
 <template>
-  <div class="v2">
-  <h2>发布管理</h2>
-  <div class="tabs">
-    <button :class="{ on: tab === 'ws' }" @click="pickTab('ws')">工作区</button>
-    <button :class="{ on: tab === 'rel' }" @click="pickTab('rel')">版本</button>
-    <button :class="{ on: tab === 'consume' }" @click="pickTab('consume')">消费</button>
-    <button :class="{ on: tab === 'store' }" @click="pickTab('store')">存储</button>
-    <span class="muted" style="margin-left: auto">
-      <span v-if="ws?.current" :title="ws.current.why">
-        引擎在用 <code>{{ ws.current.rule_set_version }}</code>
-        <span class="tag" :class="ws.current.is_pointer ? 't-pass' : 't-pend'"
-              style="margin-left:4px">{{ ws.current.is_pointer ? '已指定' : '自动' }}</span>
-      </span>
-      <span v-else class="tag t-pend">库里一版都没有</span>
-    </span>
-  </div>
-
-  <div v-if="err" class="err">{{ err }}</div>
-  <div v-if="msg" class="ok-note">{{ msg }}</div>
-
-  <!-- ① 工作区 --------------------------------------------------------------->
-  <template v-if="tab === 'ws'">
-    <div v-if="ws" class="panel">
-      <h3>现在能发什么</h3>
-      <div class="sub"><MarkText :text="ws.note" /></div>
-      <table class="rel-tbl">
-        <thead>
-          <tr>
-            <th style="width: 30px">#</th><th style="width: 110px">层</th>
-            <th style="width: 58px">条目</th><th style="width: 72px">来源</th>
-            <th style="width: 320px">出处</th>
-            <th style="width: 112px">内容校验</th>
-            <th>这一层是什么</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="l in ws.layers" :key="l.layer" :class="{ tri: l.is_triple }">
-            <td class="muted">{{ l.ord }}</td>
-            <td>
-              <b>{{ l.layer }}</b>
-              <span v-if="l.is_triple" class="tag t-pass" style="margin-left: 4px">三元</span>
-            </td>
-            <td class="num">{{ l.item_count }}</td>
-            <td class="muted" style="font-size: 12px">{{ l.source_kind }}</td>
-            <td class="mono" style="font-size: 11px">{{ l.source_ref }}</td>
-            <td class="mono" style="font-size: 11px">{{ l.content_sha256.slice(0, 12) }}…</td>
-            <td style="font-size: 12px"><MarkText :text="l.note" /></td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="kv" style="margin-top: 8px">
-        <b>包级校验</b>
-        <span class="mono">{{ ws.bundle_sha256 }}
-          <span class="muted" style="font-size: 12px">
-            （各层校验值按层名排序后再算一次；<b>不是 zip 文件的哈希</b>——
-            zip 里有时间戳，同样内容两次打包字节不同）
-          </span>
+  <div class="pub">
+  <a-card size="small">
+    <a-tabs v-model:active-key="tab" @change="(k: any) => pickTab(k as Tab)">
+      <template #rightExtra>
+        <span v-if="ws?.current" class="dim" :title="ws.current.why">
+          引擎在用 <code>{{ ws.current.rule_set_version }}</code>
+          <a-tag :color="ws.current.is_pointer ? 'success' : 'processing'" style="margin-left:4px">
+            {{ ws.current.is_pointer ? '已指定' : '自动' }}</a-tag>
         </span>
-        <b>与当前生效版本的差异</b>
-        <span>
-          <template v-if="ws.diff.base">
-            规则 新增 <b>{{ ws.diff.added }}</b> / 修改 <b>{{ ws.diff.modified }}</b>
-            / 退役 <b>{{ ws.diff.retired }}</b> / 未变 {{ ws.diff.unchanged }}
-            <span v-if="ws.diff.layers_changed.length" class="muted">
-              · 变了的层：{{ ws.diff.layers_changed.join('、') }}
+        <a-tag v-else color="warning">库里一版都没有</a-tag>
+      </template>
+
+      <a-tab-pane key="ws" tab="工作区">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <template v-if="ws">
+          <h3 class="sec">现在能发什么</h3>
+          <div class="sub"><MarkText :text="ws.note" /></div>
+          <a-table :columns="wsCols" :data-source="ws.layers" row-key="layer" size="small"
+            :pagination="false" :row-class-name="(r: any) => r.is_triple ? 'row-tri' : ''">
+            <template #bodyCell="{ column, record: l }">
+              <template v-if="column.key === 'layer'">
+                <b>{{ l.layer }}</b>
+                <a-tag v-if="l.is_triple" color="success" style="margin-left: 4px">三元</a-tag>
+              </template>
+              <template v-else-if="column.key === 'sha'">
+                <code class="mini-code">{{ l.content_sha256.slice(0, 12) }}…</code>
+              </template>
+              <template v-else-if="column.key === 'note'">
+                <span class="dim"><MarkText :text="l.note" /></span>
+              </template>
+              <template v-else-if="column.dataIndex === 'source_ref'">
+                <code class="mini-code">{{ l.source_ref }}</code>
+              </template>
+            </template>
+          </a-table>
+          <div class="kv" style="margin-top: 12px">
+            <b>包级校验</b>
+            <span><code class="mini-code">{{ ws.bundle_sha256 }}</code>
+              <span class="dim">（各层校验值按层名排序后再算一次；<b>不是 zip 文件的哈希</b>）</span>
             </span>
-            <span v-else class="muted">· 九层都没变，这一版和生效版内容相同</span>
-          </template>
-          <template v-else>
-            <span class="tag t-pend">没有可比的已发布版本</span>
-            <span class="muted" style="margin-left: 6px"><MarkText :text="ws.diff.note" /></span>
-          </template>
-        </span>
-      </div>
-    </div>
-
-    <div v-if="ws" class="panel">
-      <h3>冻结为新版本</h3>
-      <table class="gates">
-        <tbody>
-          <tr v-for="g in ws.gates" :key="g.gate">
-            <td style="width: 150px"><b>{{ g.gate }}</b></td>
-            <td style="width: 60px">
-              <span class="tag" :class="g.ok ? 't-pass' : 't-hit'">{{ g.ok ? '过' : '挡住' }}</span>
-            </td>
-            <td class="mono" style="width: 230px; font-size: 11px"><MarkText :text="g.detail" /></td>
-            <td style="font-size: 12px" :class="{ muted: g.ok }">{{ g.how }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="row" style="margin-top: 8px">
-        <input v-model="version" placeholder="版本号" style="width: 170px" />
-        <input v-model="who" placeholder="冻结人署名（必填）" style="width: 150px" />
-        <input v-model="note" placeholder="发布说明：为什么发这一版" style="flex: 1" />
-        <button :disabled="!!busy || !canFreeze || !version || !who" @click="doFreeze">
-          冻结为新版本
-        </button>
-      </div>
-    </div>
-  </template>
-
-  <!-- ② 版本 ----------------------------------------------------------------->
-  <template v-if="tab === 'rel'">
-    <div class="panel">
-      <h3>版本（{{ rows.length }}）</h3>
-      <!-- 「哪一版在生效」要写成一句话。只靠表格里的高亮，没设指针时
-           看不出高亮是「有人指定的」还是「自动认的」。 -->
-      <div v-if="ws?.current" class="muted" style="margin-bottom:6px">
-        规则引擎正在用 <code>{{ ws.current.rule_set_version }}</code>
-        （{{ ws.current.release_id }}）—— {{ ws.current.why }}
-      </div>
-      <div class="row">
-        <input v-model="who" placeholder="操作人署名（选填，只记在痕迹里）" style="width: 150px" />
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 76px">发布号</th><th style="width: 128px">版本号</th>
-            <th style="width: 62px">状态</th><th style="width: 40px">层</th>
-            <th class="num" style="width: 44px">规则</th>
-            <th class="num" style="width: 52px">可编译</th>
-            <th style="width: 92px">签字人</th>
-            <th style="width: 50px">被拉取</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <template v-for="r in rows" :key="r.release_id">
-            <tr :class="{ cur: r.is_effective }">
-              <td class="mono">
-                <a href="#" @click.prevent="openDetail(r.release_id)">{{ r.release_id }}</a>
-              </td>
-              <td class="mono">
-                {{ r.rule_set_version }}
-                <span v-if="r.is_current" class="tag t-pass" style="margin-left:4px">生效中</span>
-                <span v-else-if="r.is_effective" class="tag t-pend" style="margin-left:4px">生效中（自动）</span>
-              </td>
-              <td><span class="tag" :class="ST[r.status]?.cls">{{ ST[r.status]?.label }}</span></td>
-              <td class="num" :class="{ warn: !r.layers }">{{ r.layers || '—' }}</td>
-              <td class="num">{{ r.rule_count }}</td>
-              <td class="num">{{ r.compiled_count }}</td>
-              <td>
-                <span v-if="r.reviewed_by">{{ r.reviewed_by }}</span>
-                <span v-else class="tag t-pend">未签字</span>
-              </td>
-              <td class="num">{{ r.accesses || '—' }}</td>
-              <td class="acts">
-                <template v-if="r.status === 'draft'">
-                  <button v-if="r.layers" class="mini" :disabled="!!busy || !who"
-                          @click="act('已送审', () => api.relReview(r.release_id, who))">送审</button>
-                  <button v-if="r.layers" class="mini" :disabled="!!busy || !who"
-                          @click="act('已签字发布', () => api.relPublish(r.release_id, who))">
-                    签字发布</button>
-                  <button class="mini" :disabled="!!busy || !who"
-                          @click="act('已删草稿', () => api.relDiscard(r.release_id, who))">删草稿</button>
-                  <span v-if="!r.layers" class="muted" style="font-size: 11px">
-                    没冻内容（装载脚本建的工作区草稿）
-                  </span>
-                </template>
-                <template v-else-if="r.status === 'reviewing'">
-                  <button class="mini" :disabled="!!busy || !who"
-                          @click="act('已签字发布', () => api.relPublish(r.release_id, who))">
-                    签字发布</button>
-                </template>
-                <template v-else-if="r.status === 'published'">
-                  <button v-if="!r.is_current" class="mini" :disabled="!!busy"
-                          @click="act('已切为当前', () => api.relSwitch(r.release_id, who))">
-                    切为当前</button>
-                  <a class="mini dl" :href="api.pubBundleUrl(r.rule_set_version)">下载资产包</a>
-                </template>
-                <span v-else class="muted" style="font-size: 11px">
-                  <MarkText :text="r.rollback_reason" />
+            <b>与当前生效版本的差异</b>
+            <span>
+              <template v-if="ws.diff.base">
+                规则 新增 <b>{{ ws.diff.added }}</b> / 修改 <b>{{ ws.diff.modified }}</b>
+                / 退役 <b>{{ ws.diff.retired }}</b> / 未变 {{ ws.diff.unchanged }}
+                <span v-if="ws.diff.layers_changed.length" class="dim">
+                  · 变了的层：{{ ws.diff.layers_changed.join('、') }}
                 </span>
-              </td>
-            </tr>
-            <tr v-if="openId === r.release_id">
-              <td colspan="9" class="detailcell">
-                <div v-if="!detail" class="muted">读取中…</div>
-                <template v-else>
-                  <div class="kv">
-                    <b>冻结</b>
-                    <span>
-                      {{ detail.created_by }} ·
-                      {{ (detail.frozen_at || '—').toString().slice(0, 19) }}
-                    </span>
-                    <b>签字</b>
-                    <span>
-                      {{ detail.reviewed_by || '—' }} ·
-                      {{ (detail.published_at || '—').toString().slice(0, 19) }}
-                    </span>
-                    <b>包级校验</b><span class="mono">{{ detail.bundle_sha256 || '—' }}</span>
-                    <b v-if="detail.note">说明</b><span v-if="detail.note"><MarkText :text="detail.note" /></span>
-                  </div>
-                  <table v-if="detail.assets.length">
-                    <thead>
-                      <tr>
-                        <th style="width: 110px">层</th><th style="width: 58px">条目</th>
-                        <th style="width: 112px">内容校验</th><th>出处</th>
-                        <th style="width: 76px"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="a in detail.assets" :key="a.layer">
-                        <td>
-                          <b>{{ a.layer }}</b>
-                          <span v-if="a.is_triple" class="tag t-pass">三元</span>
-                        </td>
-                        <td class="num">{{ a.item_count }}</td>
-                        <td class="mono" style="font-size: 11px">
-                          {{ a.content_sha256.slice(0, 12) }}…
-                        </td>
-                        <td class="mono" style="font-size: 11px">{{ a.source_ref }}</td>
-                        <td>
-                          <button class="mini" :disabled="!!busy"
-                                  @click="showPayload(r.release_id, a.layer)">看快照</button>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div v-else class="note">
-                    这一版没有快照内容（<code>frozen_at</code> 为空的空壳）。
-                    装载脚本建的工作区草稿就是这样——它只记了规则条数，没抄九层。
-                    要发版请到「工作区」点<b>冻结为新版本</b>。
-                  </div>
-                  <pre v-if="pay" class="snap">{{ pay.layer }}  sha {{ pay.sha }}
-{{ pay.text }}</pre>
-                  <div v-if="detail.status === 'published'" class="row" style="margin-top: 8px">
-                    <select v-model="rbTarget" style="width: 180px">
-                      <option value="">回滚后：没有生效版本</option>
-                      <option v-for="p in published.filter((x) => x.release_id !== r.release_id)"
-                              :key="p.release_id" :value="p.release_id">
-                        指回 {{ p.rule_set_version }}
-                      </option>
-                    </select>
-                    <input v-model="reason" placeholder="回滚原因（必填）" style="flex: 1" />
-                    <button class="mini" :disabled="!!busy || !who || !reason"
-                            @click="act('已回滚', () => api.relRollback(r.release_id,
-                                   { to: rbTarget, by: who, reason }))">回滚这一版</button>
-                  </div>
-                  <div v-if="detail.items.length" class="muted" style="font-size: 12px">
-                    逐条规则的变更：
-                    <span v-for="k in ['added', 'modified', 'retired', 'unchanged']" :key="k">
-                      {{ CHANGE[k] }} {{ detail.items.filter((x) => x.change === k).length }}
-                      <span class="sep">·</span>
-                    </span>
-                    <b>这不是该版本的内容</b>——内容在「规则」那一层的快照里。
-                  </div>
-                </template>
-              </td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
-      <div class="note">
-        <div v-for="(v, k) in policy" :key="k">· {{ v }}</div>
-      </div>
-    </div>
+                <span v-else class="dim">· 九层都没变，这一版和生效版内容相同</span>
+              </template>
+              <template v-else>
+                <a-tag color="warning">没有可比的已发布版本</a-tag>
+                <span class="dim" style="margin-left: 6px"><MarkText :text="ws.diff.note" /></span>
+              </template>
+            </span>
+          </div>
 
-  </template>
-
-  <!-- ③ 消费 ----------------------------------------------------------------->
-  <template v-if="tab === 'consume'">
-    <div v-if="idx" class="panel">
-      <h3>对外消费：{{ idx.service_name }}</h3>
-      <table>
-        <thead><tr><th style="width: 330px">接口</th><th>给的是什么</th></tr></thead>
-        <tbody>
-          <tr v-for="e in idx.endpoints" :key="e.path">
-            <td class="mono" style="font-size: 12px">{{ e.path }}</td>
-            <td style="font-size: 12px">{{ e.what }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="kv" style="margin-top: 8px">
-        <template v-for="(v, k) in idx.rules_of_the_road" :key="k">
-          <b>{{ k }}</b><span style="font-size: 12px">{{ v }}</span>
+          <h3 class="sec">冻结为新版本</h3>
+          <a-table :data-source="ws.gates" row-key="gate" size="small" :pagination="false"
+            :columns="[
+              { title: '闸门', dataIndex: 'gate', width: 150 },
+              { title: '结果', key: 'ok', width: 80, align: 'center' },
+              { title: '口径', key: 'detail', width: 240 },
+              { title: '怎么算的', key: 'how' },
+            ]">
+            <template #bodyCell="{ column, record: g }">
+              <template v-if="column.key === 'ok'">
+                <a-tag :color="g.ok ? 'success' : 'error'">{{ g.ok ? '过' : '挡住' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'detail'">
+                <span class="dim"><MarkText :text="g.detail" /></span>
+              </template>
+              <template v-else-if="column.key === 'how'">
+                <span :class="g.ok ? 'dim' : ''">{{ g.how }}</span>
+              </template>
+            </template>
+          </a-table>
+          <div class="row" style="margin-top: 12px">
+            <a-input v-model:value="version" placeholder="版本号" style="width: 170px" />
+            <a-input v-model:value="who" placeholder="冻结人署名（必填）" style="width: 160px" />
+            <a-input v-model:value="note" placeholder="发布说明：为什么发这一版" style="flex: 1" />
+            <a-button type="primary" :disabled="!!busy || !canFreeze || !version || !who" @click="doFreeze">
+              冻结为新版本
+            </a-button>
+          </div>
         </template>
-      </div>
-    </div>
+      </a-tab-pane>
 
-    <div v-if="idx" class="panel">
-      <h3>九层的层名就是对外契约</h3>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 30px">#</th><th style="width: 110px">层名</th>
-            <th style="width: 150px">URL 别名</th><th>这一层是什么</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="l in idx.layers" :key="l.layer"
-              :class="{ tri: idx.triple_ontology.includes(l.layer) }">
-            <td class="muted">{{ l.ord }}</td>
-            <td>
-              <b>{{ l.layer }}</b>
-              <span v-if="idx.triple_ontology.includes(l.layer)" class="tag t-pass">三元</span>
-            </td>
-            <td class="mono" style="font-size: 11px">{{ l.alias || '—' }}</td>
-            <td style="font-size: 12px"><MarkText :text="l.note" /></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+      <a-tab-pane key="rel" tab="版本">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <!-- 「哪一版在生效」要写成一句话。只靠表格里的高亮，没设指针时
+             看不出高亮是「有人指定的」还是「自动认的」。 -->
+        <div v-if="ws?.current" class="dim" style="margin-bottom: 8px">
+          规则引擎正在用 <code>{{ ws.current.rule_set_version }}</code>
+          （{{ ws.current.release_id }}）—— {{ ws.current.why }}
+        </div>
+        <div class="row" style="margin-bottom: 8px">
+          <a-input v-model:value="who" placeholder="操作人署名（选填，只记在痕迹里）" style="width: 220px" />
+        </div>
+        <a-table :columns="relCols" :data-source="rows" row-key="release_id" size="small"
+          :pagination="false"
+          :row-class-name="(r: any) => r.is_effective ? 'row-cur' : ''">
+          <template #bodyCell="{ column, record: r }">
+            <template v-if="column.key === 'rid'">
+              <a style="cursor: pointer" @click.prevent="openDetail(r.release_id)">{{ r.release_id }}</a>
+            </template>
+            <template v-else-if="column.key === 'ver'">
+              {{ r.rule_set_version }}
+              <a-tag v-if="r.is_current" color="success" style="margin-left:4px">生效中</a-tag>
+              <a-tag v-else-if="r.is_effective" color="processing" style="margin-left:4px">生效中（自动）</a-tag>
+            </template>
+            <template v-else-if="column.key === 'st'">
+              <a-tag :color="ST[r.status]?.color">{{ ST[r.status]?.label }}</a-tag>
+            </template>
+            <template v-else-if="column.dataIndex === 'layers'">
+              <span :style="!r.layers ? 'color:#faad14' : ''">{{ r.layers || '—' }}</span>
+            </template>
+            <template v-else-if="column.key === 'by'">
+              <span v-if="r.reviewed_by">{{ r.reviewed_by }}</span>
+              <a-tag v-else color="warning">未签字</a-tag>
+            </template>
+            <template v-else-if="column.dataIndex === 'accesses'">{{ r.accesses || '—' }}</template>
+            <template v-else-if="column.key === 'op'">
+              <template v-if="r.status === 'draft'">
+                <a-button v-if="r.layers" size="small" :disabled="!!busy || !who"
+                  @click="act('已送审', () => api.relReview(r.release_id, who))">送审</a-button>
+                <a-button v-if="r.layers" size="small" :disabled="!!busy || !who" style="margin-left: 4px"
+                  @click="act('已签字发布', () => api.relPublish(r.release_id, who))">签字发布</a-button>
+                <a-button size="small" :disabled="!!busy || !who" style="margin-left: 4px"
+                  @click="act('已删草稿', () => api.relDiscard(r.release_id, who))">删草稿</a-button>
+                <span v-if="!r.layers" class="dim">没冻内容（装载脚本建的工作区草稿）</span>
+              </template>
+              <template v-else-if="r.status === 'reviewing'">
+                <a-button size="small" :disabled="!!busy || !who"
+                  @click="act('已签字发布', () => api.relPublish(r.release_id, who))">签字发布</a-button>
+              </template>
+              <template v-else-if="r.status === 'published'">
+                <a-button v-if="!r.is_current" size="small" :disabled="!!busy"
+                  @click="act('已切为当前', () => api.relSwitch(r.release_id, who))">切为当前</a-button>
+                <a size="small" style="margin-left: 4px" :href="api.pubBundleUrl(r.rule_set_version)">下载资产包</a>
+              </template>
+              <span v-else class="dim"><MarkText :text="r.rollback_reason" /></span>
+            </template>
+          </template>
+          <!-- 展开行：版本详情 + 回滚 -->
+          <template #expandedRowRender="{ record: r }">
+            <div v-if="openId === r.release_id">
+              <div v-if="!detail" class="dim">读取中…</div>
+              <template v-else>
+                <div class="kv">
+                  <b>冻结</b><span>{{ detail.created_by }} · {{ dt(detail.frozen_at) }}</span>
+                  <b>签字</b><span>{{ detail.reviewed_by || '—' }} · {{ dt(detail.published_at) }}</span>
+                  <b>包级校验</b><span><code class="mini-code">{{ detail.bundle_sha256 || '—' }}</code></span>
+                  <b v-if="detail.note">说明</b><span v-if="detail.note"><MarkText :text="detail.note" /></span>
+                </div>
+                <a-table v-if="detail.assets.length" :data-source="detail.assets" row-key="layer"
+                  size="small" :pagination="false" style="margin-top: 8px"
+                  :columns="[
+                    { title: '层', key: 'layer', width: 130 },
+                    { title: '条目', dataIndex: 'item_count', width: 70, align: 'center' },
+                    { title: '内容校验', key: 'sha', width: 130 },
+                    { title: '出处', key: 'ref' },
+                    { title: '', key: 'op', width: 90 },
+                  ]">
+                  <template #bodyCell="{ column, record: a }">
+                    <template v-if="column.key === 'layer'">
+                      <b>{{ a.layer }}</b>
+                      <a-tag v-if="a.is_triple" color="success">三元</a-tag>
+                    </template>
+                    <template v-else-if="column.key === 'sha'">
+                      <code class="mini-code">{{ a.content_sha256.slice(0, 12) }}…</code>
+                    </template>
+                    <template v-else-if="column.key === 'ref'">
+                      <code class="mini-code">{{ a.source_ref }}</code>
+                    </template>
+                    <template v-else-if="column.key === 'op'">
+                      <a-button size="small" :disabled="!!busy"
+                        @click="showPayload(r.release_id, a.layer)">看快照</a-button>
+                    </template>
+                  </template>
+                </a-table>
+                <div v-else class="blk-note">
+                  这一版没有快照内容（<code>frozen_at</code> 为空的空壳）。
+                  装载脚本建的工作区草稿就是这样——它只记了规则条数，没抄九层。
+                  要发版请到「工作区」点<b>冻结为新版本</b>。
+                </div>
+                <pre v-if="pay" class="snap">{{ pay.layer }}  sha {{ pay.sha }}
+{{ pay.text }}</pre>
+                <div v-if="detail.status === 'published'" class="row" style="margin-top: 8px">
+                  <a-select v-model:value="rbTarget" style="width: 200px"
+                    :options="[
+                      { value: '', label: '回滚后：没有生效版本' },
+                      ...published.filter((x) => x.release_id !== r.release_id)
+                        .map((p) => ({ value: p.release_id, label: '指回 ' + p.rule_set_version })),
+                    ]" />
+                  <a-input v-model:value="reason" placeholder="回滚原因（必填）" style="flex: 1" />
+                  <a-button size="small" danger :disabled="!!busy || !who || !reason"
+                    @click="act('已回滚', () => api.relRollback(r.release_id,
+                           { to: rbTarget, by: who, reason }))">回滚这一版</a-button>
+                </div>
+                <div v-if="detail.items.length" class="dim" style="font-size: 12px; margin-top: 8px">
+                  逐条规则的变更：
+                  <template v-for="k in ['added', 'modified', 'retired', 'unchanged']" :key="k">
+                    {{ CHANGE[k] }} {{ detail.items.filter((x) => x.change === k).length }} ·
+                  </template>
+                  <b>这不是该版本的内容</b>——内容在「规则」那一层的快照里。
+                </div>
+              </template>
+            </div>
+            <div v-else class="dim">点发布号查看详情</div>
+          </template>
+        </a-table>
+        <div class="blk-note" style="margin-top: 8px">
+          <div v-for="(v, k) in policy" :key="k">· {{ v }}</div>
+        </div>
+      </a-tab-pane>
 
-    <div class="panel">
-      <h3>可消费的版本</h3>
-      <div v-if="!published.length" class="note">
-        还没有任何一版签字发布，所以对外接口现在是空的——
-        <b>这不等于接口没做</b>。去「工作区」冻结一版，再「签字发布」。
-      </div>
-      <table v-else>
-        <thead>
-          <tr>
-            <th style="width: 128px">版本号</th><th style="width: 60px">当前</th>
-            <th style="width: 112px">包级校验</th><th style="width: 92px">签字人</th>
-            <th>取法</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in pubList.view(published)" :key="p.release_id">
-            <td class="mono">{{ p.rule_set_version }}</td>
-            <td><span v-if="p.is_current" class="tag t-pass">当前</span></td>
-            <td class="mono" style="font-size: 11px">
-              {{ (p.bundle_sha256 || '').slice(0, 12) }}…
-            </td>
-            <td>{{ p.reviewed_by }}</td>
-            <td style="font-size: 12px">
-              <code>/api/pub/v1/releases/{{ p.rule_set_version }}</code>
-              <a class="mini dl" :href="api.pubBundleUrl(p.rule_set_version)">下载资产包</a>
-            </td>
-          </tr>
-                      <tr v-if="pubList.more(published).show">
-                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="pubList.more(published).toggle()">
-                  {{ pubList.more(published).rest === -1 ? '收起' : `展开剩余 ${pubList.more(published).rest} 条` }}（共 {{ published.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-    </div>
+      <a-tab-pane key="consume" tab="消费">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <template v-if="idx">
+          <h3 class="sec">对外消费：{{ idx.service_name }}</h3>
+          <a-table :columns="epCols" :data-source="idx.endpoints" row-key="path" size="small"
+            :pagination="false">
+            <template #bodyCell="{ column, record: e }">
+              <template v-if="column.dataIndex === 'path'">
+                <code class="mini-code">{{ e.path }}</code>
+              </template>
+              <template v-else-if="column.dataIndex === 'what'">
+                <span class="dim">{{ e.what }}</span>
+              </template>
+            </template>
+          </a-table>
+          <div class="kv" style="margin-top: 12px">
+            <template v-for="(v, k) in idx.rules_of_the_road" :key="k">
+              <b>{{ k }}</b><span class="dim">{{ v }}</span>
+            </template>
+          </div>
 
-    <div class="panel">
-      <h3>消费台账（{{ log.length }}）</h3>
-      <table v-if="log.length">
-        <thead>
-          <tr>
-            <th style="width: 140px">时间</th><th style="width: 128px">版本</th>
-            <th style="width: 170px">资源</th><th style="width: 140px">调用方自报</th>
-            <th class="num" style="width: 70px">字节</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="l in logList.view(log)" :key="l.id">
-            <td class="mono" style="font-size: 11px">{{ l.at.toString().slice(0, 19) }}</td>
-            <td class="mono" style="font-size: 11px">{{ l.rule_set_version || '—' }}</td>
-            <td class="mono" style="font-size: 11px">{{ l.resource }}</td>
-            <td style="font-size: 12px">{{ l.client || '—' }}</td>
-            <td class="num">{{ l.bytes ?? '—' }}</td>
-          </tr>
-                      <tr v-if="logList.more(log).show">
-                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="logList.more(log).toggle()">
-                  {{ logList.more(log).rest === -1 ? '收起' : `展开剩余 ${logList.more(log).rest} 条` }}（共 {{ log.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-      <div v-else class="note">还没有人拉过。</div>
-    </div>
-  </template>
+          <h3 class="sec">九层的层名就是对外契约</h3>
+          <a-table :columns="layerCols" :data-source="idx.layers" row-key="layer" size="small"
+            :pagination="false"
+            :row-class-name="(l: any) => idx?.triple_ontology?.includes(l.layer) ? 'row-tri' : ''">
+            <template #bodyCell="{ column, record: l }">
+              <template v-if="column.key === 'layer'">
+                <b>{{ l.layer }}</b>
+                <a-tag v-if="idx?.triple_ontology?.includes(l.layer)" color="success">三元</a-tag>
+              </template>
+              <template v-else-if="column.key === 'alias'">
+                <code class="mini-code">{{ l.alias || '—' }}</code>
+              </template>
+              <template v-else-if="column.key === 'note'">
+                <span class="dim"><MarkText :text="l.note" /></span>
+              </template>
+            </template>
+          </a-table>
+        </template>
 
-  <!-- ④ 存储 ----------------------------------------------------------------->
-  <template v-if="tab === 'store'">
-    <div v-if="store" class="panel">
-      <h3>存储</h3>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 230px">表</th><th class="num" style="width: 54px">行数</th>
-            <th style="width: 190px">存的是什么</th><th style="width: 130px">谁写的</th>
-            <th style="width: 150px">重算时</th><th>为什么这么存</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in pubStoreList.view(store.items)" :key="t.table_name">
-            <td class="mono" style="font-size: 12px">{{ t.table_name }}</td>
-            <td class="num">{{ t.rows ?? '—' }}</td>
-            <td style="font-size: 12px">{{ t.what }}</td>
-            <td class="muted" style="font-size: 12px">{{ t.written_by }}</td>
-            <td style="font-size: 12px">{{ t.on_recalc }}</td>
-            <td class="muted" style="font-size: 12px"><MarkText :text="t.why" /></td>
-          </tr>
-                      <tr v-if="pubStoreList.more(store.items).show">
-                <td :colspan="6" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="pubStoreList.more(store.items).toggle()">
-                  {{ pubStoreList.more(store.items).rest === -1 ? '收起' : `展开剩余 ${pubStoreList.more(store.items).rest} 条` }}（共 {{ store.items.length }} 条）
-                </td>
-              </tr>
-</tbody>
-      </table>
-      <div class="note"><MarkText :text="store.note" /></div>
-    </div>
+        <h3 class="sec">可消费的版本</h3>
+        <div v-if="!published.length" class="blk-note">
+          还没有任何一版签字发布，所以对外接口现在是空的——
+          <b>这不等于接口没做</b>。去「工作区」冻结一版，再「签字发布」。
+        </div>
+        <a-table v-else :columns="pubCols" :data-source="published" row-key="release_id"
+          size="small" :pagination="published.length > 10 ? { pageSize: 10 } : false">
+          <template #bodyCell="{ column, record: p }">
+            <template v-if="column.key === 'cur'">
+              <a-tag v-if="p.is_current" color="success">当前</a-tag>
+            </template>
+            <template v-else-if="column.key === 'sha'">
+              <code class="mini-code">{{ (p.bundle_sha256 || '').slice(0, 12) }}…</code>
+            </template>
+            <template v-else-if="column.key === 'how'">
+              <code class="mini-code">/api/pub/v1/releases/{{ p.rule_set_version }}</code>
+              <a size="small" style="margin-left: 6px" :href="api.pubBundleUrl(p.rule_set_version)">下载资产包</a>
+            </template>
+          </template>
+        </a-table>
 
-  </template>
+        <h3 class="sec">消费台账（{{ log.length }}）</h3>
+        <a-table v-if="log.length" :columns="logCols" :data-source="log" row-key="id"
+          size="small" :pagination="log.length > 10 ? { pageSize: 10 } : false">
+          <template #bodyCell="{ column, record: l }">
+            <template v-if="column.key === 'at'"><code class="mini-code">{{ dt(l.at) }}</code></template>
+            <template v-else-if="column.dataIndex === 'rule_set_version'">
+              <code class="mini-code">{{ l.rule_set_version || '—' }}</code>
+            </template>
+            <template v-else-if="column.dataIndex === 'resource'">
+              <code class="mini-code">{{ l.resource }}</code>
+            </template>
+            <template v-else-if="column.dataIndex === 'client'">
+              <span class="dim">{{ l.client || '—' }}</span>
+            </template>
+            <template v-else-if="column.dataIndex === 'bytes'">{{ l.bytes ?? '—' }}</template>
+          </template>
+        </a-table>
+        <div v-else class="blk-note">还没有人拉过。</div>
+      </a-tab-pane>
+
+      <a-tab-pane key="store" tab="存储">
+        <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
+        <template v-if="store">
+          <h3 class="sec">存储</h3>
+          <a-table :columns="storeCols" :data-source="store.items" row-key="table_name"
+            size="small" :pagination="store.items.length > 10 ? { pageSize: 10 } : false">
+            <template #bodyCell="{ column, record: t }">
+              <template v-if="column.dataIndex === 'table_name'">
+                <code class="mini-code">{{ t.table_name }}</code>
+              </template>
+              <template v-else-if="column.dataIndex === 'rows'">{{ t.rows ?? '—' }}</template>
+              <template v-else-if="column.dataIndex === 'written_by'">
+                <span class="dim">{{ t.written_by }}</span>
+              </template>
+              <template v-else-if="column.key === 'why'">
+                <span class="dim"><MarkText :text="t.why" /></span>
+              </template>
+            </template>
+          </a-table>
+          <div class="blk-note"><MarkText :text="store.note" /></div>
+        </template>
+      </a-tab-pane>
+    </a-tabs>
+  </a-card>
   </div>
 </template>
 
 <style scoped>
-button.on { background: var(--brand); color: #fff; }
-button.mini { padding: 2px 7px; font-size: 12px; }
-a.mini.dl {
-  display: inline-block; padding: 2px 7px; font-size: 12px; margin-left: 4px;
-  border: 1px solid var(--line); border-radius: 4px; text-decoration: none;
-}
-td.acts { white-space: nowrap; }
-tr.tri td { background: var(--ok-bg); }
-tr.cur td { background: var(--warn-bg); }
-td.warn { color: var(--hit); }
-.detailcell { background: var(--panel-2); }
-.gates td { vertical-align: top; }
-.ok-note {
-  background: var(--ok-bg); border: 1px solid var(--pass); border-radius: var(--radius);
-  padding: 7px 9px; margin-bottom: 10px; font-size: 13px;
-}
+.sec { font-size: 14px; font-weight: 600; margin: 18px 0 10px; }
+.sec:first-of-type { margin-top: 0; }
+.sub { font-size: 12.5px; color: rgba(0, 0, 0, .55); margin-bottom: 10px; }
+.dim { font-size: 12px; color: rgba(0, 0, 0, .45); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
+.kv b { color: rgba(0, 0, 0, .45); font-weight: 500; align-self: baseline; }
+.mini-code { font-size: 11px; background: #fafafa; padding: 1px 5px; border-radius: 4px; }
+.blk-note { font-size: 12px; color: rgba(0, 0, 0, .55); margin-top: 8px; line-height: 1.7; }
 .snap {
-  max-height: 300px; overflow: auto; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre;
+  max-height: 300px; overflow: auto; background: #fafafa; border: 1px solid #f0f0f0;
+  border-radius: 6px; padding: 8px; font-size: 11px; line-height: 1.5; white-space: pre;
 }
-.sep { margin: 0 4px; color: var(--line); }
-/* # 与 条目数 是短计数，居中；层/来源/出处/说明是文本，左对齐 */
-.rel-tbl th:nth-child(1), .rel-tbl td:nth-child(1),
-.rel-tbl th:nth-child(3), .rel-tbl td:nth-child(3) { text-align: center; }
+:deep(.row-tri) td { background: #f6ffed; }
+:deep(.row-cur) td { background: #fffbe6; }
 </style>

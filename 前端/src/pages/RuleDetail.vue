@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 单条规则详情：八要素 + 概念绑定 + 可得性 + 最近命中。
+ * 单条规则详情（2026-10-27 AntD 换装版）：八要素 + 概念绑定 + 可得性 + 最近命中。
  *
  * **概念的可得性要和规则并排显示。** 一条规则「为什么跑不了」的答案
  * 几乎总是「它引用的某个字段取不到」，而那个字段叫什么、属于哪个缺口，
@@ -11,9 +11,6 @@ import { useRoute } from 'vue-router'
 import Async from '../components/Async.vue'
 import Outcome from '../components/Outcome.vue'
 import { api } from '../api'
-import { useCollapse } from '../data/collapse'
-
-const conceptList = useCollapse(), findingList = useCollapse()
 
 const route = useRoute()
 const id = computed(() => String(route.params.id))
@@ -22,32 +19,27 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
 </script>
 
 <template>
-  <div class="v2">
+  <div class="rd">
   <Async :load="() => api.rule(id)" :deps="id">
     <template #default="{ data }">
-      <h2>{{ (data as any).rule_id }} {{ (data as any).rule_name }}</h2>
-      <div class="sub">
-        <router-link to="/asset/rules">← 回规则本体</router-link>
+      <div class="rd-head">
+        <h2 class="rd-title">{{ (data as any).rule_id }} {{ (data as any).rule_name }}</h2>
+        <router-link to="/asset/rules-lib">← 回规则库</router-link>
       </div>
 
-      <div class="panel">
-        <h3>八要素</h3>
+      <a-card size="small" class="blk" title="八要素">
         <div class="kv">
           <b>① 规则名称</b><span>{{ (data as any).rule_name }}</span>
-          <b>② 审核维度</b><span class="mono">{{ (data as any).dimension }}</span>
+          <b>② 审核维度</b><span>{{ (data as any).dimension }}</span>
           <b>③ 风险类别</b><span>{{ (data as any).risk_class }}</span>
           <b>④ 来源条款</b>
           <span>
             <template v-if="(data as any).source_clause">
-              <code>{{ (data as any).source_clause.file }}</code>
+              <code class="clause">{{ (data as any).source_clause.file }}</code>
               {{ (data as any).source_clause.clause }}
-              <span class="tag" :class="(data as any).source_clause.confidence === 'OCR' ? 't-pend' : 't-pass'"
-                    style="margin-left: 4px">
-                {{ (data as any).source_clause.confidence }}
-              </span>
-              <div class="muted" style="margin-top: 3px">
-                「{{ (data as any).source_clause.text }}」
-              </div>
+              <a-tag :color="(data as any).source_clause.confidence === 'OCR' ? 'warning' : 'success'"
+                style="margin-left: 4px">{{ (data as any).source_clause.confidence }}</a-tag>
+              <div class="dim" style="margin-top: 3px">「{{ (data as any).source_clause.text }}」</div>
             </template>
           </span>
           <b>⑤ 适用范围</b>
@@ -60,162 +52,169 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
           <b>生效期</b>
           <span>{{ (data as any).effective_from || '—' }} ~ {{ (data as any).effective_to || '长期' }}</span>
         </div>
-      </div>
+      </a-card>
 
-      <div class="panel">
-        <h3>对齐客户配置器</h3>
+      <a-card size="small" class="blk" title="对齐客户配置器">
         <div class="kv">
-          <b>算法编码</b><span class="mono">{{ (data as any).algo_code || '—' }}</span>
+          <b>算法编码</b><span>{{ (data as any).algo_code || '—' }}</span>
           <b>算法类型</b><span>{{ (data as any).algo_type || '—' }}</span>
           <b>控制类型</b>
           <span>
-            <span class="tag" :class="(data as any).control_type === '禁止' ? 't-block' : 't-warn'">
+            <a-tag :color="(data as any).control_type === '禁止' ? 'error' : 'warning'">
               {{ (data as any).control_type }}
-            </span>
+            </a-tag>
           </span>
           <b>配置器状态</b><span>{{ (data as any).configurator_status || '—' }}</span>
           <b>客户自评可实现性</b><span>{{ (data as any).feasibility || '未评估' }}</span>
           <b>实现途径（原文）</b><span>{{ (data as any).impl_path || '—' }}</span>
         </div>
-      </div>
+      </a-card>
 
-      <div class="panel">
-        <h3>可执行性</h3>
+      <a-card size="small" class="blk" title="可执行性">
         <div class="kv">
           <b>规则资产层面</b>
           <span>
-            <span class="tag" :class="(data as any).compiled ? 't-pass' : 't-na'">
+            <a-tag :color="(data as any).compiled ? 'success' : 'default'">
               {{ (data as any).compiled ? '已编译' : '未编译' }}
-            </span>
-            <span v-if="(data as any).compiled_reason" class="muted" style="margin-left: 6px">
+            </a-tag>
+            <span v-if="(data as any).compiled_reason" class="dim" style="margin-left: 6px">
               <MarkText :text="(data as any).compiled_reason" />
             </span>
           </span>
           <b>当前数据能否跑</b>
           <span>
-            <span class="tag" :class="(data as any).demo_executable ? 't-pass' : 't-pend'">
+            <a-tag :color="(data as any).demo_executable ? 'success' : 'warning'">
               {{ (data as any).demo_executable ? '在执行集' : '不在执行集' }}
-            </span>
-            <span v-if="(data as any).demo_scope" class="muted" style="margin-left: 6px">
+            </a-tag>
+            <span v-if="(data as any).demo_scope" class="dim" style="margin-left: 6px">
               {{ (data as any).demo_scope }}
             </span>
           </span>
           <template v-if="(data as any).demo_blocker">
             <b>阻塞原因</b>
-            <span class="note" style="margin: 0">{{ (data as any).demo_blocker }}</span>
+            <span class="blk-note">{{ (data as any).demo_blocker }}</span>
           </template>
           <template v-if="(data as any).logic?.degraded?.cannot_hit_without">
             <b>结构性无法命中</b>
-            <span class="err" style="margin: 0">
+            <span class="blk-err">
               缺 <code>{{ (data as any).logic.degraded.cannot_hit_without.join(', ') }}</code> 时本条永远不会命中。
               <div style="margin-top: 4px">
                 现在实际退化成：<b>{{ (data as any).logic.degraded.degenerates_to }}</b>
               </div>
-              <div class="muted" style="margin-top: 4px">
+              <div class="dim" style="margin-top: 4px">
                 <MarkText :text="(data as any).logic.degraded.cannot_hit_why" />
               </div>
             </span>
           </template>
           <template v-if="(data as any).logic?.rule_effect === 'exempt'">
             <b>规则作用</b>
-            <span class="note" style="margin: 0">
+            <span class="blk-note">
               <b>豁免型</b>：命中 = 豁免生效，按设计不产生违规告警。
-              <div class="muted"><MarkText :text="(data as any).logic.rule_effect_why" /></div>
+              <div class="dim"><MarkText :text="(data as any).logic.rule_effect_why" /></div>
             </span>
           </template>
         </div>
-      </div>
+      </a-card>
 
-      <div class="panel">
-        <h3>引用的本体概念</h3>
-        <table>
-          <thead>
-            <tr><th>概念</th><th>名称</th><th>所属实体</th><th>可得性</th><th>缺口</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in conceptList.view<any>((data as any).concepts)" :key="c.concept_id">
-              <td class="mono">{{ c.concept_id }}</td>
-              <td>{{ c.concept_name }}</td>
-              <td class="mono">{{ c.entity_id }}</td>
-              <td>
-                <span class="tag" :class="AVAIL_OK.has(c.availability) ? 't-pass' : 't-pend'">
-                  {{ c.availability }}
-                </span>
-              </td>
-              <td class="mono">{{ c.gap_id || '—' }}</td>
-            </tr>
-                        <tr v-if="conceptList.more((data as any).concepts).show">
-                <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="conceptList.more((data as any).concepts).toggle()">
-                  {{ conceptList.more((data as any).concepts).rest === -1 ? '收起' : `展开剩余 ${conceptList.more((data as any).concepts).rest} 条` }}（共 {{ (data as any).concepts.length }} 条）
-                </td>
-              </tr>
-</tbody>
-        </table>
-        <div v-if="(data as any).entities?.length" style="margin-top: 10px">
+      <a-card size="small" class="blk" title="引用的本体概念">
+        <a-table :data-source="(data as any).concepts" row-key="concept_id" size="small"
+          :pagination="(data as any).concepts?.length > 10 ? { pageSize: 10 } : false"
+          :columns="[
+            { title: '概念', dataIndex: 'concept_id', width: 130 },
+            { title: '名称', dataIndex: 'concept_name', width: 180 },
+            { title: '所属实体', dataIndex: 'entity_id', width: 120 },
+            { title: '可得性', key: 'avail', width: 160 },
+            { title: '缺口', dataIndex: 'gap_id', width: 110 },
+          ]">
+          <template #bodyCell="{ column, record: c }">
+            <template v-if="column.key === 'avail'">
+              <a-tag :color="AVAIL_OK.has(c.availability) ? 'success' : 'warning'">{{ c.availability }}</a-tag>
+            </template>
+            <template v-else-if="column.dataIndex === 'gap_id'">{{ c.gap_id || '—' }}</template>
+          </template>
+          <template #emptyText>
+            <a-empty :image-style="{ height: '40px' }" description="未引用概念" />
+          </template>
+        </a-table>
+        <div v-if="(data as any).entities?.length" style="margin-top: 12px">
           <b>存在性判断引用的实体</b>
-          <div class="muted" style="font-size: 12px">
-            实体存在性判断与概念引用分开两张表：
-            「这类附件在不在」和「某个字段的值是多少」是两件事。
-          </div>
-          <table style="margin-top: 6px">
-            <tbody>
-              <tr v-for="e in (data as any).entities" :key="e.entity_id">
-                <td class="mono" style="width: 70px">{{ e.entity_id }}</td>
-                <td class="muted">{{ e.semantics }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="dim">实体存在性判断与概念引用分开： 「这类附件在不在」和「某个字段的值是多少」是两件事。</div>
+          <a-table :data-source="(data as any).entities" row-key="entity_id" size="small"
+            :pagination="false" style="margin-top: 6px"
+            :columns="[
+              { title: '实体', dataIndex: 'entity_id', width: 90 },
+              { title: '语义', dataIndex: 'semantics' },
+            ]" />
         </div>
-      </div>
+      </a-card>
 
-      <div v-if="(data as any).relations?.length" class="panel">
-        <h3>与其他规则的关系</h3>
-        <table>
-          <thead><tr><th>关系</th><th>对方</th><th>需裁决</th><th>缺口</th><th>说明</th></tr></thead>
-          <tbody>
-            <tr v-for="(r, i) in (data as any).relations" :key="i">
-              <td class="mono">{{ r.rel_type }}</td>
-              <td class="mono">{{ r.other_rule }}</td>
-              <td>
-                <span v-if="r.needs_confirm" class="tag t-pend">需业务侧裁决</span>
-                <span v-else class="muted">—</span>
-              </td>
-              <td class="mono">{{ r.gap_id || '—' }}</td>
-              <td class="muted" style="font-size: 12px"><MarkText :text="(r.note || '').slice(0, 200)" /></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <a-card v-if="(data as any).relations?.length" size="small" class="blk" title="与其他规则的关系">
+        <a-table :data-source="(data as any).relations" :row-key="(_: any, i: number) => i"
+          size="small" :pagination="false"
+          :columns="[
+            { title: '关系', dataIndex: 'rel_type', width: 130 },
+            { title: '对方', dataIndex: 'other_rule', width: 130 },
+            { title: '需裁决', key: 'confirm', width: 130, align: 'center' },
+            { title: '缺口', dataIndex: 'gap_id', width: 110 },
+            { title: '说明', key: 'note' },
+          ]">
+          <template #bodyCell="{ column, record: r }">
+            <template v-if="column.key === 'confirm'">
+              <a-tag v-if="r.needs_confirm" color="warning">需业务侧裁决</a-tag>
+              <span v-else class="dim">—</span>
+            </template>
+            <template v-else-if="column.dataIndex === 'gap_id'">{{ r.gap_id || '—' }}</template>
+            <template v-else-if="column.key === 'note'">
+              <span class="dim"><MarkText :text="(r.note || '').slice(0, 200)" /></span>
+            </template>
+          </template>
+        </a-table>
+      </a-card>
 
-      <div class="panel">
-        <h3>最近的判定</h3>
-        <div v-if="!(data as any).recent_findings?.length" class="muted">
-          这条规则还没有产生过任何判定记录。
-        </div>
-        <table v-else>
-          <thead><tr><th>单据</th><th>结果</th><th>说明</th></tr></thead>
-          <tbody>
-            <tr v-for="(f, i) in findingList.view<any>((data as any).recent_findings)" :key="i">
-              <td class="mono">
-                <router-link :to="`/review/report/${f.run_id}`">{{ f.bill_no }}</router-link>
-              </td>
-              <td><Outcome :outcome="f.outcome" /></td>
-              <td>{{ f.message }}</td>
-            </tr>
-                        <tr v-if="findingList.more((data as any).recent_findings).show">
-                <td :colspan="3" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="findingList.more((data as any).recent_findings).toggle()">
-                  {{ findingList.more((data as any).recent_findings).rest === -1 ? '收起' : `展开剩余 ${findingList.more((data as any).recent_findings).rest} 条` }}（共 {{ (data as any).recent_findings.length }} 条）
-                </td>
-              </tr>
-</tbody>
-        </table>
-      </div>
+      <a-card size="small" class="blk" title="最近的判定">
+        <a-empty v-if="!(data as any).recent_findings?.length"
+          :image-style="{ height: '40px' }" description="这条规则还没有产生过任何判定记录" />
+        <a-table v-else :data-source="(data as any).recent_findings"
+          :row-key="(_: any, i: number) => i" size="small"
+          :pagination="(data as any).recent_findings.length > 10 ? { pageSize: 10 } : false"
+          :columns="[
+            { title: '单据', key: 'bill', width: 220 },
+            { title: '结果', key: 'outcome', width: 100, align: 'center' },
+            { title: '说明', dataIndex: 'message' },
+          ]">
+          <template #bodyCell="{ column, record: f }">
+            <template v-if="column.key === 'bill'">
+              <router-link :to="`/review/report/${f.run_id}`">{{ f.bill_no }}</router-link>
+            </template>
+            <template v-else-if="column.key === 'outcome'">
+              <Outcome :outcome="f.outcome" />
+            </template>
+          </template>
+        </a-table>
+      </a-card>
 
-      <div v-if="(data as any).note" class="panel">
-        <h3>维护备注</h3>
+      <a-card v-if="(data as any).note" size="small" class="blk" title="维护备注">
         <div style="white-space: pre-wrap">{{ (data as any).note }}</div>
-      </div>
+      </a-card>
     </template>
   </Async>
   </div>
 </template>
+
+<style scoped>
+.rd-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+.rd-title { font-size: 18px; font-weight: 600; margin: 0; }
+.blk { margin-bottom: 16px; }
+.dim { font-size: 12px; color: rgba(0, 0, 0, .45); }
+.clause { background: #fafafa; padding: 1px 6px; border-radius: 4px; }
+.blk-note { font-size: 12.5px; color: rgba(0, 0, 0, .65); }
+.blk-err { font-size: 12.5px; color: #cf1322; }
+.json {
+  margin: 0; font-size: 12px; background: #fafafa; border-radius: 6px;
+  padding: 8px 10px; overflow-x: auto; max-width: 640px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0 32px; }
+.kv b { display: inline-block; width: 130px; color: rgba(0, 0, 0, .45); font-weight: 500; font-size: 13px; padding: 7px 0; vertical-align: top; }
+.kv > span { font-size: 13px; padding: 7px 0; display: inline-block; min-width: 0; }
+</style>

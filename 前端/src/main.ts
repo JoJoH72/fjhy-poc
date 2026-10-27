@@ -26,7 +26,7 @@ const router = createRouter({
     // redirect（客户链接不 404），这里不再注册原组件。
     { path: '/asset', component: () => import('./pages/DomainHome.vue') },
     { path: '/asset/docs', component: () => import('./pages/DocLib.vue') },
-    { path: '/asset/rules', component: () => import('./pages/RuleOnto.vue') },
+    { path: '/asset/rules', redirect: '/asset/rules-lib' },
     { path: '/asset/rules/:id', component: () => import('./pages/RuleDetail.vue') },
     { path: '/asset/releases', component: () => import('./pages/Publish.vue') },
     { path: '/review/ai-review', component: () => import('./pages/AIReview.vue') },
@@ -56,6 +56,9 @@ const router = createRouter({
     { path: '/asset/biz', redirect: '/sys/knowstruct' },
     { path: '/asset/process', redirect: '/sys/knowstruct' },
     { path: '/sys/agents', redirect: '/sys/agents' },          // 运行监控沿用原路径原页
+    // 规则本体整页（老 /asset/rules 无参形态）退位进规则库（2026-10-27）：
+    // 规则管理员的新入口是 RulesLib 三页签；本体专业操作归管理员「知识结构」。
+    // /asset/rules/:id 详情路由保持不变——全站规则号链接都指它。
     // 规则本体老路径与规则库新路径冲突：/asset/rules 是规则详情前缀，保持不变
     // 根路径：有会话进角色落地页，没会话进登录
     { path: '/', redirect: () => {

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 审计追溯（2026-10-24 改版）：S→D→A→F→I 竖向时间线。
+ * 审计追溯（2026-10-27 AntD 换装版）：S→D→A→F→I 竖向时间线。
  *
- * 改版保住的立页之本：五张审计表**分开呈现**，不合成一条日志——
+ * 立页之本：五张审计表**分开呈现**，不合成一条日志——
  * 「模型当时看到什么」（S）与「模型实际写了什么」（A）必须能分开追。
  * 时间线只是把这些表的行按阶段串起来读，数据一行没合并。
  *
@@ -40,6 +40,9 @@ type Stage = (typeof STAGES)[number]
 const STAGE_NAME: Record<Stage, string> = {
   S: '感知 · 数据快照', D: '研判 · 判定周期', A: '落库 · 写入与信号',
   F: '比对 · 偏差回流', I: '改进 · 参数调整',
+}
+const STAGE_COLOR: Record<Stage, string> = {
+  S: 'blue', D: 'geekblue', A: 'cyan', F: 'orange', I: 'purple',
 }
 
 /** 把五张表的行摊成时间线节点。空阶段给一个 wait 节点 + 语义说明 */
@@ -91,47 +94,56 @@ function timeline(d: any): { stage: Stage; st: 'done' | 'wait'; title: string; d
 </script>
 
 <template>
-  <div class="v2">
-    <div class="card" style="margin-bottom: 16px">
-      <div class="card-head">
-        <h2>审计追溯</h2>
-        <input class="input" v-model="billNo" placeholder="单据编号，如 FJPG-BX2610132121"
-               style="width: 280px" @keyup.enter="go">
-        <button class="btn primary" @click="go">追溯</button>
+  <div class="at">
+    <a-card size="small" class="searchbar">
+      <div class="sb-in">
+        <a-input v-model:value="billNo" placeholder="单据编号，如 FJPG-BX2610132121"
+                 style="width: 300px" @keyup.enter="go" />
+        <a-button type="primary" @click="go">追溯</a-button>
         <div class="grow"></div>
-        <button class="btn ghost" :disabled="!traceData" @click="exportPack">导出审计包</button>
+        <a-button :disabled="!traceData" @click="exportPack">导出审计包</a-button>
       </div>
-    </div>
+    </a-card>
 
     <Async v-if="key" :load="() => api.trace(key)" :deps="key">
       <template #default="{ data }">
         {{ void (traceData = data) }}
-        <div class="card">
-          <div class="tl">
-            <div v-for="(n, i) in timeline(data)" :key="i" class="tl-item" :class="n.st">
-              <div class="tl-dot" aria-hidden="true"></div>
-              <div class="tl-body">
+        <a-card size="small" style="margin-top: 16px">
+          <a-timeline class="tl">
+            <a-timeline-item v-for="(n, i) in timeline(data)" :key="i"
+              :color="n.st === 'done' ? STAGE_COLOR[n.stage] : 'gray'">
+              <div class="tl-item">
                 <div class="l1">
-                  <b>{{ n.stage }}</b>
-                  <span class="ms num" v-if="n.ms">{{ n.ms }}</span>
-                  <span class="tm num">{{ n.tm }}</span>
+                  <a-tag :color="n.st === 'done' ? STAGE_COLOR[n.stage] : 'default'">{{ n.stage }} · {{ n.title }}</a-tag>
+                  <span v-if="n.ms" class="dim">{{ n.ms }}</span>
+                  <span class="tm">{{ n.tm }}</span>
                 </div>
-                <div class="desc" style="margin-top: 0">{{ n.desc }}</div>
-                <span v-for="t in n.tags" :key="t" class="tag">{{ t }}</span>
+                <div class="desc" :class="{ empty: n.st === 'wait' }">{{ n.desc }}</div>
               </div>
-            </div>
-          </div>
-        </div>
-        <div v-if="(data as any).I_scope_note" class="card" style="margin-top: 16px">
-          <div class="card-head"><h2>I 阶段口径</h2></div>
-          <div style="padding: 14px 20px 20px; font-size: 12.5px; color: var(--muted)">
+            </a-timeline-item>
+          </a-timeline>
+        </a-card>
+        <a-card v-if="(data as any).I_scope_note" size="small" style="margin-top: 16px" title="I 阶段口径">
+          <div class="scope-note">
             <MarkText :text="(data as any).I_scope_note" />
           </div>
-        </div>
+        </a-card>
       </template>
     </Async>
-    <div v-else class="card">
-      <div style="padding: 40px; text-align: center; color: var(--weak)">输入单据编号开始追溯</div>
-    </div>
+    <a-card v-else size="small" style="margin-top: 16px">
+      <a-empty style="padding: 40px 0" description="输入单据编号开始追溯" />
+    </a-card>
   </div>
 </template>
+
+<style scoped>
+.sb-in { display: flex; align-items: center; gap: 8px; }
+.grow { flex: 1; }
+.tl { margin-top: 8px; padding-left: 4px; }
+.l1 { display: flex; align-items: center; gap: 10px; }
+.tm { font-size: 12px; color: rgba(0, 0, 0, .45); font-variant-numeric: tabular-nums; }
+.desc { font-size: 13px; color: rgba(0, 0, 0, .75); margin-top: 2px; }
+.desc.empty { color: rgba(0, 0, 0, .4); }
+.dim { font-size: 12px; color: rgba(0, 0, 0, .45); font-variant-numeric: tabular-nums; }
+.scope-note { font-size: 12.5px; color: rgba(0, 0, 0, .65); }
+</style>
