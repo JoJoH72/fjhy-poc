@@ -33,6 +33,14 @@ function choose(r: Role) {
   const hit = roleList.value.find((x) => x.key === r)
   if (hit?.account) account.value = hit.account
   err.value = ''
+  // 测试期一键登录：开发构建里点角色行 = 直接进系统（账号已带出，密码统一）。
+  // **只在 DEV 生效**——vite build 出来的交付版自动回落成标准输密码形态，
+  // 交付前不需要手工清理这段代码。
+  if (import.meta.env.DEV && hit?.account) {
+    account.value = hit.account
+    password.value = 'demo-1234'
+    void submit()
+  }
 }
 
 async function submit() {
@@ -91,7 +99,7 @@ async function submit() {
           </a-form-item>
         </a-form>
 
-        <div class="role-label">登录角色（点击行切换，双击直接进入）</div>
+        <div class="role-label">登录角色（点击直接进入）</div>
         <div class="role-list">
           <button v-for="r in roleList" :key="r.key" class="role-row" :class="{ on: pick === r.key }"
                   @click="choose(r.key)" @dblclick="choose(r.key); submit()">
