@@ -30,6 +30,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 
 from .. import doclib
 from ..iam_auth import current_user
+from . import op_log
 from .common import must_exist
 
 router = APIRouter(prefix="/api/doclib", tags=["规则资产 · 制度文件库"])
@@ -467,6 +468,25 @@ def clauses(file_id: str = Query(None), kind: str = Query(None),
                     "引用它」，要不要补规则是业务专家的判断。"}
 
 
+@ex_router.get("/clauses/{clause_id}")
+def clause_one(clause_id: str):
+    """单条条款全文（2026-10-27 P0-4 冲突对比 B 场景用）。
+
+    冲突台账只存左右条款 id；对比原文要全文。404 而不是空对象——
+    条款被级联清理后（删误传文件），冲突行还在但原文没了，
+    「没有」和「取不到」要分得开。
+    """
+    c = db.query_one("""SELECT c.clause_id, c.clause_no, c.title, c.body,
+                               c.text_source, c.numbers,
+                               (c.file_fingerprint <> f.fingerprint) AS stale,
+                               f.file_name
+                        FROM doclib_clause c JOIN doc_lib_file f ON f.file_id=c.file_id
+                        WHERE c.clause_id=%s""", (clause_id,))
+    if not c:
+        raise HTTPException(404, "条款不存在或已随文件清理：" + clause_id)
+    return c
+
+
 @ex_router.get("/stats")
 def ex_stats():
     return dx.stats()
@@ -502,13 +522,19 @@ def drafts(task_id: str = Query(None), state: str = Query(None),
 
 
 @ex_router.post("/drafts/{draft_id}/review")
-def review(draft_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
+def review(draft_id: str, request: Request, body: dict = Body(...),
+           _g=Depends(require_engineer)):
     try:
         ok = dx.review_draft(draft_id, body.get("state"), body.get("reviewer"),
                              body.get("reason"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     must_exist(ok or None, "草稿 " + draft_id)
+    op_log.log_by_request(
+        request, "rule", "审定草稿", target=draft_id,
+        detail="结论=%s · 审定人=%s%s" % (
+            body.get("state") or "", body.get("reviewer") or "",
+            (" · 原因=" + (body.get("reason") or "")[:120]) if body.get("reason") else ""))
     return {"draft_id": draft_id, "state": body.get("state"), "ok": True}
 
 
@@ -556,13 +582,19 @@ def details_tags():
 
 
 @ex_router.post("/details/{detail_id}/review")
-def details_review(detail_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
+def details_review(detail_id: str, request: Request, body: dict = Body(...),
+                   _g=Depends(require_engineer)):
     try:
         ok = rule_detail.review(detail_id, body.get("state"), body.get("reviewer"),
                                 body.get("reason"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     must_exist(ok or None, "规则明细 " + detail_id)
+    op_log.log_by_request(
+        request, "rule", "审定规则明细", target=detail_id,
+        detail="结论=%s · 审定人=%s%s" % (
+            body.get("state") or "", body.get("reviewer") or "",
+            (" · 原因=" + (body.get("reason") or "")[:120]) if body.get("reason") else ""))
     return {"detail_id": detail_id, "state": body.get("state"), "ok": True}
 
 

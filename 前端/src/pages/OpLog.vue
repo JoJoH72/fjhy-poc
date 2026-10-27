@@ -22,7 +22,7 @@ const PAGE_SIZE = 20
 
 /** 分类中文（接口 categories 也带 label，这里用于表格列内联显示） */
 const CAT_COLOR: Record<string, string> = {
-  login: 'blue', iam: 'purple', publish: 'gold', review: 'cyan',
+  login: 'blue', iam: 'purple', publish: 'gold', review: 'cyan', rule: 'volcano',
 }
 
 function load(): Promise<OpLogPage> {

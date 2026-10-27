@@ -377,6 +377,16 @@ def gates(assets=None):
         out.append({"gate": "九层都抄全了", "ok": len(assets) == len(LAYERS),
                     "detail": "%d/%d 层" % (len(assets), len(LAYERS)),
                     "how": "缺层一律整体失败，不做部分冻结"})
+    # 第 4 闸（2026-10-27）：无待裁决冲突。规则集带着未裁决的口径冲突被签字发布，
+    # 等于把「暂定口径」升级成「生产口径」——采纳面早有同款硬闸
+    # （onto_coord.adopt 的 n_conf 检查），发布面没有就是漏。
+    n_dlc = db.scalar("SELECT count(*) FROM doclib_conflict WHERE state='待裁决'")
+    n_rel = db.scalar("SELECT count(*) FROM rule_relation "
+                      "WHERE needs_confirm AND version=1")
+    out.append({"gate": "无待裁决冲突", "ok": (n_dlc + n_rel) == 0,
+                "detail": "口径冲突 %d · 规则冲突关系 %d" % (n_dlc, n_rel),
+                "how": "去规则库/规则详情把标了「需裁决」的冲突逐条裁决"
+                       "（对比双方原文后拍板留痕），或对确不成立的那条标忽略"})
     return out
 
 

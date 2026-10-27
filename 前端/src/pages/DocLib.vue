@@ -27,13 +27,14 @@ import Async from '../components/Async.vue'
 import { pro } from '../data/prose'
 import FolderPicker from '../components/FolderPicker.vue'
 import Uploader from '../components/Uploader.vue'
+import ExtractReview from '../components/ExtractReview.vue'
 import { api } from '../api'
 import type {
   DlChange, DlFile, DlRoot, DlScanResult, DlStats, DlStorage, DlUploadItem,
   DlUploadResult, VisionCross, VisionPage, VisionRead,
 } from '../api'
 
-type Tab = 'roots' | 'files' | 'uploads' | 'changes' | 'vision'
+type Tab = 'roots' | 'files' | 'uploads' | 'changes' | 'vision' | 'extract'
 const tab = ref<Tab>('roots')
 
 const roots = ref<DlRoot[]>([])
@@ -185,7 +186,7 @@ const delFile = (f: DlFile) =>
         const ok = window.confirm(detail.detail
           + '\n\n若是传错的文件，可选择「连产出一并作废删除」——'
           + '上面列出的条款/草稿/明细/读图会随文件一起清掉（它们出自误传文件，本就不该存在）。\n确认连产出一起删除？')
-        if (!ok) { msg.value = '已取消。要按正规流程处理，去「规则抽取」栏把产出作废后再删。'; return }
+        if (!ok) { msg.value = '已取消。要按正规流程处理，去「抽取与审定」页签把产出作废后再删。'; return }
         d = await api.dlDeleteFile(f.file_id, 'ui', true)
       } else {
         throw e
@@ -610,6 +611,13 @@ const rowKeyOf = (r: unknown): string => {
             <template v-if="opened.parse_state === '需OCR'">——扫描件可在清单里点「视觉转文字」（真出网、真计费）</template>
           </div>
         </template>
+      </a-tab-pane>
+
+      <!-- 抽取与审定（2026-10-27 P0-4）：四步工作流的②跑AI+③审定。
+           旧 Extract.vue 退役后这步在界面上断了；此页签把它挂回来，
+           兑现 navTree 注释宣称的「制度文件页=文件库+抽取合并」（客户待办#8）。 -->
+      <a-tab-pane key="extract" tab="抽取与审定">
+        <ExtractReview />
       </a-tab-pane>
 
       <!-- 上传台账：客户传了 20 份而库里只多 17 份时，差的 3 份去哪了必须答得上来。 -->

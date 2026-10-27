@@ -6,10 +6,13 @@
 这个顺序本身就是信息：上游没有的东西，下游不可能凭空长出来。
 每条规则都必须能回溯到制度文件库里的某一份文件、某一条条款。
 """
-from fastapi import APIRouter, HTTPException
+import json
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from .. import db
+from . import op_log
 from .common import demo_banner, must_exist, paginate
 
 router = APIRouter(prefix="/api/asset", tags=["领域知识资产"])
@@ -239,6 +242,210 @@ def get_rule(rule_id: str):
                                        WHERE f.rule_id=%s ORDER BY f.id DESC LIMIT 10""",
                                     (rule_id,))
     return r
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 冲突对比与裁决（2026-10-27 客户点名）：rule_relation.conflicts_with 下钻。
+# 数据早就在库里——note JSON 里连对方原文 their_text 都备好了，缺的只是
+# 把两条口径并排摆出来、差异高亮、拍板留痕的这一层。
+# ─────────────────────────────────────────────────────────────────────────────
+SRC_CODES = ("规则表", "要点", "制度", "场景表", "配置器", "解答")
+
+
+def _rule_brief(rule_id: str) -> dict:
+    """对比抽屉一侧的规则要素。**八要素 + 可执行性**，够拍板用。"""
+    r = db.query_one("""SELECT rule_id, name, dimension, risk_class, rule_class,
+                               control_type, source_clause, scope, logic, exception,
+                               priority, owner, effective_from, effective_to,
+                               compiled, demo_executable
+                        FROM rule WHERE rule_id=%s AND version=1""", (rule_id,))
+    if not r:
+        return None
+    r["rule_name"] = r.pop("name")          # name 会被脱敏当人名打星，出口改键
+    for k in ("effective_from", "effective_to"):
+        if r.get(k):
+            r[k] = str(r[k])
+    return r
+
+
+def _find_clause(code: str, clause_no: str) -> dict:
+    """类别代号（制度/要点/解答…）+ 条款号 → 反查 doclib_clause 全文。
+
+    代号→文件沿用 onto_coord.code_targets 的口径（文件名含代号且唯一命中），
+    唯一命中才算钉上；对不上就如实回 None——猜错文件会把证据链挂错地方。
+    """
+    hits = [f["file_name"] for f in
+            db.query("SELECT file_name FROM doc_lib_file WHERE NOT missing")
+            if code in f["file_name"]]
+    if len(hits) != 1:
+        return None
+    c = db.query_one("""SELECT c.clause_id, c.clause_no, c.body, c.title,
+                               c.text_source AS confidence, f.file_name, f.doc_title
+                        FROM doclib_clause c
+                        JOIN doc_lib_file f ON f.file_id = c.file_id
+                        WHERE f.file_name = %s AND c.clause_no = %s""",
+                     (hits[0], clause_no))
+    return c
+
+
+def _parse_counterpart(other_rule: str):
+    """把 other_rule 拆成 [(代号, 条款号)]。「制度 第十条 / 要点 2.1.20」两段。"""
+    out = []
+    for seg in (other_rule or "").split("/"):
+        seg = seg.strip()
+        if not seg:
+            continue
+        parts = seg.split(" ", 1)
+        if len(parts) == 2 and parts[0] in SRC_CODES:
+            out.append((parts[0], parts[1].strip()))
+    return out
+
+
+def _clause_nums(clause: dict) -> list:
+    """条款里的数值（带单位），供前端在原文上打 <mark>。按单位分桶防误报——
+    直接把所有数字都标出来，「150%」和「150元」会互相误伤。"""
+    import re
+    unit_re = re.compile(r"(\d+(?:\.\d+)?)\s*(元|天|日|人|次|公里|级|%|％)")
+    body = (clause or {}).get("body") or ""
+    return [{"value": m.group(1), "unit": m.group(2), "at": m.start()}
+            for m in unit_re.finditer(body)]
+
+
+@router.get("/rules/{rule_id}/relations/compare")
+def relation_compare(rule_id: str, other: str = Query(...)):
+    """组装冲突对比抽屉的数据：左侧=本条规则（+来源条款原文），右侧=对方。
+
+    对方两种形态：库内规则（other 是 TR-Dxx-xx）或「制度 第十条」类出处节点
+    （note.with 的原样字符串）。后者按 代号+条款号 反查条款全文，
+    反查不到（文件没切条款/不在可比对集）就如实标——note 里备份的
+    their_text 仍然给出来，证据链不断。
+    """
+    rel = db.query_one("""SELECT rel_type, other_rule, note, needs_confirm, gap_id
+                          FROM rule_relation
+                          WHERE rule_id=%s AND rel_type='conflicts_with' AND version=1""",
+                       (rule_id,))
+    if not rel:
+        raise HTTPException(404, "这条规则没有冲突关系：%s" % rule_id)
+    note = {}
+    try:
+        note = json.loads(rel["note"]) if rel["note"] else {}
+    except (ValueError, TypeError):
+        note = {}
+    # 对方定位串优先用调用方给的 other（列表点进来的是 relations 行的原值）
+    other_str = other or rel["other_rule"] or (note.get("with") or "")
+
+    left = _rule_brief(rule_id)
+    left["source_clause_full"] = None
+    if left and (left.get("source_clause") or {}).get("file"):
+        c = _find_clause(left["source_clause"]["file"],
+                         left["source_clause"].get("clause") or "")
+        if c:
+            left["source_clause_full"] = {**c, "nums": _clause_nums(c)}
+        else:
+            # 条款号对不上（规则清单的来源写法与切分器的条款号体系不一致）时，
+            # source_clause.text 仍是装载时备份的原文——**证据链不断，只是少了
+            # 反查到的全文字段**。展示面拿 text 兜底，不装作没有出处。
+            txt = left["source_clause"].get("text") or ""
+            left["source_clause_full"] = {
+                "clause_no": left["source_clause"].get("clause") or "",
+                "body": txt, "text_source": left["source_clause"].get("confidence") or "",
+                "file_name": left["source_clause"].get("file") or "",
+                "nums": _clause_nums({"body": txt}),
+                "fallback_text": True,
+            }
+
+    right = {"kind": "unknown", "label": other_str}
+    upper = (other_str or "").strip()
+    if upper.startswith("TR-"):
+        r = _rule_brief(upper)
+        if r:
+            right = {"kind": "rule", "label": upper, "rule": r}
+            if (r.get("source_clause") or {}).get("file"):
+                c = _find_clause(r["source_clause"]["file"],
+                                 r["source_clause"].get("clause") or "")
+                if c:
+                    right["rule"]["source_clause_full"] = {**c, "nums": _clause_nums(c)}
+    else:
+        segs = _parse_counterpart(other_str)
+        sources = []
+        for code, no in segs:
+            c = _find_clause(code, no)
+            if c:
+                sources.append({
+                    "code": code, "clause_no": no, "found": True,
+                    "clause": {**c, "nums": _clause_nums(c)},
+                })
+            else:
+                # 反查不到时给 note 里备份的 their_text（单段出处时即对方全文）；
+                # 没有备份就如实标「原文未入库」——不猜文件、不编原文。
+                body = (note.get("their_text") or "") if len(segs) == 1 else ""
+                sources.append({
+                    "code": code, "clause_no": no, "found": False,
+                    "clause": ({"clause_no": no, "body": body,
+                                "text_source": "", "file_name": code,
+                                "nums": _clause_nums({"body": body}),
+                                "fallback_text": True} if body else None),
+                })
+        right = {"kind": "clause", "label": other_str, "sources": sources}
+
+    return {
+        "rule_id": rule_id,
+        "relation": {"rel_type": rel["rel_type"], "other_rule": rel["other_rule"],
+                     "needs_confirm": rel["needs_confirm"], "gap_id": rel["gap_id"]},
+        "note": note,
+        "left": left,
+        "right": right,
+    }
+
+
+REL_DECISIONS = ("left", "right", "merge")
+
+
+@router.post("/rules/{rule_id}/relations/resolve")
+def relation_resolve(rule_id: str, request: Request, body: dict = None):
+    """裁决一条冲突关系（2026-10-27 客户点名功能）。
+
+    decision=left|right|merge；结论必填——三个月后看这条规则的人只看得到这段话。
+    落库：note 追加 resolved 段（原 note 一字不动，天然留痕）＋
+    needs_confirm 置 false；动作进 sys_op_log（category=rule）。
+    merge 不在这里改规则——改口径必须走修订+发布，这里只记裁决意图。
+    """
+    body = body or {}
+    decision = body.get("decision")
+    if decision not in REL_DECISIONS:
+        raise HTTPException(400, "decision 只能是 left/right/merge")
+    resolution = (body.get("resolution") or "").strip()
+    if not resolution:
+        raise HTTPException(400, "裁决必须写结论——谁拍的板、拍成什么，"
+                                 "在制度冲突上和结论本身一样重要")
+    by = (body.get("by") or "").strip()
+    if not by:
+        raise HTTPException(400, "缺少裁决人署名")
+    rel = db.query_one("""SELECT id, note, other_rule FROM rule_relation
+                          WHERE rule_id=%s AND rel_type='conflicts_with' AND version=1""",
+                       (rule_id,))
+    if not rel:
+        raise HTTPException(404, "这条规则没有冲突关系：%s" % rule_id)
+    note = {}
+    try:
+        note = json.loads(rel["note"]) if rel["note"] else {}
+    except (ValueError, TypeError):
+        note = {}
+    import datetime
+    note["resolved"] = {"decision": decision, "resolution": resolution,
+                        "resolved_by": by,
+                        "resolved_at": datetime.datetime.now().isoformat(timespec="seconds")}
+    n = db.execute("""UPDATE rule_relation SET needs_confirm=false, note=%s
+                      WHERE id=%s""", (json.dumps(note, ensure_ascii=False), rel["id"]))
+    if not n:
+        raise HTTPException(404, "冲突关系不存在或已被并发裁决")
+    op_log.log_by_request(
+        request, "rule", "裁决规则冲突",
+        target="%s vs %s" % (rule_id, rel["other_rule"] or ""),
+        detail="裁决=%s · 结论=%s · 裁决人=%s" % (
+            {"left": "保留本条规则", "right": "保留对方口径",
+             "merge": "人工合并(需经发布生效)"}[decision], resolution[:200], by))
+    return {"rule_id": rule_id, "decision": decision, "ok": True}
 
 
 @router.get("/lookup-tables")

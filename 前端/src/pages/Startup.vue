@@ -12,6 +12,7 @@
 import Async from '../components/Async.vue'
 import { api } from '../api'
 import { ref } from 'vue'
+import { message } from 'ant-design-vue'
 
 interface Check { check: string; ok: boolean; detail: string }
 interface AgentCfg {
@@ -43,6 +44,21 @@ function prettyDetail(s: string) {
 /** 展开某个处理环节的参数与禁止项（默认全收，表格才读得下去） */
 const openAgent = ref<string[]>([])
 
+/** 重新自检：loading 态 + 完成反馈（原版点了没反应，等接口回来才整页刷新） */
+const reloading = ref(false)
+async function rerun(reload: () => Promise<void>) {
+  if (reloading.value) return
+  reloading.value = true
+  try {
+    await reload()
+    message.success('自检完成')
+  } catch {
+    message.error('自检失败，请重试')
+  } finally {
+    reloading.value = false
+  }
+}
+
 /** 参数表数据源：模板表达式里写不了 as 断言，收到 script 里来 */
 function paramsRows(a: AgentCfg) {
   return Object.entries(a.params).map(([k, v]) => ({
@@ -69,25 +85,24 @@ function paramsRows(a: AgentCfg) {
             <div class="h2">
               {{ data.contract.checks.length + data.agents.checks.length }} 项检查
               · 失败 {{ data.contract.errors.length + data.agents.errors.length }}
-              · 警告 {{ data.contract.warnings.length }}；
-              任何一组不过，系统会拒绝启动而不是带病运行
+              · 警告 {{ data.contract.warnings.length }}
             </div>
           </div>
           <div class="grow"></div>
-          <a-button @click="reload">重新自检</a-button>
+          <a-button :loading="reloading" @click="rerun(reload)">重新自检</a-button>
         </div>
 
         <a-table :data-source="[
-            { key: 'contract', group: '规则资产契约', scope: '本体版本与漂移 · 规则八要素 · 执行集可用性',
+            { key: 'contract', group: '规则资产契约', scope: '版本与漂移 · 规则八要素 · 执行集可用性',
               n: data.contract.checks.length, state: data.contract.errors.length ? 'fail' : 'pass',
               label: data.contract.errors.length ? `失败 ${data.contract.errors.length}` : '全部通过'
                 + (data.contract.warnings.length ? ` · 警告 ${data.contract.warnings.length}` : '') },
             { key: 'agents', group: '处理环节配置契约', scope: `${data.agents.items.length} 个处理环节 · 触发 / 读写 / 参数区间 / 禁止项`,
               n: data.agents.checks.length, state: data.agents.errors.length ? 'fail' : 'pass',
               label: data.agents.errors.length ? `失败 ${data.agents.errors.length}` : '全部通过' },
-            { key: 'exec', group: '执行集实现完整性', scope: '每条可执行规则都要有对应实现，不做静默降级',
+            { key: 'exec', group: '执行集实现完整性', scope: '可执行规则对应实现覆盖率',
               n: data.contract.executable.length, state: 'pass', label: '全部有实现' },
-            { key: 'excluded', group: '剔除规则登记', scope: '未执行的规则逐条记原因，不是「没跑」当成「通过」',
+            { key: 'excluded', group: '剔除规则登记', scope: '剔除规则及原因登记',
               n: data.contract.excluded.length, state: 'pass', label: '逐条有原因' },
             { key: 'mask', group: '脱敏出口覆盖', scope: `${data.mask.policies.length} 条策略 · ${Object.keys(data.mask.sensitive_fields).length} 个敏感字段`,
               n: data.mask.outlets.length, state: data.mask.mode === 'on' ? 'pass' : 'fail',
@@ -112,7 +127,7 @@ function paramsRows(a: AgentCfg) {
 
       <div class="sect-head">
         <h2>明细</h2>
-        <span class="dim">每一项的证据与原因；失败项默认置顶</span>
+        <span class="dim">失败项默认展开</span>
       </div>
 
       <a-collapse :default-active-key="data.contract.errors.length ? ['contract'] : []">
@@ -123,7 +138,7 @@ function paramsRows(a: AgentCfg) {
             <a-tag :color="data.contract.errors.length ? 'error' : 'success'">
               {{ data.contract.errors.length ? `失败 ${data.contract.errors.length}` : `${data.contract.checks.length} 项全过` }}
             </a-tag>
-            <span class="dhint">与后端启动时跑的是同一套</span>
+            <span class="dhint">与启动时同一套校验</span>
           </template>
           <a-table :data-source="data.contract.checks" row-key="check" size="small"
             :pagination="data.contract.checks.length > 10 ? { pageSize: 10 } : false"
@@ -154,11 +169,10 @@ function paramsRows(a: AgentCfg) {
           <template #header>
             <span class="dt">被剔出执行集的规则</span>
             <a-tag color="warning">{{ data.contract.excluded.length }} 条</a-tag>
-            <span class="dhint">没跑，不是通过</span>
+            <span class="dhint">本轮未执行</span>
           </template>
           <div class="blk-note">
-            这些规则本次<b>没有执行</b>。不是通过，是没跑。
-            逐条记原因是必须的——静默剔除会让一条本该拦截的闸悄悄消失，而且没人知道。
+            以下规则本轮未执行（原因逐条登记）。核对无误后可在规则资产中修正后重新装载。
           </div>
           <a-table :data-source="data.contract.excluded" row-key="rule_id" size="small"
             :pagination="data.contract.excluded.length > 10 ? { pageSize: 10 } : false"

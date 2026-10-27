@@ -40,6 +40,11 @@ api.deviation().then((d: any) => {
   deviation.value = { fp: n('false_positive'), fn: n('false_negative') }
 }).catch(() => { })
 
+/* 大额阈值（P0-12：数字不写死）：从后端配置取，取不到时 KPI 显示 — 并标注。
+ * 旧实现 10000 写死在 kpi computed 里——改口径要发版，违「数字不写死」红线。 */
+const bigAmt = ref<number | null>(null)
+api.reviewConfig().then((c) => { bigAmt.value = c.big_amount_threshold }).catch(() => { })
+
 async function load() {
   loading.value = true
   sel.value = []
@@ -69,13 +74,15 @@ const kpi = computed(() => {
   const it = items.value
   const todo = it.filter((b) => b.conclusion && b.conclusion !== 'pass')
   const realTodo = todo.filter((b) => !b.is_demo).length
-  const big = todo.filter((b) => (b.amount ?? 0) >= 10000).length
+  const big = bigAmt.value == null ? null : todo.filter((b) => (b.amount ?? 0) >= bigAmt.value!).length
   const today = new Date().toISOString().slice(0, 10)
   const todayNew = it.filter((b) => (b.finished_at || '').startsWith(today)).length
   return { todo: todo.length, realTodo, big, todayNew, total: total.value }
 })
 
+const batchBusy = ref(false)
 async function batchPass() {
+  if (batchBusy.value) return
   const picked = items.value.filter((b) => sel.value.includes(b.bill_no))
   const bad = picked.filter((b) => b.conclusion === 'reject')
   if (bad.length) {
@@ -83,12 +90,17 @@ async function batchPass() {
     return
   }
   const who = session.current()?.user || '未署名'
+  batchBusy.value = true
   let ok = 0
-  for (const b of picked.filter((x) => x.run_id)) {
-    try { await api.submitManual(b.run_id!, { decision: 'agree', reviewer: who }); ok++ } catch { }
+  try {
+    for (const b of picked.filter((x) => x.run_id)) {
+      try { await api.submitManual(b.run_id!, { decision: 'agree', reviewer: who }); ok++ } catch { }
+    }
+    message.success(`已复核通过 ${ok} 张`)
+    await load()
+  } finally {
+    batchBusy.value = false
   }
-  message.success(`已复核通过 ${ok} 张`)
-  await load()
 }
 
 const fmtAmt = (v: number | null) =>
@@ -122,7 +134,9 @@ const rowSelection = computed(() => canReview.value ? {
       <a-col :span="5"><a-card size="small"><a-statistic title="今日新进" :value="kpi.todayNew" />
         <div class="sub">按审核完成时间</div>
       </a-card></a-col>
-      <a-col :span="5"><a-card size="small"><a-statistic title="大额待审（≥1万）" :value="kpi.big" />
+      <a-col :span="5"><a-card size="small">
+        <a-statistic :title="bigAmt != null ? `大额待审（≥${bigAmt / 10000}万）` : '大额待审'"
+          :value="kpi.big ?? '—'" />
         <div class="sub">单张金额口径</div>
       </a-card></a-col>
       <a-col :span="4"><a-card size="small"><a-statistic title="单据总量" :value="kpi.total" />
@@ -181,8 +195,21 @@ const rowSelection = computed(() => canReview.value ? {
             </a-tag>
           </template>
           <template v-else-if="column.key === 'hits'">
-            <span :style="record.hit_count ? 'color: #cf1322; font-weight: 600' : ''">{{ record.hit_count ?? 0 }}</span>
-            / {{ record.pending_count ?? 0 }}
+            <!-- 标注可下钻（P0-1，客户点名）：「命中/待人工」数字本身可点，直达
+                 报告页——此前红字无任何交互，客户当场会问「点不动？」。
+                 无 run_id（未审核）时不给链接，显示纯数字。 -->
+            <template v-if="record.run_id">
+              <router-link :to="`/review/report/${record.run_id}`"
+                :style="record.hit_count ? 'color: #cf1322; font-weight: 600' : ''"
+                title="查看审核报告">{{ record.hit_count ?? 0 }}</router-link>
+              <span style="color: rgba(0,0,0,.35)"> / </span>
+              <router-link :to="`/review/report/${record.run_id}`"
+                :style="record.pending_count ? 'color: #d46b08; font-weight: 600' : ''"
+                title="查看审核报告">{{ record.pending_count ?? 0 }}</router-link>
+            </template>
+            <template v-else>
+              <span>{{ record.hit_count ?? 0 }}</span> / {{ record.pending_count ?? 0 }}
+            </template>
           </template>
           <template v-else-if="column.dataIndex === 'claim_label'">
             {{ record.claim_label || '—' }}
@@ -199,7 +226,7 @@ const rowSelection = computed(() => canReview.value ? {
       <div v-if="canReview" style="margin-top: 12px">
         <a-space>
           <span class="dim">已选 {{ sel.length }} 项</span>
-          <a-button type="primary" :disabled="!sel.length" @click="batchPass">批量通过</a-button>
+          <a-button type="primary" :loading="batchBusy" :disabled="!sel.length" @click="batchPass">批量通过</a-button>
           <a-tooltip title="退回需填写理由，请逐张在报告页办理">
             <a-button disabled>批量退回</a-button>
           </a-tooltip>

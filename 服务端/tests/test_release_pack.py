@@ -35,7 +35,24 @@ def _cleanup():
 @pytest.fixture
 def clean():
     _cleanup()
+    # 2026-10-27 起冻结有第 4 闸（无待裁决冲突）。测试冻结前暂压下待裁决冲突，
+    # 用完还原原状——测试不该改写演示环境的冲突存量。
+    global _BACKUP_DLC, _BACKUP_REL
+    _BACKUP_DLC = db.query(
+        "SELECT conflict_id FROM doclib_conflict WHERE state='待裁决'")
+    _BACKUP_REL = db.query(
+        "SELECT id FROM rule_relation WHERE needs_confirm AND rel_type='conflicts_with'")
+    db.execute("UPDATE doclib_conflict SET state='已忽略', resolved_by='测试闸临时'"
+               " WHERE state='待裁决'")
+    db.execute("UPDATE rule_relation SET needs_confirm=false "
+               "WHERE needs_confirm AND rel_type='conflicts_with'")
     yield
+    for r in _BACKUP_DLC:
+        db.execute("UPDATE doclib_conflict SET state='待裁决', resolved_by=NULL, "
+                   "resolved_at=NULL, resolution=NULL WHERE conflict_id=%s",
+                   (r["conflict_id"],))
+    for r in _BACKUP_REL:
+        db.execute("UPDATE rule_relation SET needs_confirm=true WHERE id=%s", (r["id"],))
     _cleanup()
 
 

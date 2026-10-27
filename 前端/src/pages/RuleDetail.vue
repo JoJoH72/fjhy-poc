@@ -5,17 +5,31 @@
  * **概念的可得性要和规则并排显示。** 一条规则「为什么跑不了」的答案
  * 几乎总是「它引用的某个字段取不到」，而那个字段叫什么、属于哪个缺口，
  * 是让业务侧去补数据的唯一依据。
+ *
+ * 2026-10-27 P0-1：conflicts_with 关系行可点开「冲突对比与裁决」抽屉——
+ * 客户当场投诉「冲突标注点不开，看不到两条规则的对比原文」。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import Async from '../components/Async.vue'
 import Outcome from '../components/Outcome.vue'
+import ConflictCompareDrawer from '../components/ConflictCompareDrawer.vue'
 import { api } from '../api'
 
 const route = useRoute()
 const id = computed(() => String(route.params.id))
 
 const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录入资产', '可推导'])
+
+/** 冲突对比抽屉（P0-1） */
+const cmpOpen = ref(false)
+const cmpOther = ref('')
+const cmpKey = ref(0)
+const openCompare = (other: string) => {
+  cmpOther.value = other
+  cmpKey.value += 1
+  cmpOpen.value = true
+}
 
 /** 行键：数据源无稳定业务键时按记录对象发号（单参，AntD4 弃用双参 rowKey） */
 const rowSeq = new WeakMap<object, string>()
@@ -28,11 +42,15 @@ const rowKeyOf = (r: unknown): string => {
   }
   return String(r)
 }
+
+/** 裁决完成后重取详情：relations 的 needs_confirm 标签要当场变掉 */
+const detailRef = ref<{ reload: () => void } | null>(null)
+const reloadDetail = () => detailRef.value?.reload()
 </script>
 
 <template>
   <div class="rd">
-  <Async :load="() => api.rule(id)" :deps="id">
+  <Async ref="detailRef" :load="() => api.rule(id)" :deps="id">
     <template #default="{ data }">
       <div class="rd-head">
         <h2 class="rd-title">{{ (data as any).rule_id }} {{ (data as any).rule_name }}</h2>
@@ -163,16 +181,31 @@ const rowKeyOf = (r: unknown): string => {
       <a-card v-if="(data as any).relations?.length" size="small" class="blk" title="与其他规则的关系">
         <a-table :data-source="(data as any).relations" :row-key="rowKeyOf"
           size="small" :pagination="false"
+          :custom-row="(r: any) => r.rel_type === 'conflicts_with'
+            ? { style: { cursor: 'pointer' }, onClick: () => openCompare(r.other_rule) } : {}"
+          :row-class-name="(r: any) => r.rel_type === 'conflicts_with' ? 'row-conflict' : ''"
           :columns="[
             { title: '关系', dataIndex: 'rel_type', width: 130 },
-            { title: '对方', dataIndex: 'other_rule', width: 130 },
+            { title: '对方', key: 'other', width: 130 },
             { title: '需裁决', key: 'confirm', width: 130, align: 'center' },
             { title: '缺口', dataIndex: 'gap_id', width: 110 },
             { title: '说明', key: 'note' },
           ]">
           <template #bodyCell="{ column, record: r }">
-            <template v-if="column.key === 'confirm'">
-              <a-tag v-if="r.needs_confirm" color="warning">需业务侧裁决</a-tag>
+            <template v-if="column.dataIndex === 'rel_type'">
+              <a-tag v-if="r.rel_type === 'conflicts_with'" color="error">冲突</a-tag>
+              <span v-else>{{ r.rel_type }}</span>
+            </template>
+            <template v-else-if="column.key === 'other'">
+              <a v-if="r.rel_type === 'conflicts_with'" @click.stop="openCompare(r.other_rule)"
+                title="点开左右对比两条口径的原文">{{ r.other_rule }}</a>
+              <span v-else>{{ r.other_rule }}</span>
+            </template>
+            <template v-else-if="column.key === 'confirm'">
+              <a-tag v-if="r.needs_confirm" color="warning"
+                @click="r.rel_type === 'conflicts_with' && openCompare(r.other_rule)">
+                需业务侧裁决{{ r.rel_type === 'conflicts_with' ? ' ·' : '' }}
+              </a-tag>
               <span v-else class="dim">—</span>
             </template>
             <template v-else-if="column.dataIndex === 'gap_id'">{{ r.gap_id || '—' }}</template>
@@ -181,6 +214,9 @@ const rowKeyOf = (r: unknown): string => {
             </template>
           </template>
         </a-table>
+        <div class="dim" style="margin-top: 6px">
+          标「冲突」的行可点开对比：两条口径的原文并排、差异高亮，裁决后留痕。
+        </div>
       </a-card>
 
       <a-card size="small" class="blk" title="最近的判定">
@@ -210,6 +246,9 @@ const rowKeyOf = (r: unknown): string => {
       </a-card>
     </template>
   </Async>
+
+  <ConflictCompareDrawer :key="cmpKey" v-model:open="cmpOpen" :rule-id="id" :other="cmpOther"
+    @resolved="reloadDetail" />
   </div>
 </template>
 
@@ -229,4 +268,6 @@ const rowKeyOf = (r: unknown): string => {
 .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0 32px; }
 .kv b { display: inline-block; width: 130px; color: rgba(0, 0, 0, .45); font-weight: 500; font-size: 13px; padding: 7px 0; vertical-align: top; }
 .kv > span { font-size: 13px; padding: 7px 0; display: inline-block; min-width: 0; }
+:deep(.row-conflict) td { background: #fff1f0; }
+:deep(.row-conflict:hover) td { background: #ffccc7; }
 </style>

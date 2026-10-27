@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import Antd from 'ant-design-vue'
 import { ApiError } from '../api'
 import { NAV, ROLE_ORDER, ITEM_BY_KEY, flatItems } from '../data/navTree'
 import { isComplete, label as domainLabel } from '../data/domainState'
@@ -78,14 +79,18 @@ describe('接口错误不许被吞', () => {
     // 这是前端最常见的隐藏故障方式：catch 之后 return []。
     // 页面上看着是「没有数据」，实际是接口挂了——
     // 审核岗据此以为「这批单没问题」，而真相是什么都没查。
+    // 2026-10-27 Async 换 AntD 三态：错误态用 a-alert message 传文案（prop），
+    // DOM 文本断言改查渲染后的 alert 内容。
     const w = mount(Async, {
       props: { load: () => Promise.reject(new ApiError(500, '数据库连不上')) },
       slots: { default: '<div class="ok-slot">有数据</div>' },
+      global: { plugins: [Antd] },
     })
     await new Promise((r) => setTimeout(r, 0))
-    expect(w.text()).toContain('取数失败')
+    expect(w.text()).toContain('加载失败')
     expect(w.text()).toContain('数据库连不上')
-    expect(w.text()).toContain('这不是「没有数据」')
+    // AntD 按钮两字间渲染空格（「重 试」），用正则匹配
+    expect(w.text()).toMatch(/重\s*试/)
     expect(w.find('.ok-slot').exists()).toBe(false)
   })
 

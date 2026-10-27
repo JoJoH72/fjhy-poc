@@ -77,8 +77,12 @@ def freeze(request: Request, body: dict = Body(...), _g=Depends(require_engineer
 
 
 @router.post("/releases/{release_id}/review")
-def review(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
-    return _err(rp.review, release_id, body.get("by"))
+def review(release_id: str, request: Request, body: dict = Body(...),
+           _g=Depends(require_engineer)):
+    out = _err(rp.review, release_id, body.get("by"))
+    op_log.log_by_request(request, "publish", "送审版本", target=_ver_of(release_id),
+                          detail=f"送审人 {body.get('by') or ''}")
+    return out
 
 
 @router.post("/releases/{release_id}/publish")
@@ -118,9 +122,13 @@ def _ver_of(release_id) -> str:
 
 
 @router.post("/releases/{release_id}/discard")
-def discard(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
+def discard(release_id: str, request: Request, body: dict = Body(...),
+            _g=Depends(require_engineer)):
     """删草稿。已发布的版本删不掉——那是资产。"""
-    return _err(rp.discard, release_id, body.get("by"))
+    out = _err(rp.discard, release_id, body.get("by"))
+    op_log.log_by_request(request, "publish", "删除草稿版本", target=_ver_of(release_id),
+                          detail=f"操作人 {body.get('by') or ''}")
+    return out
 
 
 # ── ③ 消费台账 ──────────────────────────────────────────────────────────────

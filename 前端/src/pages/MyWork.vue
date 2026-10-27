@@ -94,6 +94,7 @@ const histCols = [
   { title: '复核结论', dataIndex: 'decision', width: 110 },
   { title: '退回理由', dataIndex: 'return_reason', ellipsis: true },
   { title: '复核时间', dataIndex: 'decided_at', width: 150 },
+  { title: '操作', key: 'op', width: 70 },
 ]
 const dt = (s: string | null) => (s || '').slice(0, 16).replace('T', ' ')
 </script>
@@ -197,6 +198,13 @@ const dt = (s: string | null) => (s || '').slice(0, 16).replace('T', ' ')
                 </a-tag>
               </template>
               <template v-else-if="column.dataIndex === 'decided_at'">{{ dt(record.decided_at) }}</template>
+              <template v-else-if="column.key === 'op'">
+                <!-- 已办回看（P0-8）：单号链接去单据详情，复核动作发生在报告页——
+                     从已办回看当时判了哪些规则、勾了哪些不认可，直达报告页少一跳。 -->
+                <router-link v-if="record.run_id"
+                  :to="`/review/report/${encodeURIComponent(record.run_id)}`">报告</router-link>
+                <span v-else class="dim">—</span>
+              </template>
             </template>
             <template #emptyText>
               <a-empty :image-style="{ height: '40px' }" description="暂无复核记录" />

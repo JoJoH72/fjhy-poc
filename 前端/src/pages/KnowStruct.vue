@@ -15,7 +15,7 @@ const tab = ref('biz')
 <template>
   <div>
     <a-alert type="info" show-icon style="margin-bottom: 16px"
-      message="系统内部知识结构（只读）：概念、枚举与流程的定义视图，供实施与排障使用。规则管理员在业务界面使用的是这些结构驱动出来的功能（制度文件、规则库）。" />
+      message="只读视图 · 供实施与排障使用" />
     <a-card size="small">
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="biz" tab="业务概念">

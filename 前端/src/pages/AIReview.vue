@@ -142,8 +142,7 @@ async function runReview() {
     await loadStatus()
   } catch (e) {
     if (canceled.value) {
-      lastProgress.value = '已转入后台执行，完成后可见；期间可浏览其他页面。'
-        + '**本轮服务端会跑完并落库**；补判可续跑，再点一次接着往下跑。'
+      lastProgress.value = '已转入后台执行，完成后可见。补判可续跑，再点一次接着往下跑。'
       await loadStatus()
     } else {
       err.value = e instanceof Error ? e.message : String(e)
@@ -181,8 +180,9 @@ onMounted(loadStatus)
         <span class="rt">
           {{ busy ? `正在审核 · ${elapsed}s` : status?.reviewed ? `已审 ${status.reviewed} / ${status.total} 张` : '尚未执行审核' }}
         </span>
-        <a-tag color="success" style="margin-left: 8px">自动预审开启</a-tag>
-        <span class="dim">新单自动进入审核，无需手动触发</span>
+        <a-tooltip title="新单自动进入审核；本按钮为立即重跑一轮">
+          <a-tag color="success" style="margin-left: 8px; cursor: help">自动预审开启</a-tag>
+        </a-tooltip>
         <div class="grow"></div>
         <a-button v-if="!busy" type="primary" @click="runReview">
           {{ remaining ? `接着跑（还剩 ${remaining} 条）` : '开始智能审核' }}
@@ -195,7 +195,7 @@ onMounted(loadStatus)
         <a-steps :current="2" size="small" style="margin-top: 16px"
           :items="RUN_STEPS.map(t => ({ title: t }))" />
         <div class="dim" style="margin-top: 12px">
-          已等 <b>{{ hhmmss(elapsed) }}</b> · 转入后台后本轮继续执行并落库
+          已等 <b>{{ hhmmss(elapsed) }}</b> · 本轮服务端继续执行并落库
         </div>
       </template>
 
@@ -244,7 +244,12 @@ onMounted(loadStatus)
         size="small" :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 条` }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.dataIndex === 'bill_no'">
-            <router-link :to="`/review/bills/${encodeURIComponent(record.bill_no)}`">{{ record.bill_no }}</router-link>
+            <!-- 标注可下钻（P0-2）：单号直达报告页（有 run_id 时）——从结果明细
+                 想看「为什么命中」是主路径，去单据详情是次路径（报告页里有链接）。 -->
+            <router-link v-if="record.run_id"
+              :to="`/review/report/${encodeURIComponent(record.run_id)}`">{{ record.bill_no }}</router-link>
+            <router-link v-else
+              :to="`/review/bills/${encodeURIComponent(record.bill_no)}`">{{ record.bill_no }}</router-link>
           </template>
           <!-- 摘要允许换行：单行截断会把「含住宿」这类关键信息吃掉。上限两行。 -->
           <template v-else-if="column.dataIndex === 'summary'">
@@ -258,9 +263,16 @@ onMounted(loadStatus)
           </template>
           <template v-else-if="column.dataIndex === 'rule_executed'">{{ record.rule_executed ?? '—' }}</template>
           <template v-else-if="column.key === 'hits'">
-            <b v-if="(record.hit_count ?? 0) > 0" style="color: #ff4d4f">{{ record.hit_count }}</b>
-            <template v-else>0</template>
-            <span style="color: rgba(0,0,0,.35)"> / </span>{{ record.pending_count ?? 0 }}
+            <!-- 标注可下钻（P0-2）：命中/待人工红字可点直达报告页 -->
+            <template v-if="record.run_id">
+              <router-link :to="`/review/report/${encodeURIComponent(record.run_id)}`"
+                v-if="(record.hit_count ?? 0) > 0" style="color: #ff4d4f; font-weight: 600">{{ record.hit_count }}</router-link>
+              <template v-else>0</template>
+              <span style="color: rgba(0,0,0,.35)"> / </span>
+              <router-link :to="`/review/report/${encodeURIComponent(record.run_id)}`"
+                :style="(record.pending_count ?? 0) > 0 ? 'color: #d46b08' : ''">{{ record.pending_count ?? 0 }}</router-link>
+            </template>
+            <template v-else>0 / {{ record.pending_count ?? 0 }}</template>
           </template>
           <template v-else-if="column.key === 'op'">
             <router-link v-if="record.run_id"

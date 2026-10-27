@@ -37,8 +37,10 @@ def _cleanup():
 def published():
     """一个已发布的测试版本。**不切为当前**——切指针会影响演示环境。"""
     _cleanup()
+    _quell_conflicts()
     r = rp.freeze(TEST_PREFIX + "pub", "测试冻结人")
     rp.publish(r["release_id"], "测试签字人")
+    _restore_conflicts()
     yield db.query_one("SELECT * FROM release WHERE release_id=%s", (r["release_id"],))
     _cleanup()
 
@@ -46,9 +48,36 @@ def published():
 @pytest.fixture
 def draft():
     _cleanup()
+    _quell_conflicts()
     r = rp.freeze(TEST_PREFIX + "draft", "测试冻结人")
+    _restore_conflicts()
     yield db.query_one("SELECT * FROM release WHERE release_id=%s", (r["release_id"],))
     _cleanup()
+
+
+def _quell_conflicts():
+    """2026-10-27 起冻结有第 4 闸（无待裁决冲突）。测试冻结前把待裁决暂记为已忽略，
+    冻结完还原——测试环境与演示环境的冲突存量不该由这组测试改写。"""
+    global _CONFLICT_BACKUP
+    _CONFLICT_BACKUP = db.query(
+        "SELECT conflict_id FROM doclib_conflict WHERE state='待裁决'")
+    db.execute("UPDATE doclib_conflict SET state='已忽略', resolved_by='测试闸临时'"
+               " WHERE state='待裁决'")
+    db.execute("UPDATE rule_relation SET needs_confirm=false "
+               "WHERE needs_confirm AND rel_type='conflicts_with'")
+
+
+def _restore_conflicts():
+    rows = globals().get("_CONFLICT_BACKUP") or []
+    for r in rows:
+        db.execute("UPDATE doclib_conflict SET state='待裁决', resolved_by=NULL, "
+                   "resolved_at=NULL, resolution=NULL WHERE conflict_id=%s",
+                   (r["conflict_id"],))
+    db.execute("UPDATE rule_relation SET needs_confirm=true "
+               "WHERE rel_type='conflicts_with' AND note NOT LIKE '%%resolved%%'")
+
+
+_CONFLICT_BACKUP = []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

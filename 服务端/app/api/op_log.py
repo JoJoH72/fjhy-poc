@@ -6,7 +6,8 @@
 业务数据可清理而台账不可删（与 agent_signal_log 同一口径）。
 
 写谁：登录/登出、用户与角色的增删改停、密码重置、恢复默认、
-发布（冻结/签字/切当前/回滚）。这些都是「改系统行为」的动作；
+发布（冻结/签字/切当前/回滚）、规则域（裁决/审定/采纳）。
+这些都是「改系统行为」的动作；
 查询类接口不记（记了只会把真动作淹没）。
 
 detail 只放人话摘要，不放敏感值：密码、Key、手机号明文一律不进日志。
@@ -17,7 +18,7 @@ from .. import db, iam_auth
 
 router = APIRouter(prefix="/api", tags=["系统 · 操作日志"])
 
-CATEGORIES = ("login", "iam", "publish", "review")
+CATEGORIES = ("login", "iam", "publish", "review", "rule")
 
 
 def log(category: str, action: str, *, actor: str = "", actor_name: str = "",
@@ -64,7 +65,8 @@ def _out(r: dict) -> dict:
     }
 
 
-CATEGORY_CN = {"login": "登录", "iam": "用户与角色", "publish": "发布", "review": "复核"}
+CATEGORY_CN = {"login": "登录", "iam": "用户与角色", "publish": "发布",
+               "review": "复核", "rule": "规则"}
 
 
 @router.get("/op-log")

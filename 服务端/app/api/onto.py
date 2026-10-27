@@ -12,13 +12,14 @@
 统一口径是本体要做的事，规则抽取只负责抽取（用户口径）。
 接口路径跟着归属走，不然下一个人会在抽取那一栏找这些数。
 """
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from .. import db
 from .. import doclib_extract as dx, onto_build as ob, onto_coord as oc
 from .. import onto_build_orchestrator as borch, onto_orchestrator as orch
 from .. import onto_process as op, onto_yaml as oy
 from .. import onto_workshop as wsp
+from . import op_log
 from .common import must_exist
 
 router = APIRouter(prefix="/api/onto", tags=["规则资产 · 规则本体"])
@@ -308,13 +309,18 @@ def conflicts(state: str = Query(None), limit: int = Query(200, ge=1, le=500)):
 
 
 @router.post("/conflicts/{conflict_id}/resolve")
-def resolve(conflict_id: str, body: dict = Body(...)):
+def resolve(conflict_id: str, request: Request, body: dict = Body(...)):
     try:
         ok = dx.resolve_conflict(conflict_id, body.get("state"), body.get("who"),
                                  body.get("resolution"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     must_exist(ok or None, "冲突 " + conflict_id)
+    op_log.log_by_request(
+        request, "rule", "裁决口径冲突", target=conflict_id,
+        detail="结论=%s · 裁决人=%s%s" % (
+            body.get("state") or "", body.get("who") or "",
+            (" · " + (body.get("resolution") or "")[:150]) if body.get("resolution") else ""))
     return {"conflict_id": conflict_id, "state": body.get("state"), "ok": True}
 
 
@@ -328,25 +334,36 @@ def pending(limit: int = Query(100, ge=1, le=300)):
 
 
 @router.post("/adopt")
-def adopt(body: dict = Body(...)):
+def adopt(request: Request, body: dict = Body(...)):
     """采纳成一条规则（status=draft、未编译、不在执行集）。
 
     **采纳入本体 ≠ 发布生效。** 发布是栏目五的事。
     """
     try:
-        return oc.adopt(body.get("group_key"), body.get("by"), body)
+        out = oc.adopt(body.get("group_key"), body.get("by"), body)
     except oc.AdoptError as e:
         raise HTTPException(400, str(e))
+    op_log.log_by_request(request, "rule", "采纳入规则库",
+                          target=str(body.get("group_key") or ""),
+                          detail="新规则 %s · 采纳人 %s"
+                                 % (out.get("rule_id", ""), body.get("by") or ""))
+    return out
 
 
 @router.post("/dispose")
-def dispose(body: dict = Body(...)):
+def dispose(request: Request, body: dict = Body(...)):
     """驳回 / 暂缓。两者都必须写理由。"""
     try:
-        return oc.dispose(body.get("group_key"), body.get("action"),
-                          body.get("by"), body.get("reason"))
+        out = oc.dispose(body.get("group_key"), body.get("action"),
+                         body.get("by"), body.get("reason"))
     except oc.AdoptError as e:
         raise HTTPException(400, str(e))
+    op_log.log_by_request(request, "rule", "处置归并组",
+                          target=str(body.get("group_key") or ""),
+                          detail="%s · 理由=%s · 操作人=%s"
+                                 % (body.get("action") or "",
+                                    (body.get("reason") or "")[:120], body.get("by") or ""))
+    return out
 
 
 @router.get("/adoptions")

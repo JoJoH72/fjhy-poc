@@ -9,12 +9,141 @@ import os
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 
-from .. import db
+from .. import config, db
 from ..audit import recorder as rec
 from ..iam_auth import current_user
+from . import op_log
 from .common import demo_banner, must_exist, paginate
 
 router = APIRouter(prefix="/api", tags=["报账单审核"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 审核岗出口层文案映射（打磨规划 P0-7，2026-10-27）
+#
+# 引擎产出的 message / pending_reason 里带着内部标识（缺口编号 G-04、
+# 规则号互引「比 TR-D6-03 严厉得多」）。这些是**规则管理员的语言**，
+# 不是审核员的语言——审核岗不知道 G-04 是什么，也不知道为什么要在意
+# TR-D6-06 比 TR-D6-03 严厉。**引擎一个字不动**（impl.py 的文案服务于
+# 偏差归因与规则治理），只在审核出口把内部编号翻成白话：
+#   · 「缺口 G-04」→「系统暂缺 OA 出差审批单数据，无法自动判定」
+#   · 规则号互引 → 「上一条住宿/伙食天数待人工的原因相同」
+# 管理员的规则详情页（/asset/rules/:id）不走这条出口，仍看原文编号。
+# ─────────────────────────────────────────────────────────────────────────────
+_GAP_TEXT = {
+    "G-04": "系统暂缺 OA 出差审批单数据，无法自动判定",
+}
+
+
+def _plain_for_auditor(text: str) -> str:
+    """出口层白话转换：缺口编号 → 人话；规则号互引 → 人话。只动展示文本。"""
+    if not text:
+        return text
+    out = text
+    for gid, plain in _GAP_TEXT.items():
+        # 各种实测写法：「缺口 G-04」「（需 OA 同步，缺口 G-04）」「缺口 G-04）」
+        out = out.replace("（需 OA 同步，缺口 %s）" % gid, "（%s）" % plain)
+        out = out.replace("（出差地点需 OA 同步，缺口 %s）" % gid, "（%s）" % plain)
+        out = out.replace("（缺口 %s）" % gid, "（%s）" % plain)
+        out = out.replace("，尚未同步（缺口 %s）。" % gid, "，系统暂未接入，%s。" % _GAP_TEXT[gid])
+    # 规则号互引（TR-D6-06 实测原文）：「比 TR-D6-03 严厉得多」对审核员无信息量
+    out = out.replace("比 TR-D6-03 严厉得多，拿不准时更不能硬判",
+                      "连带影响交通费、伙食、市内交通三项判定，需人工确认单次出差天数")
+    return out
+
+
+def _humanize_finding(f: dict) -> dict:
+    """对一条 finding 的展示文本做出口转换（message / pending_reason）。"""
+    if f.get("message"):
+        f["message"] = _plain_for_auditor(f["message"])
+    if f.get("pending_reason"):
+        f["pending_reason"] = _plain_for_auditor(f["pending_reason"])
+    _attach_hint(f)
+    _attach_compare(f)
+    return f
+
+
+# ── 人工核点提示（P1-6，2026-10-27）───────────────────────────────────────────
+# Concur 三段式：什么被违反 → 检测到什么 → **建议你核什么**。第三段是给
+# 审核员的：35 张真实单平均 3.4 个待人工项，看到「判不了的原因」之后，
+# 「那我该去看什么」没有行动指向。默认文案按规则号给（出口层兜底，规则
+# logic 后续加 human_check_hint 字段后由规则管理员维护覆盖——本次不动规则
+# 资产，只做出口映射，与 P0-7 的缺口脱敏同一层）。
+_HINTS = {
+    "TR-D1-02": "请打开住宿费发票核对：①抬头是否为核算主体全称 ②发票金额与明细住宿费是否一致",
+    "TR-D1-03": "请核对交通费票据的行程信息与明细金额",
+    "TR-D4-02": "请按出差地点对应档位核对该笔住宿费是否超标准",
+    "TR-D4-04": "请确认出差地是否属西藏/青海/新疆（伙食补助 100/120 两档）",
+    "TR-D4-06": "请核对市内交通费与出差天数是否匹配",
+    "TR-D6-03": "请对照 OA 出差审批单核对本单的单次连续出差天数",
+    "TR-D6-05": "请核对交通费凭证的往返行程与时间",
+    "TR-D6-06": "请确认单次出差天数后，核验交通费/伙食/市内交通三项是否成立",
+    "TR-D10-06": "请核对是否同一事项拆单报账（同主体/同收款方/近日期）",
+}
+
+
+def _attach_hint(f: dict) -> None:
+    """hit/pending 附人工核点提示。规则资产未带 hint 字段前先按规则号兜底。"""
+    if f.get("outcome") not in ("hit", "pending"):
+        return
+    f["human_check_hint"] = _HINTS.get(f.get("rule_id") or "")
+
+
+# ── 申报值 vs 制度规定值对比（P1-2，2026-10-27）──────────────────────────────
+# 证据 KV 里数字都在（住宿费/住宿上限、本单金额/阈值、伙食标准/伙食补助费），
+# 但审核员要自己在脑子里做「600 > 400」这道减法。出口层把成对键翻成
+# compare 结构（label/actual/limit/unit），差异与百分比由前端算——数值语义
+# 在出口，呈现语义在页面。键对映射按实测 evidence 键名（规则 logic 稳定后
+# 可由规则管理员在资产里维护覆盖，本次不动规则资产）。
+_COMPARE_PAIRS = [
+    # (规则号或 None=任意, 实际值键, 限额键, 标签, 单位)
+    (None, "住宿费", "住宿上限", "住宿费", "元"),
+    ("TR-D10-06", "本单金额", "阈值", "大额校验", "元"),
+    (None, "伙食补助费", "伙食标准", "伙食补助", "元"),
+    (None, "交通费", "交通上限", "交通费", "元"),
+]
+
+
+def _attach_compare(f: dict) -> None:
+    """evidence 键对 → compare 数组。只在该 finding 的 evidence 里同时
+    存在成对键且两个值都能当数字读时输出——读不出就不给 compare，
+    没有把握的对比比没有对比更糟。"""
+    ev = f.get("evidence") or {}
+    out = []
+    for rid, ak, lk, label, unit in _COMPARE_PAIRS:
+        if rid and f.get("rule_id") != rid:
+            continue
+        if ak in ev and lk in ev:
+            try:
+                actual, limit = float(ev[ak]), float(ev[lk])
+            except (TypeError, ValueError):
+                continue
+            out.append({"label": label, "actual": actual, "limit": limit, "unit": unit})
+    if out:
+        f["compare"] = out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 审核端配置出口（P0-12：数字不写死红线）
+#
+# 此前「大额」阈值 10000 写死在前端两处（Workbench KPI 卡、报告页队列筛选），
+# 改口径要发版。口径属于业务配置，出口统一给：
+#   GET /api/review/config → { big_amount_threshold, return_categories, note }
+# 默认 10000（与此前前端写死的值一致，行为不变）；生产用环境变量
+# FJHY_BIG_AMOUNT_THRESHOLD 覆盖，不动引擎、不进规则表。
+# 退回原因分类（P1-4）也从这里下发——分类是统计维度，闭集合由后端管。
+# ─────────────────────────────────────────────────────────────────────────────
+RETURN_CATEGORIES = ("缺附件", "超标准", "信息有误", "疑似重复", "其他")
+
+
+@router.get("/review/config")
+def review_config():
+    return {
+        "big_amount_threshold": config.BIG_AMOUNT_THRESHOLD,
+        "return_categories": list(RETURN_CATEGORIES),
+        "note": "大额阈值：单张报账金额 ≥ 该值视为大额待审（队列「大额」筛选与"
+                "工作台 KPI 同用这一口径）。阈值由系统配置下发，不在页面写死。",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -195,24 +324,24 @@ def get_bill(bill_no: str):
     """, (bill_no,))
     if latest_run:
         if (latest_run.get("hit_count") or 0) > 0:
-            latest_run["hits"] = db.query("""
+            latest_run["hits"] = [_humanize_finding(f) for f in db.query("""
                 SELECT rf.rule_id, rl.name AS rule_name,
                        rf.control_type, rf.message, rf.needs_human
                 FROM review_finding rf
                 LEFT JOIN rule rl ON rl.rule_id = rf.rule_id AND rl.version = rf.rule_version
                 WHERE rf.run_id = %s AND rf.outcome = 'hit'
                 ORDER BY rf.rule_id
-            """, (latest_run["run_id"],))
+            """, (latest_run["run_id"],))]
         else:
             latest_run["hits"] = []
         if (latest_run.get("pending_count") or 0) > 0:
-            latest_run["pending"] = db.query("""
+            latest_run["pending"] = [_humanize_finding(f) for f in db.query("""
                 SELECT rf.rule_id, rl.name AS rule_name, rf.message, rf.pending_reason
                 FROM review_finding rf
                 LEFT JOIN rule rl ON rl.rule_id = rf.rule_id AND rl.version = rf.rule_version
                 WHERE rf.run_id = %s AND rf.outcome = 'pending'
                 ORDER BY rf.rule_id
-            """, (latest_run["run_id"],))
+            """, (latest_run["run_id"],))]
         else:
             latest_run["pending"] = []
     b["latest_review"] = latest_run
@@ -240,6 +369,9 @@ def get_review(run_id: str):
                            FROM review_finding WHERE run_id=%s
                            ORDER BY CASE outcome WHEN 'hit' THEN 0 WHEN 'pending' THEN 1
                                                  ELSE 2 END, rule_id""", (run_id,))
+    # 出口白话化（P0-7）：G-04 等内部缺口编号与规则号互引只给规则管理员看，
+    # 审核报告上翻成人话。脱敏映射与 _plain_for_auditor 的注释见文件头。
+    findings = [_humanize_finding(f) for f in findings]
     hit = [f for f in findings if f["outcome"] == "hit"]
     pending = [f for f in findings if f["outcome"] == "pending"]
     passed = [f for f in findings if f["outcome"] == "pass"
@@ -286,6 +418,45 @@ def bill_reviews(bill_no: str):
                                  ORDER BY started_at DESC""", (bill_no,))}
 
 
+@router.get("/bills/{bill_no}/peers")
+def bill_peers(bill_no: str, days: int = Query(7, ge=1, le=90)):
+    """同类单据（P1-9，纯查询）：同核算主体 + （同金额 或 同收款方 或 同业务类型）
+    在 N 日内的其它单据，含各自 AI 结论与人工结论。
+
+    审核「这张是不是重报」是高频动作。TR-D10-06 的 peer_bills_2d 只用于引擎
+    判定、不暴露给审核员——这里独立按同一口径数据做 SELECT，不动引擎。
+    金额完全相等的重复报账是最强信号，单列 same_amount 供前端标红。"""
+    me = must_exist(db.query_one(
+        "SELECT bill_no, org_id, amount, payee, biz_type, doc_date, is_demo "
+        "FROM expense_bill WHERE bill_no=%s", (bill_no,)), "报账单 " + bill_no)
+    rows = db.query("""
+        SELECT b.bill_no, b.amount, b.payee, b.biz_type, b.doc_date, b.is_demo,
+               o.name AS org_name,
+               r.run_id, r.conclusion, r.hit_count, r.pending_count,
+               m.decision AS manual_decision, m.decided_at AS manual_decided_at
+          FROM expense_bill b
+          LEFT JOIN org o ON o.org_id = b.org_id
+          LEFT JOIN LATERAL (SELECT run_id, conclusion, hit_count, pending_count
+                             FROM review_run rr WHERE rr.bill_no=b.bill_no
+                             ORDER BY rr.started_at DESC LIMIT 1) r ON TRUE
+          LEFT JOIN LATERAL (SELECT decision, decided_at FROM manual_review mr
+                             WHERE mr.bill_no=b.bill_no
+                             ORDER BY mr.decided_at DESC LIMIT 1) m ON TRUE
+         WHERE b.bill_no <> %s
+           AND b.org_id = %s
+           AND b.doc_date BETWEEN (%s::date - %s::int) AND (%s::date + %s::int)
+           AND (b.amount = %s OR b.payee = %s OR b.biz_type = %s)
+         ORDER BY b.amount = %s DESC, b.doc_date DESC NULLS LAST
+         LIMIT 20""", (bill_no, me["org_id"], me["doc_date"], days, me["doc_date"], days,
+                       me["amount"], me["payee"], me["biz_type"], me["amount"]))
+    for x in rows:
+        x["same_amount"] = me["amount"] is not None and x["amount"] == me["amount"]
+    return {"items": rows, "window_days": days, "total": len(rows),
+            "note": "同主体 %s 日内同金额/同收款方/同业务类型的单据（最多 20 条）。"
+                    "金额相同为重复报账最强信号；AI 结论与人工结论并列供比对。"
+                    % days}
+
+
 @router.get("/bills/{bill_no}/manuals")
 def bill_manuals(bill_no: str):
     """一张单的人工复核历史（复核记录卡的数据源）。
@@ -298,7 +469,8 @@ def bill_manuals(bill_no: str):
     must_exist(db.query_one("SELECT bill_no FROM expense_bill WHERE bill_no=%s", (bill_no,)),
                "报账单 " + bill_no)
     return {"items": db.query("""SELECT id, run_id, decision, reviewer AS user_label,
-                                        decided_at, return_reason, disagree_with
+                                        decided_at, return_reason, return_category,
+                                        disagree_with, agree_with
                                  FROM manual_review WHERE bill_no=%s
                                  ORDER BY decided_at DESC, id DESC""", (bill_no,))}
 
@@ -336,6 +508,10 @@ def claim_bill(bill_no: str, request: Request):
                             % act["claimed_at"].strftime("%H:%M"))
     db.execute("INSERT INTO review_assignment (bill_no, assignee) VALUES (%s, %s)",
                (bill_no, u["account"]))
+    # 动作必留痕（P0-10）：认领改了工单归属，管理员操作台账要能看到。
+    # op_log 的 CATEGORIES 早已预留 "review"，此前从未接线。
+    op_log.log_by_request(request, "review", "认领工单", target=bill_no,
+                          detail="认领即锁定，他人不可代审")
     return {"ok": True, "bill_no": bill_no, "assignee": u["account"],
             "claim_label": u["user_name"],
             "note": "认领即锁定：有效认领期间他人不可复核此单；不处理可在个人工作台释放。"}
@@ -357,6 +533,9 @@ def release_bill(bill_no: str, request: Request, body: dict = Body(None)):
     note = str((body or {}).get("reason") or "").strip() or None
     db.execute("UPDATE review_assignment SET released_at=now(), release_note=%s WHERE id=%s",
                (note, act["id"]))
+    # 动作必留痕（P0-10）：释放把工单放回共享池，与认领对偶。
+    op_log.log_by_request(request, "review", "释放工单", target=bill_no,
+                          detail="认领已释放，工单回到待认领池")
     return {"ok": True, "bill_no": bill_no, "released": u["account"]}
 
 
@@ -403,7 +582,7 @@ def my_work(request: Request):
     pool, pool_n = seg("m.id IS NULL AND c.assignee IS NULL", [],
                        "ORDER BY b.doc_date DESC NULLS LAST, b.bill_no", 50)
     hist = db.query(
-        """SELECT mr.bill_no, mr.decision, mr.decided_at, mr.return_reason,
+        """SELECT mr.bill_no, mr.run_id, mr.decision, mr.decided_at, mr.return_reason,
                   b.amount, b.is_demo, o.name AS org_name, r.conclusion AS ai_conclusion
              FROM manual_review mr
              JOIN expense_bill b ON b.bill_no = mr.bill_no
@@ -452,6 +631,11 @@ def manual_review(run_id: str, body: dict, request: Request):
         raise HTTPException(400, "decision 只能是 agree / return / agree_with_note")
     if decision == "return" and not body.get("return_reason"):
         raise HTTPException(400, "退回必须给理由——退回理由是误报/漏报回流的起点")
+    # 退回原因分类（P1-4）：结构化维度，偏差页按原因出分布。闭集合校验——
+    # 分类要进统计，自由文本的「分类」等于没有分类。集合定义在文件头（配置出口）。
+    category = body.get("return_category")
+    if category is not None and category not in RETURN_CATEGORIES:
+        raise HTTPException(400, "return_category 只能是：%s" % " / ".join(RETURN_CATEGORIES))
     # 同一轮只许一条留痕。此前可以反复提交：一次复核算成两次，队列的
     # manual=none/done 口径也会被重复行冲乱。
     dup = db.query_one("SELECT decision, decided_at FROM manual_review WHERE run_id=%s",
@@ -466,6 +650,14 @@ def manual_review(run_id: str, body: dict, request: Request):
     if act and act["assignee"] != u["account"]:
         raise HTTPException(409, "该单据已被其他审核岗认领，正在其待办中，不可代审")
     disagree = [x for x in (body.get("disagree_with") or []) if isinstance(x, str)]
+    # 分项核实（P1-5，2026-10-27）：对偶于 disagree 的正向勾选「已人工核实」。
+    # 刻意**并入 agree_with 落库**而不是新开第二套勾选列——agree_with 的既有
+    # 语义就是「明确认可的命中」，verified 是它的人工核实子集，两套「认可」
+    # 口径并存迟早打架（与「署名单一来源」同一纪律）。对外字段名保持
+    # verified（前端语义），出口在 bill_manuals 里合并返回 agree_with。
+    agree = [x for x in (body.get("agree_with") or []) if isinstance(x, str)]
+    verified = [x for x in (body.get("verified") or []) if isinstance(x, str)]
+    agree_all = list(dict.fromkeys(agree + verified))  # 去重保序
     import json
     with rec.phase("A"):
         with db.tx() as conn:
@@ -477,13 +669,14 @@ def manual_review(run_id: str, body: dict, request: Request):
                     "INSERT INTO review_assignment (bill_no, assignee) VALUES (%s, %s)",
                     (run["bill_no"], u["account"]))
             conn.cursor().execute("""INSERT INTO manual_review
-                (bill_no, run_id, reviewer, decision, return_reason,
+                (bill_no, run_id, reviewer, decision, return_reason, return_category,
                  disagree_with, agree_with)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (run["bill_no"], run_id, body.get("reviewer") or "unknown", decision,
                  body.get("return_reason"),
+                 category if decision == "return" else None,
                  json.dumps(disagree, ensure_ascii=False),
-                 json.dumps(body.get("agree_with") or [], ensure_ascii=False)))
+                 json.dumps(agree_all, ensure_ascii=False)))
             # 「不认可这条命中」逐条回流 feedback_log。此前接口 note 一直**承诺**回流
             # 但全仓没人写——承诺了就是欠着：偏差页（finding_vs_human/false_positive）
             # 因此从来不含这些勾选。cycle_id/agent_id 取自本轮 review_run——
@@ -499,10 +692,41 @@ def manual_review(run_id: str, body: dict, request: Request):
                                     {"rule_id": rid, "run_id": run_id},
                                     1.0, "false_positive", "human_review")
                 written += 1
+            # 整单退回 vs AI 结论（2.11-E，2026-10-27）：前端退回弹窗一直承诺
+            # 「原因将进入偏差统计」，但此前整单 return 从不写 feedback_log——
+            # 偏差页的 false_negative（AI 放行/待复核，人工退回）因此永远缺这批。
+            # 退回时同步写一条 conclusion_vs_human 候选；AI 结论为 pass/review
+            # 而人退回 → false_negative 候选。agree 不写（AI 通过人通过=一致，
+            # null 偏差没有统计价值；needs_review_only 的口径由偏差页作业归类）。
+            fn_written = 0
+            if decision == "return" and run["cycle_id"]:
+                run_concl = db.query_one(
+                    "SELECT conclusion FROM review_run WHERE run_id=%s", (run_id,))
+                ai_concl = run_concl["conclusion"] if run_concl else None
+                if ai_concl in ("pass", "review"):
+                    rec.record_feedback(
+                        conn, run["cycle_id"], run["agent_id"], run["bill_no"],
+                        "conclusion_vs_human",
+                        {"expected": ai_concl},
+                        {"human": "return", "reason": (body.get("return_reason") or "")[:200],
+                         "run_id": run_id},
+                        1.0, "false_negative", "human_review")
+                    fn_written = 1
+    # 动作必留痕（P0-10）：复核提交是签字类动作，管理员的操作台账必须可见。
+    op_log.log_by_request(request, "review", "复核提交", target=run["bill_no"],
+                          detail="结论：%s%s%s%s" % (
+                              {"agree": "复核通过", "agree_with_note": "通过并备注",
+                               "return": "退回报账人"}[decision],
+                              "（%s）" % category if decision == "return" and category else "",
+                              "；人工核实 %d 项" % len(verified) if verified else "",
+                              "；不认可 %d 条" % len(disagree) if disagree else ""))
     return {"ok": True,
             "feedback_written": written,
+            "false_negative_written": fn_written,
             "note": "人工结论已记录。%d 条不认可已逐条回流 feedback_log"
-                    "(finding_vs_human/false_positive)。" % written}
+                    "(finding_vs_human/false_positive)%s。" % (
+                        written,
+                        "；整单退回已记偏差候选（conclusion_vs_human）" if fn_written else "")}
 
 
 # ── 单据附件 ────────────────────────────────────────────────────────────────

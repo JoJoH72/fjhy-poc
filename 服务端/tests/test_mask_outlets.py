@@ -183,9 +183,13 @@ def test_资产包是已知旁路并且包内容也过了脱敏():
     import json as _json
     import zipfile as _zip
     from app import release_pack as _rp
+    from .test_pub_api import _quell_conflicts, _restore_conflicts
 
     tag = "rs-TEST-maskoutlet"
     db.execute("DELETE FROM release WHERE rule_set_version=%s", (tag,))
+    # 2026-10-27 起冻结有第 4 闸（无待裁决冲突）：与 test_pub_api 同款夹具，
+    # 冻结前暂记已忽略、结束还原——不改写演示环境的冲突存量。
+    _quell_conflicts()
     try:
         r = _rp.freeze(tag, "出口审查")
         _rp.publish(r["release_id"], "出口审查")
@@ -200,6 +204,7 @@ def test_资产包是已知旁路并且包内容也过了脱敏():
                 assert not leaks, "资产包成员 %s 泄露：%s" % (n, leaks[:3])
     finally:
         db.execute("DELETE FROM release WHERE rule_set_version=%s", (tag,))
+        _restore_conflicts()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

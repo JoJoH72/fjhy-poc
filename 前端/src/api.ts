@@ -903,6 +903,56 @@ export interface Rule {
   owner: string | null
 }
 
+// ── 规则管理员 · 冲突对比与裁决（2026-10-27 P0，客户点名）─────────────────
+/** compare 接口的条款原文（doclib_clause 反查；fallback_text=装载备份兜底） */
+export interface CompareClause {
+  clause_id?: string
+  clause_no: string
+  body: string
+  title: string | null
+  confidence?: string
+  text_source: string
+  file_name: string
+  doc_title?: string | null
+  /** 原文中的数值（带单位），前端 <mark> 高亮用 */
+  nums: { value: string; unit: string; at: number }[]
+  /** true=条款号对不上，body 来自装载时备份的 text 而非条款库 */
+  fallback_text?: boolean
+}
+
+export interface CompareSideRule {
+  rule_id: string
+  rule_name: string
+  dimension: string
+  risk_class: string
+  rule_class: string
+  control_type: string | null
+  scope: Record<string, unknown> | null
+  logic: Record<string, unknown> | null
+  exception: string | null
+  priority: number | null
+  owner: string | null
+  effective_from: string | null
+  effective_to: string | null
+  compiled: boolean | null
+  demo_executable: boolean | null
+  source_clause: { file: string; clause?: string; text?: string; confidence?: string } | null
+  source_clause_full: CompareClause | null
+}
+
+export interface RelationCompare {
+  rule_id: string
+  relation: { rel_type: string; other_rule: string; needs_confirm: boolean; gap_id: string | null }
+  /** 装载时记下的冲突说明：their_text / their_value / our_value / why / resolution */
+  note: Record<string, unknown>
+  left: CompareSideRule | null
+  right:
+    | { kind: 'rule'; label: string; rule: CompareSideRule }
+    | { kind: 'clause'; label: string; sources: { code: string; clause_no: string
+        found: boolean; clause: CompareClause | null }[] }
+    | { kind: 'unknown'; label: string }
+}
+
 export interface Bill {
   bill_no: string
   doc_type: string
@@ -943,6 +993,26 @@ export interface ManualReview {
   decided_at: string
   return_reason: string | null
   disagree_with: string[] | null
+  /** 人工核实/认可的规则清单（P1-5：verified 勾选并入 agree_with 落库） */
+  agree_with: string[] | null
+}
+
+/** 同类单据（P1-9）：同主体 N 日内同金额/同收款方/同业务类型 */
+export interface PeerBill {
+  bill_no: string
+  amount: number | null
+  payee: string | null
+  biz_type: string
+  doc_date: string | null
+  is_demo: boolean
+  org_name: string | null
+  run_id: string | null
+  conclusion: 'pass' | 'review' | 'reject' | null
+  hit_count: number | null
+  pending_count: number | null
+  manual_decision: 'agree' | 'agree_with_note' | 'return' | null
+  manual_decided_at: string | null
+  same_amount: boolean
 }
 
 /**
@@ -1084,6 +1154,10 @@ export interface Finding {
   llm_involved: boolean
   llm_rationale: string | null
   needs_human: boolean
+  /** 人工核点提示（P1-6）：给审核员的行动指向——「这条判不了，你去看什么」 */
+  human_check_hint?: string | null
+  /** 申报值 vs 制度规定值（P1-2）：出口层从 evidence 键对提取 */
+  compare?: { label: string; actual: number; limit: number; unit: string }[]
 }
 
 export interface ReviewReport {
@@ -1228,6 +1302,8 @@ export interface MyWorkItem {
 }
 export interface MyWorkHistory {
   bill_no: string
+  /** 该轮审核报告直达链接（P0-8：已办记录回看报告页少一跳） */
+  run_id: string | null
   decision: 'agree' | 'agree_with_note' | 'return'
   decided_at: string
   return_reason: string | null
@@ -1326,12 +1402,32 @@ export const api = {
 
   rules: (p: Record<string, unknown> = {}) => request<Page<Rule>>(`/api/asset/rules${qs(p)}`),
   rulesSummary: () => request<RulesSummary>('/api/asset/rules/summary'),
+  // 冲突对比（P0-1）：把 conflicts_with 关系两侧的口径+原文组装好给抽屉
+  relationCompare: (ruleId: string, other: string) =>
+    request<RelationCompare>(
+      `/api/asset/rules/${encodeURIComponent(ruleId)}/relations/compare${qs({ other })}`),
+  /** 裁决（decision=left 保留本条 / right 保留对方 / merge 人工合并需经发布生效） */
+  relationResolve: (ruleId: string, body: { decision: string; resolution: string; by: string }) =>
+    request<{ rule_id: string; decision: string; ok: boolean }>(
+      `/api/asset/rules/${encodeURIComponent(ruleId)}/relations/resolve`,
+      { method: 'POST', body: JSON.stringify(body) }),
   rule: (id: string) =>
     request<Record<string, unknown>>(`/api/asset/rules/${encodeURIComponent(id)}`),
 
   lookupTables: () => request<{ items: Record<string, unknown>[] }>('/api/asset/lookup-tables'),
+  /** 单张标准表：行数据 + 对账（源表行数 vs 归并行数）。类型原为宽 Record，报销标准
+   *  页签（P0-3）需要 rows/key_fields/reconciliation 的具名结构，收紧返回类型。 */
   lookupTable: (id: string) =>
-    request<Record<string, unknown>>(`/api/asset/lookup-tables/${encodeURIComponent(id)}`),
+    request<{ table_id: string; kind: string; key_fields: string[] | null
+              row_count: number; source_rows: number | null; on_miss: string | null
+              note: string | null
+              rows: { id: number; row_key: Record<string, unknown>
+                      row_value: Record<string, unknown>; enabled: boolean
+                      confidence: string; source_rows: number | null
+                      must_hit: unknown; must_not_hit: unknown
+                      conflict: boolean | null; gap_id: string | null; note: string | null }[]
+              reconciliation?: { sum_source_rows: number; declared: number; ok: boolean } }>(
+      `/api/asset/lookup-tables/${encodeURIComponent(id)}`),
 
   ontology: () => request<Record<string, unknown>>('/api/asset/ontology'),
   process: () => request<Record<string, unknown>>('/api/asset/process'),
@@ -1446,6 +1542,10 @@ export const api = {
     request<{ items: Record<string, unknown>[] }>(`/api/bills/${encodeURIComponent(no)}/reviews`),
   billManuals: (no: string) =>
     request<{ items: ManualReview[] }>(`/api/bills/${encodeURIComponent(no)}/manuals`),
+  /** 同类单据（P1-9）：同主体 N 日内同金额/同收款方/同业务类型，纯查询 */
+  billPeers: (no: string, days = 7) =>
+    request<{ items: PeerBill[]; window_days: number; total: number; note: string }>(
+      `/api/bills/${encodeURIComponent(no)}/peers${qs({ days })}`),
   review: (runId: string) =>
     request<ReviewReport>(`/api/reviews/${encodeURIComponent(runId)}`),
   submitManual: (runId: string, body: Record<string, unknown>) =>
@@ -1454,6 +1554,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deviation: () => request<Record<string, unknown>>('/api/deviation'),
+
+  // ── 审核端配置（P0-12 数字不写死：大额阈值等业务口径由后端下发）──────────
+  reviewConfig: () =>
+    request<{ big_amount_threshold: number; return_categories: string[]; note: string }>(
+      '/api/review/config'),
 
   // ── AI 智能审核 ────────────────────────────────────────────────────────────
   /**
@@ -1618,6 +1723,11 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) }),
   exClauses: (p: Record<string, unknown> = {}) =>
     request<{ items: ExClause[]; total: number; note: string }>(`/api/extract/clauses${qs(p)}`),
+  /** 单条条款全文（冲突对比 B 场景：冲突台账只存条款 id，对比要原文） */
+  exClause: (clauseId: string) =>
+    request<{ clause_id: string; clause_no: string; title: string | null; body: string
+              text_source: string; numbers: string[]; stale: boolean; file_name: string }>(
+      `/api/extract/clauses/${encodeURIComponent(clauseId)}`),
   exStats: () => request<ExStats>('/api/extract/stats'),
   exTasks: () => request<{ items: Record<string, unknown>[] }>('/api/extract/tasks'),
   exAi: (body: { clause_ids?: string[]; limit?: number } = {}) =>

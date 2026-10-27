@@ -123,6 +123,11 @@ MASK_MODE = _env("FJHY_MASK_MODE", "on")                  # on | off
 # 演示数据的单据号前缀。一眼可辨、事后好清理（全局纪律第 12 条）。
 DEMO_BILL_PREFIX = "FJHY-DEMO-"
 
+# ── 审核端业务口径（P0-12：数字不写死，前端一律从 /api/review/config 取）─────
+# 大额阈值：单张报账金额 ≥ 该值记为「大额待审」。默认 10000 与原前端写死值
+# 一致（行为不变）；生产按客户真实分布用环境变量调，不在页面与代码里散写。
+BIG_AMOUNT_THRESHOLD = float(_env("FJHY_BIG_AMOUNT_THRESHOLD", "10000"))
+
 # ── 版本 ─────────────────────────────────────────────────────────────────────
 APP_VERSION = "0.1.0"
 

@@ -265,7 +265,7 @@ const rowKeyOf = (r: unknown): string => {
         <a-tag v-if="ov" :color="ov.totals.failed ? 'error' : 'success'">
           契约校验 {{ ov.totals.checks }} 项 · 失败 {{ ov.totals.failed }}
         </a-tag>
-        <a-button size="small" :disabled="!!busy" style="margin-left: 8px" @click="loadOv">刷新</a-button>
+        <a-button size="small" :loading="busy === 'ov'" :disabled="!!busy && busy !== 'ov'" style="margin-left: 8px" @click="loadOv">刷新</a-button>
       </template>
 
       <!-- ① 运行拓扑 -->
@@ -330,8 +330,7 @@ const rowKeyOf = (r: unknown): string => {
             </div>
             <div class="arch-foot">
               <span>
-                共 <b>{{ stats.total }}</b> 个处理环节，其中 <b>{{ stats.live }}</b> 个近 24 小时跑过周期；
-                POC 没有常驻调度器，其余按需触发——<b>空不等于坏，等于没开</b>。
+                共 <b>{{ stats.total }}</b> 个处理环节 · <b>{{ stats.live }}</b> 个近 24 小时有周期
               </span>
               <span v-if="triple.length" class="foot-two">
                 声明不下结论的 {{ triple.length }} 个：
@@ -376,10 +375,6 @@ const rowKeyOf = (r: unknown): string => {
                 <span class="v">{{ det.state.last_beat_at ? fmt(det.state.last_beat_at) : '不适用' }}</span>
               </div>
             </div>
-            <div v-if="!det.state.last_beat_at" class="blk-note">
-              POC 里没有常驻调度器在跑，心跳为空是<b>没开</b>而不是坏了；
-              心跳仍是契约必填项——LISTEN/NOTIFY 是尽力而为的，断连期间的通知收不到且不报错。
-            </div>
           </a-card>
 
           <a-card size="small" class="blk" title="触发方式">
@@ -410,7 +405,7 @@ const rowKeyOf = (r: unknown): string => {
             <div class="sdafi">
               <div class="sblk">
                 <b>S 读</b>
-                <div class="dim">只允许读这些表（执行点 app/runtime/pipeline.py）</div>
+                <div class="dim">只允许读这些表</div>
                 <div><code v-for="t in det.sdafi.S.tables" :key="t" class="chip">{{ t }}</code></div>
                 <pre v-if="det.sdafi.S.select" class="pre">{{ det.sdafi.S.select }}</pre>
               </div>
@@ -469,7 +464,7 @@ const rowKeyOf = (r: unknown): string => {
 
           <a-card size="small" class="blk" title="契约原文">
             <template #extra>
-              <span class="dim">{{ det.contract_file.lines }} 行，其中 {{ det.contract_file.comment_lines }} 行是注释——注释就是口径本身 · {{ det.contract_file.file }}</span>
+              <span class="dim">{{ det.contract_file.lines }} 行 · 注释 {{ det.contract_file.comment_lines }} 行 · {{ det.contract_file.file }}</span>
               <a-button size="small" style="margin-left: 8px" @click="showYaml = !showYaml">
                 {{ showYaml ? '收起原文' : '看原文' }}
               </a-button>
@@ -487,11 +482,11 @@ const rowKeyOf = (r: unknown): string => {
             <a-button v-if="checks" size="small" style="margin-left: 8px" @click="showAllChecks = !showAllChecks">
               {{ showAllChecks ? '只看失败' : '看全部' }}
             </a-button>
-            <a-button size="small" :disabled="!!busy" style="margin-left: 4px" @click="loadChecks">现跑一遍</a-button>
+            <a-button size="small" :loading="busy === 'k'" :disabled="!!busy && busy !== 'k'" style="margin-left: 4px" @click="loadChecks">现跑一遍</a-button>
           </template>
           <div v-if="checks">
             <a-alert v-if="!showAllChecks && !checks.failed" type="success" show-icon style="margin-bottom: 12px"
-              :message="`${checks.total} 项全过。和启动时跑的是同一套——另写一份校验就会出现「启动能过、页面报错」这种谁也说不清的状态。`" />
+              :message="`${checks.total} 项全部通过`" />
             <a-table v-else :data-source="checks.items.filter((x) => showAllChecks || !x.ok)"
               :row-key="rowKeyOf" size="small" :pagination="false"
               :columns="[
@@ -518,7 +513,7 @@ const rowKeyOf = (r: unknown): string => {
         <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
         <template v-if="sig">
           <a-card size="small" class="blk" title="数据池">
-            <template #extra><span class="dim">环节之间零直接调用：上游写进池子、发信号，下游从池子里读</span></template>
+            <template #extra><span class="dim">上游写入 · 发信号 · 下游读取</span></template>
             <div class="kvlist">
               <div v-for="f in sig.facts" :key="f.fact" class="kvrow">
                 <b>{{ f.fact }}</b><span class="dim"><MarkText :text="f.why" /></span>
@@ -596,7 +591,8 @@ const rowKeyOf = (r: unknown): string => {
             <span v-if="c.pct !== undefined && c.status === 'running'" class="dim" style="margin-left: 6px">{{ c.pct }}%</span>
             <a size="small" style="margin-left: 8px" :href="c.page">去那一栏 →</a>
             <a-button v-if="c.kind !== '常驻编排'" size="small" style="margin-left: 4px"
-                      :disabled="!!busy || c.status === 'running'" @click="startChain(c)">
+                      :loading="busy === 'go'" :disabled="!!busy && busy !== 'go' || c.status === 'running'"
+                      @click="startChain(c)">
               {{ c.status === 'running' ? '运行中…' : '在这里启动' }}
             </a-button>
             <span v-else class="dim" style="margin-left: 6px">常驻，本页不启停</span>

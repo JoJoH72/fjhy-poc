@@ -34,6 +34,7 @@ api.iamOrgs().then((r) => { orgOptions.value = r.items })
 /* 用户编辑弹窗 */
 const uOpen = ref(false)
 const uErr = ref('')
+const uBusy = ref(false)
 const uform = reactive({
   id: '', name: '', account: '', phone: '', dept: '',
   roleKey: '', enabled: true, password: '', orgIds: [] as string[],
@@ -53,10 +54,16 @@ function openUser(u?: iam.IamUser) {
   uOpen.value = true
 }
 async function submitUser() {
-  const r = await iam.saveUser({ ...uform, orgs: [...uform.orgIds] })
-  if (!r.ok) { uErr.value = r.msg; return }
-  uOpen.value = false
-  message.success(r.msg)
+  if (uBusy.value) return
+  uBusy.value = true
+  try {
+    const r = await iam.saveUser({ ...uform, orgs: [...uform.orgIds] })
+    if (!r.ok) { uErr.value = r.msg; return }
+    uOpen.value = false
+    message.success(r.msg)
+  } finally {
+    uBusy.value = false
+  }
 }
 const noSelf = (u: iam.IamUser) => u.account === 'admin' // 删除护栏由服务端最终判定
 
@@ -71,16 +78,23 @@ async function toggleEnabled(u: iam.IamUser, on: boolean) {
 const pwdFor = ref('')
 const pwd1 = ref('')
 const pwdOpen = ref(false)
+const pwdBusy = ref(false)
 function openPwd(u: iam.IamUser) {
   pwdFor.value = u.id
   pwd1.value = ''
   pwdOpen.value = true
 }
 async function submitPwd() {
-  const r = await iam.resetPassword(pwdFor.value, pwd1.value)
-  if (!r.ok) { message.error(r.msg); return }
-  pwdOpen.value = false
-  message.success(r.msg)
+  if (pwdBusy.value) return
+  pwdBusy.value = true
+  try {
+    const r = await iam.resetPassword(pwdFor.value, pwd1.value)
+    if (!r.ok) { message.error(r.msg); return }
+    pwdOpen.value = false
+    message.success(r.msg)
+  } finally {
+    pwdBusy.value = false
+  }
 }
 function confirmDel(u: iam.IamUser) {
   Modal.confirm({
@@ -115,23 +129,37 @@ const checkedKeys = computed({
   get: () => [...rform.perms],
   set: (keys: any) => { rform.perms = new Set((keys.checked || keys).filter((k: string) => !k.startsWith('@role:'))) },
 })
+const roleBusy = ref(false)
 async function saveRole() {
-  const r = await iam.saveRole({
-    key: curRoleKey.value, name: rform.name, desc: rform.desc,
-    scope: rform.scope, perms: [...rform.perms],
-  })
-  message[r.ok ? 'success' : 'error'](r.msg)
+  if (roleBusy.value) return
+  roleBusy.value = true
+  try {
+    const r = await iam.saveRole({
+      key: curRoleKey.value, name: rform.name, desc: rform.desc,
+      scope: rform.scope, perms: [...rform.perms],
+    })
+    message[r.ok ? 'success' : 'error'](r.msg)
+  } finally {
+    roleBusy.value = false
+  }
 }
 
 /* 新建角色 */
 const nOpen = ref(false)
 const nErr = ref('')
+const nBusy = ref(false)
 const nform = reactive({ name: '', desc: '', scope: 'self' as iam.DataScope })
 async function submitNewRole() {
-  const r = await iam.saveRole({ ...nform, perms: [] })
-  if (!r.ok) { nErr.value = r.msg; return }
-  nOpen.value = false
-  message.success(r.msg)
+  if (nBusy.value) return
+  nBusy.value = true
+  try {
+    const r = await iam.saveRole({ ...nform, perms: [] })
+    if (!r.ok) { nErr.value = r.msg; return }
+    nOpen.value = false
+    message.success(r.msg)
+  } finally {
+    nBusy.value = false
+  }
 }
 
 /* 恢复默认 */
@@ -236,13 +264,13 @@ const roleCols = [
               </a-form-item>
             </a-form>
             <a-divider orientation="left" orientation-margin="0">菜单权限</a-divider>
-            <p class="dim" style="margin: 4px 0 10px">勾选即生效：该角色的侧栏菜单与直达链接同时受控。</p>
+            <p class="dim" style="margin: 4px 0 10px">勾选项即该角色的侧栏菜单与可访问页面。</p>
             <a-tree v-model:checked-keys="checkedKeys" :tree-data="treeData"
               checkable :default-expand-all="true" :selectable="false"
               style="max-width: 480px" />
             <a-divider />
             <a-space>
-              <a-button type="primary" :disabled="curRole?.key === 'admin'" @click="saveRole">保存</a-button>
+              <a-button type="primary" :loading="roleBusy" :disabled="curRole?.key === 'admin'" @click="saveRole">保存</a-button>
               <span v-if="curRole?.key === 'admin'" class="dim">系统管理员为内置超管，权限不可修改</span>
             </a-space>
           </a-tab-pane>
@@ -252,7 +280,7 @@ const roleCols = [
 
     <!-- 新增/编辑用户 -->
     <a-modal v-model:open="uOpen" :title="editing ? '编辑账号' : '新增账号'"
-      :ok-text="editing ? '保存' : '新增'" cancel-text="取消" @ok="submitUser">
+      :ok-text="editing ? '保存' : '新增'" :confirm-loading="uBusy" cancel-text="取消" @ok="submitUser">
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :span="12"><a-form-item label="姓名" required><a-input v-model:value="uform.name" /></a-form-item></a-col>
@@ -281,12 +309,12 @@ const roleCols = [
     </a-modal>
 
     <!-- 重置密码 -->
-    <a-modal v-model:open="pwdOpen" title="重置密码" ok-text="重置" cancel-text="取消" @ok="submitPwd">
+    <a-modal v-model:open="pwdOpen" title="重置密码" ok-text="重置" :confirm-loading="pwdBusy" cancel-text="取消" @ok="submitPwd">
       <a-input-password v-model:value="pwd1" placeholder="至少 6 位（重置后该账号旧会话全部失效）" />
     </a-modal>
 
     <!-- 新建角色 -->
-    <a-modal v-model:open="nOpen" title="新建角色" ok-text="创建" cancel-text="取消" @ok="submitNewRole">
+    <a-modal v-model:open="nOpen" title="新建角色" ok-text="创建" :confirm-loading="nBusy" cancel-text="取消" @ok="submitNewRole">
       <a-form layout="vertical">
         <a-form-item label="角色名称" required><a-input v-model:value="nform.name" /></a-form-item>
         <a-form-item label="说明"><a-input v-model:value="nform.desc" /></a-form-item>

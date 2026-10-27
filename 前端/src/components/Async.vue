@@ -1,11 +1,14 @@
 <script setup lang="ts" generic="T">
 /**
- * 异步数据容器。三态显式：加载中 / 出错 / 有数据。
+ * 异步数据容器（2026-10-27 交互基线升级）。
  *
- * **出错必须显示出来，不能退化成「没有数据」。**
- * 前端最常见的隐藏故障方式就是 catch 之后 return []：
- * 页面上看着是空列表，实际是接口挂了。
- * 审核岗据此以为「这批单没问题」，而真相是什么都没查。
+ * 三态 + 刷新语义（SWR 模式，业界标准）：
+ *   首次加载  a-skeleton 骨架屏（不是空白/一行小字）
+ *   刷新      保留旧数据继续渲染，不卸载插槽——否则按钮 loading spinner
+ *             会被整段卸载吃掉，「点完闪一下」就是这么来的
+ *   刷新失败  旧数据上方横幅报错，数据不丢
+ *   首次失败   标准错误态 + 重试按钮；**不退化成空列表**——
+ *             空列表看着像「没有数据」，实际是接口挂了，这两件事必须分得开。
  */
 import { onMounted, ref, watch } from 'vue'
 
@@ -21,14 +24,14 @@ const error = ref('')
 const loading = ref(true)
 
 async function run() {
-  loading.value = true
+  // 首次（无数据）才显示骨架屏；刷新保留旧数据（stale-while-revalidate）
+  if (data.value === null) loading.value = true
   error.value = ''
   try {
     data.value = await props.load()
     emit('loaded', data.value)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
-    data.value = null
   } finally {
     loading.value = false
   }
@@ -42,14 +45,19 @@ const emit = defineEmits<{ loaded: [value: T] }>()
 </script>
 
 <template>
-  <div v-if="loading" class="muted">加载中…</div>
-  <div v-else-if="error" class="err">
-    <b>取数失败</b>：{{ error }}
-    <div class="muted" style="margin-top: 4px">
-      这不是「没有数据」。后端没起的话先跑：
-      <code>cd 服务端 &amp;&amp; python -I -m uvicorn app.main:app --port 8000</code>
-    </div>
-    <button style="margin-top: 6px" @click="run">重试</button>
+  <a-skeleton v-if="loading && data === null" active :paragraph="{ rows: 4 }" />
+  <div v-else-if="error && data === null" class="async-err">
+    <a-alert type="error" show-icon>
+      <template #message>加载失败：{{ error }}</template>
+      <template #description>
+        <a-button size="small" type="primary" @click="run">重试</a-button>
+      </template>
+    </a-alert>
   </div>
-  <slot v-else :data="data as T" :reload="run" />
+  <template v-else>
+    <a-alert v-if="error" type="error" show-icon closable style="margin-bottom: 12px">
+      <template #message>刷新失败：{{ error }}</template>
+    </a-alert>
+    <slot :data="data as T" :reload="run" />
+  </template>
 </template>

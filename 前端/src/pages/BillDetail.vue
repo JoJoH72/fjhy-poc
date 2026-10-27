@@ -163,7 +163,25 @@ const histCols = [
   { title: '执行 / 候选', key: 'rules', width: 110, align: 'center' as const },
   { title: '规则集', dataIndex: 'rule_set_version', width: 120 },
   { title: '时间', key: 'time', width: 170 },
+  { title: '与上一轮', key: 'diff', width: 110, align: 'center' as const },
 ]
+
+/** 历次审核前后对照（P1-10）：items 按时间倒序，第 i 行与第 i+1 行（更早一轮）
+ *  比对结论/命中/待人工的变化。纯展示层（billReviews 已带各轮计数），
+ *  变了才显示——首轮显示「—」。 */
+function histDiff(items: Record<string, any>[], i: number): string {
+  const cur = items[i]
+  const prev = items[i + 1]
+  if (!prev) return ''
+  const parts: string[] = []
+  if (cur.conclusion !== prev.conclusion)
+    parts.push(`结论 ${prev.conclusion === 'pass' ? '通过' : prev.conclusion === 'review' ? '待复核' : '不通过'}→${cur.conclusion === 'pass' ? '通过' : cur.conclusion === 'review' ? '待复核' : '不通过'}`)
+  const dh = (cur.hit_count ?? 0) - (prev.hit_count ?? 0)
+  const dp = (cur.pending_count ?? 0) - (prev.pending_count ?? 0)
+  if (dh) parts.push(`命中${dh > 0 ? '+' : ''}${dh}`)
+  if (dp) parts.push(`待人工${dp > 0 ? '+' : ''}${dp}`)
+  return parts.join(' · ')
+}
 </script>
 
 <template>
@@ -417,9 +435,10 @@ const histCols = [
         <template #default="{ data: rv }">
           <a-card size="small" class="blk" title="历次审核">
             <a-table :columns="histCols" :data-source="(rv as any).items"
-              row-key="run_id" size="small"
+              :row-key="(r: unknown) => String((r as Record<string, any>).run_id)"
+              size="small"
               :pagination="(rv as any).items.length > 10 ? { pageSize: 10 } : false">
-              <template #bodyCell="{ column, record: r }">
+              <template #bodyCell="{ column, record: r, index }">
                 <template v-if="column.dataIndex === 'run_id'">
                   <router-link :to="`/review/report/${r.run_id}`">{{ r.run_id }}</router-link>
                 </template>
@@ -428,6 +447,11 @@ const histCols = [
                     >{{ CONCL[r.conclusion]?.text || r.conclusion }}</a-tag>
                 </template>
                 <template v-else-if="column.key === 'rules'">{{ r.rule_executed }} / {{ r.rule_candidates }}</template>
+                <template v-else-if="column.key === 'diff'">
+                  <!-- 与上一轮对照（P1-10）：重报单改了什么一眼可见 -->
+                  <span v-if="histDiff((rv as any).items, index)" class="diff-ch">{{ histDiff((rv as any).items, index) }}</span>
+                  <span v-else class="dim">—</span>
+                </template>
                 <template v-else-if="column.key === 'time'">
                   <span class="dim">{{ dt(r.finished_at) }}</span>
                 </template>
@@ -456,6 +480,8 @@ const histCols = [
 .blk { margin-bottom: 16px; }
 .dim { color: rgba(0, 0, 0, .45); font-size: 12px; }
 .note { font-size: 12px; color: rgba(0, 0, 0, .55); margin: 8px 0; }
+/* 历次审核「与上一轮」变化列（P1-10） */
+.diff-ch { font-size: 12px; color: #d46b08; font-variant-numeric: tabular-nums; }
 
 .kvg { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0 32px; }
 .kvg .k { display: inline-block; width: 110px; color: rgba(0, 0, 0, .45); font-size: 13px; padding: 6px 0; }

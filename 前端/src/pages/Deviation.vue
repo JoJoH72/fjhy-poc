@@ -264,9 +264,7 @@ function cOf(c: Consistency, k: string): number {
                 </div>
               </div>
               <div class="dv-policy">
-                <b>为什么隔离而不是丢掉：</b>静默丢弃这几行费用，往后没有任何规则看得到它们；
-                凭明细凭空造一张主表，按核算主体、业务类型判的规则会拿到编出来的值。两种都不做——
-                主表补上这张单之后再装。
+                <b>处理口径：</b>隔离行不参与审核，也不并入主表；补齐主表后重新装载即可入审。
               </div>
             </a-card>
           </template>
@@ -326,8 +324,7 @@ function cOf(c: Consistency, k: string): number {
                   <div v-for="(p, i) in c.problems" :key="i">{{ p }}</div>
                 </div>
                 <div v-else class="dv-ck-foot">
-                  台账比业务表多出的部分来自历史轮次——业务数据被重新生成过，
-                  审计记录按设计不删，所以只作为信息列出，不算失败。
+                  台账多于业务表的部分为历史轮次记录（审计台账不随业务数据清理）。
                 </div>
               </div>
             </a-card>
