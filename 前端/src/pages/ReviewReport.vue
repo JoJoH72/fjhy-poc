@@ -1,14 +1,14 @@
 <script setup lang="ts">
 /**
- * 审核报告 + 人工复核闸门（2026-10-24 改版，契约：设计/审核端改版demo.html）。
+ * 审核报告 + 人工复核闸门（2026-10-27 AntD 换装版）。
  *
  * 结构：常驻队列栏（清单层：搜索/筛选/排序/虚拟滚动）+ 队列状态条（翻张/进度）
- * → 复核闸门（kv 瓷砖 + 按钮上下两行）→ 单据信息（明细/审批）→ 规则判定明细
+ * → 复核闸门（事实行 + 按钮行）→ 单据信息（明细/审批）→ 规则判定明细
  * （四态合表 + 证据展开 + 制度依据）→ 附件（点开大图）→ 历次审核。
  * 键盘：←/→ 翻张；提交（通过/退回）后自动下一张。
  *
  * 三个诚实点必须保住（原版页面的立页之本，改版不许丢）：
- * 1. 覆盖面数字并列：候选 82 / 执行 28 / 命中 / 待人工 / 未执行 54——
+ * 1. 覆盖面数字并列：候选 / 执行 / 命中 / 待人工 / 未执行——
  *    「待人工」不是「通过」，未执行的规则要让审核岗看见。
  * 2. 命中原文回显（matched_text）与制度依据（clause_ref）挨着证据展示。
  * 3. AI 结论仅供参考；「我不认可这条命中」的勾选挨着证据，不搬去闸门。
@@ -23,9 +23,10 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
 import Async from '../components/Async.vue'
 import * as session from '../data/session'
-import { api, type Finding, type ReviewReport, type Bill, type ManualReview, type Page } from '../api'
+import { api, type Finding, type ReviewReport, type Bill, type ManualReview } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,10 +35,9 @@ const router = useRouter()
 const runId = computed(() => (route.params.runId ? String(route.params.runId) : ''))
 
 /* ── 复核队列：不通过 + 待复核 两种结论合并 ──
- * 2026-10-25 由横条胶片改为「状态条 + 队列抽屉」（清单-详情分层）：横条在几千张
- * 队列下找不到（无搜索）、无分流（无筛选排序）、无进度感，客户量产规模必换。
+ * 2026-10-25 由横条胶片改为「状态条 + 队列抽屉」（清单-详情分层）：
  * 抽屉 = 清单层（搜索/筛选/排序/虚拟滚动/已处理打勾），本页 = 详情层（键盘翻张、
- * 提交后自动下一张）。可钉住成常驻左栏，也可临时弹出点完即走。
+ * 提交后自动下一张）。常驻左栏（2026-10-25 用户定稿：不做开关，一直留着）。
  *
  * 后端缺口（登记勿绕）：/api/bills 无服务端排序/筛选，队列只能按结论分页全量拉
  * （每页 200、上限 50 页封顶 1 万张），排序筛选全在前端做。上万张时需服务端
@@ -96,14 +96,8 @@ const cur = computed<QueueBill | null>(() => queue.value.find((q) => q.run_id ==
 const qi = computed(() => (cur.value ? queue.value.findIndex((q) => q.no === cur.value!.no) : -1))
 /** 队列构成（状态条分列显示）：review = AI 判不了待人工，reject = AI 命中不通过 */
 const nReject = computed(() => queue.value.filter((q) => q.concl === 'reject').length)
-const QUEUE_NOTE =
-  '队列 = AI 判待复核或 AI 不通过、且还没有人工结论的单（后端按 manual=none 过滤）。' +
-  '复核通过/退回后该单移出队列并持久保存——刷新页面、换台机器都不回弹。' +
-  '「已人工复核」是该口径下的累计复核数，与队列的增减互为印证。'
 
-/* ── 队列栏：搜索 / 筛选 / 排序 / 虚拟滚动 ──
- * 2026-10-25 用户定稿：常驻左栏——不做开关、不做钉住，一直留着；
- * 翻张/跳转时当前单自动滚进视野，筛选排序时不跟滚（手在列表上）。 */
+/* ── 队列栏：搜索 / 筛选 / 排序 / 虚拟滚动 ── */
 const qSearch = ref('')
 type QSort = 'risk' | 'amt' | 'time'
 const qSort = ref<QSort>('risk')
@@ -160,7 +154,7 @@ onMounted(() => document.addEventListener('keydown', onKey))
 onUnmounted(() => document.removeEventListener('keydown', onKey))
 /* 翻张跟随筛选视图：筛出一批逐张处理时，「下一张」应是筛选结果里的下一张，
  * 跳到筛外的单据会把人带丢。当前单不在筛选结果里（清筛选后按全队列进来的）
- * 才退回全队列顺序。进度「第 X / 63 张」始终是全队列位次，口径不变。 */
+ * 才退回全队列顺序。进度「第 X / N 张」始终是全队列位次，口径不变。 */
 const canPrev = computed(() => {
   const vi = viewQueue.value.findIndex((q) => cur.value && q.no === cur.value.no)
   return vi >= 0 ? vi > 0 : qi.value > 0
@@ -187,8 +181,8 @@ function pickQueue(q: QueueBill) {
 
 /* ── 闸门状态 ── */
 /** 当前登录人的姓名（复核留痕的默认署名）。此前默认空、提交落「未署名」，
- * 而本页历史动作里又兜底写死「林嘉」——登录的是陈芳时，留痕和页面说的不是
- * 同一个人。署名必须跟着会话走，不许有第二个来源。 */
+ *  而本页历史动作里又兜底写死「林嘉」——登录的是陈芳时，留痕和页面说的不是
+ *  同一个人。署名必须跟着会话走，不许有第二个来源。 */
 function sessName(): string {
   return session.current()?.user || ''
 }
@@ -198,15 +192,7 @@ const reason = ref('')
 const showReturn = ref(false)
 const disagree = ref<string[]>([])
 const submitting = ref(false)
-const submitMsg = ref('')
 const submitErr = ref('')
-const toast = ref('')
-let toastTimer = 0
-function say(m: string) {
-  toast.value = m
-  clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => (toast.value = ''), 2400)
-}
 /** 该轮的人工结论（后端持久状态，2026-10-25 联动后取代会话级标记）。
  *  有值则闸门锁定、防重复落库——后端另有同 run 唯一留痕（409）双保险。 */
 const curManual = computed<ManualReview | null>(() =>
@@ -220,7 +206,6 @@ const doneLabel = (d: 'agree' | 'return', hasNote = false) =>
 
 async function submit(decision: 'agree' | 'return') {
   submitErr.value = ''
-  submitMsg.value = ''
   if (doneEntry.value) {
     submitErr.value = '本单已有复核留痕（后端已记录），不重复提交'
     return
@@ -251,8 +236,7 @@ async function submit(decision: 'agree' | 'return') {
     // 刷真状态：人工留痕 + 队列（manual=none 口径下，队列真少一张、已复核 +1）
     if (no) await loadManuals(no)
     await loadQueue()
-    submitMsg.value = decision === 'agree' ? '已记录：复核通过' : '已记录：退回报账人'
-    say(decision === 'agree' ? '已记录：复核通过' : '已退回，理由已记录')
+    message.success(decision === 'agree' ? '已记录：复核通过' : '已退回，理由已记录')
     // 意见与不认可勾选**当场清空**——它们属于刚提交的那张单，不清会原样
     // 带进下一张（意见错挂、不认可错勾到下一张的同号规则上）。
     note.value = ''
@@ -295,12 +279,12 @@ const rows = computed<Row[]>(() => {
 })
 const report = ref<(ReviewReport & { _bill?: Record<string, any> }) | null>(null)
 
-const OUT: Record<string, { label: string; cls: string }> = {
-  hit: { label: '命中', cls: 'bad' },
-  pending: { label: '待人工', cls: 'warn' },
-  pass: { label: '通过', cls: 'ok' },
-  not_applicable: { label: '不适用', cls: 'brand' },
-  excluded: { label: '未执行', cls: 'brand' },
+const OUT: Record<string, { text: string; color: string }> = {
+  hit: { text: '命中', color: 'error' },
+  pending: { text: '待人工', color: 'warning' },
+  pass: { text: '通过', color: 'success' },
+  not_applicable: { text: '不适用', color: 'default' },
+  excluded: { text: '未执行', color: 'default' },
 }
 const FILTERS: [Filter, string][] = [['all', '全部'], ['hit', '命中'], ['pending', '待人工'], ['passed', '通过'], ['na', '不适用'], ['excluded', '未执行']]
 function countOf(k: Filter): number {
@@ -311,8 +295,7 @@ function countOf(k: Filter): number {
   if (k === 'passed') return report.value?.findings.passed.length ?? 0
   return report.value?.findings.not_applicable.length ?? 0
 }
-/** 明细默认 10 条（命中/待人工排前），超出折叠展开/收起 */
-const expanded = ref(false)
+/** 明细默认 10 条（命中/待人工排前），超出分页 */
 const PREVIEW_N = 10
 const shownAll = computed(() => {
   if (filter.value === 'all') return rows.value
@@ -326,8 +309,6 @@ const shownAll = computed(() => {
   }
   return rows.value.filter(map[filter.value])
 })
-const shown = computed(() =>
-  expanded.value || shownAll.value.length <= PREVIEW_N ? shownAll.value : shownAll.value.slice(0, PREVIEW_N))
 
 function evidenceRows(f: Finding): [string, string][] {
   return Object.entries(f.evidence || {})
@@ -346,7 +327,7 @@ watch(lb, (v) => {
   else document.removeEventListener('keydown', onKey)
 })
 
-/* ── 历次审核：人工留痕（manual_review，2026-10-25 起有读取接口）+ AI 轮次 ── */
+/* ── 历次审核：人工留痕（manual_review）+ AI 轮次 ── */
 const reviews = ref<Record<string, any>[]>([])
 const manuals = ref<ManualReview[]>([])
 async function loadManuals(no: string) {
@@ -366,7 +347,7 @@ const histRows = computed(() => {
     key: 'r' + i, iso: String(rv.finished_at || rv.started_at || ''),
     tm: String(rv.finished_at || '').slice(5, 16).replace('T', ' '),
     who: '系统 · AI 预审',
-    act: `${CONCL[rv.conclusion]?.label || rv.conclusion}（${rv.rule_executed ?? '—'} 条规则）`,
+    act: `${CONCL[rv.conclusion]?.text || rv.conclusion}（${rv.rule_executed ?? '—'} 条规则）`,
     note: `命中 ${rv.hit_count ?? 0} · 待人工 ${rv.pending_count ?? 0}`,
   }))
   return [...man, ...ai].sort((a, b) => (a.iso < b.iso ? 1 : a.iso > b.iso ? -1 : 0))
@@ -377,7 +358,6 @@ watch(() => report.value?.run.bill_no, (no) => {
   note.value = ''
   reason.value = ''
   disagree.value = []
-  submitMsg.value = ''
   submitErr.value = ''
   showReturn.value = false
   manuals.value = []
@@ -386,81 +366,101 @@ watch(() => report.value?.run.bill_no, (no) => {
   void loadManuals(no)
 }, { immediate: true })
 
-const CONCL: Record<string, { label: string; cls: string }> = {
-  pass: { label: '通过', cls: 'ok' }, review: { label: '待复核', cls: 'warn' }, reject: { label: '不通过', cls: 'bad' },
+const CONCL: Record<string, { text: string; color: string }> = {
+  pass: { text: '通过', color: 'success' }, review: { text: '待复核', color: 'warning' }, reject: { text: '不通过', color: 'error' },
 }
+
+const fmtAmt = (v: number | null | undefined) =>
+  v != null ? Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'
+
+const ruleCols = [
+  { title: '规则', dataIndex: 'id', width: 100 },
+  { title: '制度依据', key: 'clause', width: 170 },
+  { title: '结论', key: 'outcome', width: 86, align: 'center' as const },
+  { title: '证据摘要', key: 'msg' },
+  { title: '', key: 'exp', width: 56, align: 'center' as const },
+]
+const histCols = [
+  { title: '时间', dataIndex: 'tm', width: 120 },
+  { title: '操作人', dataIndex: 'who', width: 130 },
+  { title: '动作', dataIndex: 'act', width: 190 },
+  { title: '意见', dataIndex: 'note' },
+]
 </script>
 
 <template>
-  <div class="v2 qwrap">
+  <div class="qwrap">
     <!-- 队列栏（清单层，常驻左栏）：搜索/筛选/排序/虚拟滚动，点行直达 -->
-    <aside class="card qdrawer" aria-label="待复核队列清单">
+    <a-card size="small" class="qdrawer" title="待复核队列">
+      <template #extra>
+        <span class="dim">已人工复核 {{ doneCount }}</span>
+      </template>
       <div class="qhead">
-        <input class="input" v-model="qSearch" placeholder="搜索单号" aria-label="搜索单号">
-        <div class="seg" aria-label="排序">
-          <button :class="{ on: qSort === 'risk' }" @click="qSort = 'risk'">风险</button>
-          <button :class="{ on: qSort === 'amt' }" @click="qSort = 'amt'">金额</button>
-          <button :class="{ on: qSort === 'time' }" @click="qSort = 'time'">时间</button>
-        </div>
-        <div class="seg" aria-label="筛选">
-          <button :class="{ on: qFilter === 'all' }" @click="qFilter = 'all'">全部</button>
-          <button :class="{ on: qFilter === 'hit3' }" @click="qFilter = 'hit3'">命中≥3</button>
-          <button :class="{ on: qFilter === 'big' }" title="金额 ≥ 1 万元" @click="qFilter = 'big'">大额</button>
-          <button :class="{ on: qFilter === 'real' }" @click="qFilter = 'real'">仅真实</button>
+        <a-input-search v-model:value="qSearch" placeholder="搜索单号" allow-clear size="small" />
+        <div class="qrow2">
+          <a-radio-group v-model:value="qSort" size="small" button-style="solid">
+            <a-radio-button value="risk">风险</a-radio-button>
+            <a-radio-button value="amt">金额</a-radio-button>
+            <a-radio-button value="time">时间</a-radio-button>
+          </a-radio-group>
+          <a-select v-model:value="qFilter" size="small" style="width: 104px"
+            :options="[
+              { value: 'all', label: '全部' },
+              { value: 'hit3', label: '命中≥3' },
+              { value: 'big', label: '大额' },
+              { value: 'real', label: '仅真实' },
+            ]" />
         </div>
       </div>
-      <div v-if="queueErr" class="qerr">队列取数失败：{{ queueErr }}</div>
+      <a-alert v-if="queueErr" type="error" show-icon :message="`队列取数失败：${queueErr}`" style="margin: 8px 0" />
       <div v-else-if="!viewQueue.length" class="qempty">
-        没有符合筛选的单据
-        <button class="btn ghost" @click="clearQFilter">清除筛选</button>
+        <a-empty :image-style="{ height: '40px' }" description="没有符合筛选的单据" />
+        <a-button size="small" @click="clearQFilter">清除筛选</a-button>
       </div>
       <div v-else class="qlist" ref="listEl" @scroll.passive="onListScroll">
         <div :style="{ height: vFirst * ROW_H + 'px' }"></div>
         <button v-for="q in viewQueue.slice(vFirst, vFirst + vRows)" :key="q.no" class="qrow"
                 :class="{ cur: cur?.no === q.no }" :title="q.no" @click="pickQueue(q)">
           <span class="no">{{ q.no.replace(/^(FJPG-BX|FJHY-DEMO-)/, '') }}</span>
-          <span v-if="q.is_demo" class="tag-demo">演示</span>
-          <span class="hitn num" :class="q.concl">{{ q.hit }}</span>
+          <a-tag v-if="q.is_demo" color="default" class="demo">演示</a-tag>
+          <span class="hitn" :class="q.concl">{{ q.hit }}</span>
         </button>
         <div :style="{ height: Math.max(0, viewQueue.length - vFirst - vRows) * ROW_H + 'px' }"></div>
       </div>
       <div class="qmeta">筛出 {{ viewQueue.length }} / {{ queue.length }} · 已人工复核 {{ doneCount }}</div>
-    </aside>
+    </a-card>
 
     <div class="qmain">
     <!-- 队列状态条（详情层导航）：翻张/进度。
          队列 = 还没有人工结论的单（后端 manual=none 回流，2026-10-25 联动）：
          复核一张真少一张，持久在后端，刷新/换机器不回弹。AI 不通过与已复核数
          并排——三个数加起来才是完整口径，只摆一个看不出复核有没有用。 -->
-    <div class="card qbar">
-      <span class="pill warn num" :title="QUEUE_NOTE">待复核 {{ queue.length }} 张</span>
-      <span class="qsub" style="font-size: 12px; color: var(--weak)">AI 不通过 {{ nReject }} · 已人工复核 {{ doneCount }}</span>
-      <span class="qpos">{{ qi >= 0 ? `第 ${qi + 1} / ${queue.length} 张` : '当前单不在队列中' }}</span>
-      <div class="grow"></div>
-      <!-- 三个按钮成组：窄屏时整组换到第二行并右对齐，
-           而不是各自被压成两行字（「刷新队列」被挤成「刷新队/列」那次就是这么来的） -->
-      <div class="qacts">
-        <button class="btn ghost" :disabled="!canPrev" @click="navQueue(-1)">上一张</button>
-        <button class="btn ghost" :disabled="!canNext" @click="navQueue(1)">下一张</button>
-        <button class="btn ghost" title="重新拉取队列（他人复核、重跑审核后同步）" @click="loadQueue()">刷新队列</button>
+    <a-card size="small" class="qbar">
+      <div class="qbar-in">
+        <a-tag color="warning" class="qtag">待复核 {{ queue.length }} 张</a-tag>
+        <span class="dim">AI 不通过 {{ nReject }} · 已人工复核 {{ doneCount }}</span>
+        <span class="qpos">{{ qi >= 0 ? `第 ${qi + 1} / ${queue.length} 张` : '当前单不在队列中' }}</span>
+        <div class="grow"></div>
+        <a-button size="small" :disabled="!canPrev" @click="navQueue(-1)">上一张</a-button>
+        <a-button size="small" :disabled="!canNext" @click="navQueue(1)">下一张</a-button>
+        <a-button size="small" title="重新拉取队列（他人复核、重跑审核后同步）" @click="loadQueue()">刷新队列</a-button>
       </div>
-    </div>
+    </a-card>
 
     <Async v-if="runId" :load="loadAll" :deps="runId" @loaded="(d) => (report = d)">
       <template #default="{ data }">
-        <!-- 复核闸门（2026-10-25 UI 走查重构）：上半只读展示（纯文本，不套框），
-             分割线下半操作区（等高输入 + 标准尺寸按钮右置）。
+        <!-- 复核闸门：上半只读事实（单号/结论/金额/部门/覆盖面），下半操作区。
              两键 = 行内费用审核的两态（2026-10-24 定）：行业惯例与客户系统均为
              同意/退回两态，「终审否决」是信贷场景动作，费用报销无此业务出口；
              若将来合规需要第四决策，后端加 decision 值后在此恢复即可。 -->
-        <div class="gate">
+        <a-card size="small" class="gate">
           <div class="bill-line">
-            <b>{{ data.run.bill_no }}</b>
-            <span v-if="bill?.is_demo" class="tag-demo">演示</span>
-            <span class="pill" :class="CONCL[data.run.conclusion]?.cls || 'brand'">
-              {{ CONCL[data.run.conclusion]?.label || data.run.conclusion }} · 待人工裁决
-            </span>
-            <span class="amt"><span class="num">{{ bill?.amount != null ? bill.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—' }}</span><small>元</small></span>
+            <b class="billno">{{ data.run.bill_no }}</b>
+            <a-tag v-if="bill?.is_demo" color="default">演示</a-tag>
+            <a-tag :color="CONCL[data.run.conclusion]?.color || 'blue'">
+              {{ CONCL[data.run.conclusion]?.text || data.run.conclusion }} · 待人工裁决
+            </a-tag>
+            <span class="amt"><span class="num">{{ fmtAmt(bill?.amount) }}</span><small> 元</small></span>
           </div>
           <div class="facts">
             <span><i>报账部门</i>{{ bill?.claim_dept || '—' }}</span>
@@ -468,178 +468,167 @@ const CONCL: Record<string, { label: string; cls: string }> = {
             <span><i>提单日期</i><span class="num">{{ (bill?.doc_date || '').slice(0, 10) || '—' }}</span></span>
           </div>
           <div class="ai-line">
-            命中 <b style="color: var(--bad)">{{ data.coverage.hit }}</b> 条 ·
+            命中 <b style="color: #ff4d4f">{{ data.coverage.hit }}</b> 条 ·
             待人工 {{ data.coverage.pending }} 项 ·
             执行 {{ data.coverage.executed }}/{{ data.coverage.candidates }} 条
-            <span v-if="data.coverage.excluded" style="color: var(--weak); font-size: 12px">
+            <span v-if="data.coverage.excluded" class="dim">
               （{{ data.coverage.excluded }} 条未执行，原因见表内）
             </span>
           </div>
-          <div v-if="doneEntry" class="act" style="gap: 10px">
-            <span class="pill ok">已复核：{{ doneLabel(doneEntry.d, !!doneEntry.note) }}</span>
-            <span style="font-size: 12px; color: var(--weak)">留痕已入库存档（见下方复核记录），同一轮不重复记录</span>
+          <div v-if="doneEntry" class="act done-row">
+            <a-tag color="success">已复核：{{ doneLabel(doneEntry.d, !!doneEntry.note) }}</a-tag>
+            <span class="dim">留痕已入库存档（见下方复核记录），同一轮不重复记录</span>
           </div>
           <div v-else class="act">
-            <input class="input rev" v-model="reviewer" placeholder="复核人" aria-label="复核人">
-            <input class="input note" v-model="note" placeholder="复核意见（选填，随通过记录）" aria-label="复核意见">
-            <button class="btn pass" :disabled="submitting" @click="submit('agree')">{{ submitting ? '提交中…' : '复核通过' }}</button>
-            <button class="btn reject" @click="showReturn = true">退回报账人</button>
+            <a-input v-model:value="reviewer" class="rev" placeholder="复核人" aria-label="复核人" />
+            <a-input v-model:value="note" class="note" placeholder="复核意见（选填，随通过记录）" aria-label="复核意见" />
+            <a-button type="primary" class="pass" :loading="submitting" @click="submit('agree')">复核通过</a-button>
+            <a-button danger class="rej" @click="showReturn = true">退回报账人</a-button>
           </div>
-          <div v-if="submitErr" style="color: var(--bad); font-size: 13px; margin-top: 8px">{{ submitErr }}</div>
-          <div v-if="submitMsg" style="color: var(--ok); font-size: 13px; margin-top: 8px">{{ submitMsg }}</div>
-        </div>
+          <a-alert v-if="submitErr" type="error" show-icon :message="submitErr" style="margin-top: 10px" />
+        </a-card>
 
         <!-- 单据信息：三卡各自独立（基础 KV / 费用明细 / 审批流程） -->
-        <div class="card" style="margin-bottom: 16px">
-          <div class="card-head">
-            <h2>单据信息</h2>
-            <div class="grow"></div>
-            <router-link :to="`/review/bills/${data.run.bill_no}`" style="font-size: 13px">完整单据详情</router-link>
-          </div>
+        <a-card size="small" class="blk" title="单据信息">
+          <template #extra>
+            <router-link :to="`/review/bills/${data.run.bill_no}`">完整单据详情</router-link>
+          </template>
           <div class="kvg">
             <div><span class="k">业务类型</span><span class="v">{{ bill?.biz_type || '—' }}</span></div>
             <div><span class="k">报账部门</span><span class="v">{{ bill?.claim_dept || '—' }}</span></div>
             <div><span class="k">职级</span><span class="v">{{ bill?.applicant_rank || '—' }}</span></div>
             <div><span class="k">出行人员</span><span class="v">{{ (bill?.travelers || []).map((t: any) => t.name).join('、') || (bill?.payee || '—') }}</span></div>
           </div>
-        </div>
+        </a-card>
 
-        <div class="card" style="margin-bottom: 16px">
-          <div class="card-head"><h2>费用明细</h2></div>
-          <!-- 列宽按内容算：费用项目最长「市内交通费补贴」约 91px、金额最长「1,374.80」约 65px、
-               分摊部门最长「运营管理部」约 65px（12–13px 字号实测）。40/30/30 是把宽度均分，
-               结果三列都宽得离谱、内容却挤在相邻的列边界上。现在费用项目自适应，另两列给 2–3 倍内容宽。 -->
-          <table class="tbl money">
-            <thead><tr><th>费用项目</th><th class="amt" style="width: 160px">金额（元）</th><th style="width: 200px">分摊部门</th></tr></thead>
-            <tbody>
-              <tr v-for="(it, i) in bill?.details || []" :key="i">
-                <td>{{ it.expense_item }}</td>
-                <td class="amt num">{{ it.amount != null ? it.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—' }}</td>
-                <td style="color: var(--weak)">{{ it.alloc_dept || '—' }}</td>
-              </tr>
-              <tr style="background: var(--panel-2); font-weight: 600">
-                <td>合计</td>
-                <td class="amt num">{{ bill?.amount != null ? bill.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—' }}</td>
-                <td></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <a-card size="small" class="blk" title="费用明细">
+          <a-table :data-source="bill?.details || []" :row-key="(_: any, i: number) => i"
+            size="small" :pagination="false"
+            :columns="[
+              { title: '费用项目', dataIndex: 'expense_item', width: 260 },
+              { title: '金额（元）', dataIndex: 'amount', width: 160, align: 'right' },
+              { title: '分摊部门', dataIndex: 'alloc_dept', width: 200 },
+            ]">
+            <template #bodyCell="{ column, record: it }">
+              <template v-if="column.dataIndex === 'amount'">{{ fmtAmt(it.amount) }}</template>
+              <template v-else-if="column.dataIndex === 'alloc_dept'">
+                <span class="dim">{{ it.alloc_dept || '—' }}</span>
+              </template>
+            </template>
+            <template #summary>
+              <a-table-summary-row class="sum-row">
+                <a-table-summary-cell :index="0">合计</a-table-summary-cell>
+                <a-table-summary-cell :index="1" align="right">{{ fmtAmt(bill?.amount) }}</a-table-summary-cell>
+                <a-table-summary-cell :index="2"></a-table-summary-cell>
+              </a-table-summary-row>
+            </template>
+          </a-table>
+        </a-card>
 
-        <div class="card" style="margin-bottom: 16px">
-          <div class="card-head"><h2>审批流程</h2></div>
-          <table class="tbl">
-            <thead><tr>
-              <!-- 百分比均分 = 每列都空：审批环节 22%、处理人 26%、意见 32%。
-                   实测「处理人」只占 58px（三个字），「意见」常有空值。改成：
-                   环节/处理人/时间按内容定宽，意见吃剩余（它才是可变长的那列）。 -->
-              <th style="width: 180px">审批环节</th><th style="width: 140px">处理人</th>
-              <th>意见</th><th class="num" style="width: 170px">时间</th>
-            </tr></thead>
-            <tbody>
-              <tr v-for="(a, i) in bill?.approvals || []" :key="i">
-                <td>{{ a.node }}</td>
-                <td>{{ a.approver }}</td>
-                <td>{{ a.opinion || '—' }}</td>
-                <td class="num" style="color: var(--weak)">{{ (a.approved_at || '').slice(5, 16).replace('T', ' ') }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <a-card size="small" class="blk" title="审批流程">
+          <a-table :data-source="bill?.approvals || []" :row-key="(_: any, i: number) => i"
+            size="small" :pagination="false"
+            :columns="[
+              { title: '审批环节', dataIndex: 'node', width: 180 },
+              { title: '处理人', dataIndex: 'approver', width: 140 },
+              { title: '意见', dataIndex: 'opinion' },
+              { title: '时间', key: 'time', width: 140 },
+            ]">
+            <template #bodyCell="{ column, record: a }">
+              <template v-if="column.dataIndex === 'opinion'">{{ a.opinion || '—' }}</template>
+              <template v-else-if="column.key === 'time'">
+                <span class="dim">{{ (a.approved_at || '').slice(5, 16).replace('T', ' ') }}</span>
+              </template>
+            </template>
+          </a-table>
+        </a-card>
 
-        <!-- 规则判定明细（四态+未执行合表，默认10条折叠，点命中/待人工行展开证据与制度依据） -->
-        <div class="card" style="margin-bottom: 16px">
-          <div class="card-head">
-            <h2>规则判定明细</h2>
-            <div class="grow"></div>
+        <!-- 规则判定明细（四态+未执行合表，命中/待人工行展开证据与制度依据） -->
+        <a-card size="small" class="blk" title="规则判定明细">
+          <template #extra>
             <div class="chips">
-              <button v-for="[k, t] in FILTERS" :key="k" class="chip" :class="{ on: filter === k }"
-                      @click="filter = k; expanded = false">
-                {{ t }} <span class="num">{{ countOf(k) }}</span>
-              </button>
+              <a-radio-group v-model:value="filter" size="small">
+                <a-radio-button v-for="[k, t] in FILTERS" :key="k" :value="k">
+                  {{ t }} {{ countOf(k) }}
+                </a-radio-button>
+              </a-radio-group>
             </div>
-          </div>
-          <div style="overflow: auto">
-            <table class="tbl hit-tbl">
-              <thead>
-                <tr><th style="width: 96px">规则</th><th style="width: 150px">制度依据</th><th class="c" style="width: 76px">结论</th><th>证据摘要</th><th class="c" style="width: 52px"></th></tr>
-              </thead>
-              <tbody>
-                <template v-for="r in shown" :key="r.id">
-                  <tr :style="{ cursor: r.f && (r.outcome === 'hit' || r.outcome === 'pending') ? 'pointer' : 'default' }"
-                      @click="r.f && (r.outcome === 'hit' || r.outcome === 'pending') && (openRule = openRule === r.id ? null : r.id)">
-                    <td class="num" style="text-align: left"><router-link :to="`/asset/rules/${r.id}`" @click.stop>{{ r.id }}</router-link></td>
-                    <td class="t-cut" style="font-size: 12px; color: var(--weak)" :title="r.f?.clause_ref ? `${r.f.clause_ref.file} ${r.f.clause_ref.clause}` : ''">
-                      <template v-if="r.f?.clause_ref">{{ r.f.clause_ref.file }} {{ r.f.clause_ref.clause }}</template>
-                      <template v-else>—</template>
-                    </td>
-                    <td><span class="pill" :class="OUT[r.outcome]?.cls">{{ OUT[r.outcome]?.label }}</span></td>
-                    <td class="t-cut" style="font-size: 12px; color: var(--muted)" :title="r.f ? r.f.message : ''">
-                      <template v-if="r.f">{{ r.f.message }}</template>
-                      <template v-else><MarkText :text="r.ex!.why" /></template>
-                    </td>
-                    <td>
-                      <span v-if="r.f && (r.outcome === 'hit' || r.outcome === 'pending')" style="color: var(--weak); font-size: 12px">
-                        {{ openRule === r.id ? '收起' : '展开' }}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr v-if="r.f && openRule === r.id && (r.outcome === 'hit' || r.outcome === 'pending')">
-                    <td :colspan="5" style="background: var(--panel-2); padding: 16px 20px 20px">
-                      <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px">
-                        <div>
-                          <div style="font-size: 12px; color: var(--weak); margin-bottom: 8px">判定证据</div>
-                          <div style="display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 13px">
-                            <template v-for="([k, v], i) in evidenceRows(r.f)" :key="i">
-                              <span style="color: var(--weak)">{{ k }}</span><span>{{ v }}</span>
-                            </template>
-                          </div>
-                          <div v-if="r.f.matched_text" style="margin-top: 10px; font-size: 12.5px; color: var(--muted)">
-                            命中原文：<code>{{ r.f.matched_text }}</code>
-                          </div>
-                          <div v-if="r.f.llm_involved && r.f.llm_rationale" style="margin-top: 10px; font-size: 12.5px">
-                            <span class="pill brand" style="margin-right: 6px">模型辅助</span>{{ r.f.llm_rationale }}
-                          </div>
-                          <label v-if="r.outcome === 'hit'" style="display: block; margin-top: 12px; font-size: 12.5px">
-                            <input type="checkbox" :checked="disagree.includes(r.id)" @change="toggleDisagree(r.id)" />
-                            我不认可这条命中（提交后逐条回流误报统计）
-                          </label>
-                        </div>
-                        <div>
-                          <div style="font-size: 12px; color: var(--weak); margin-bottom: 8px">制度依据</div>
-                          <div v-if="r.f.clause_ref" style="font-size: 12.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px">
-                            {{ r.f.clause_ref.file }} · {{ r.f.clause_ref.clause }}
-                            <div style="margin-top: 6px">{{ r.f.clause_ref.text }}</div>
-                            <div v-if="r.f.clause_ref.confidence" style="margin-top: 6px; font-size: 11px; color: var(--weak)">来源可信度：{{ r.f.clause_ref.confidence }}</div>
-                          </div>
-                          <div v-else style="font-size: 12.5px; color: var(--weak)">软规则：由大模型辅助研判，结论仅供人工参考。</div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                </template>
-                <tr v-if="!shown.length" class="empty-row"><td :colspan="5">没有该状态的规则</td></tr>
-                <tr v-if="shownAll.length > PREVIEW_N">
-                  <td :colspan="5" style="text-align: center; color: var(--brand); cursor: pointer; font-size: 13px" @click="expanded = !expanded">
-                    {{ expanded ? '收起' : `展开剩余 ${shownAll.length - PREVIEW_N} 条` }}（共 {{ shownAll.length }} 条）
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="disagree.length" style="padding: 10px 20px; font-size: 12.5px; color: var(--warn)">
-            已勾 {{ disagree.length }} 条不认可 —— 提交后逐条回流误报统计（feedback_log），
+          </template>
+          <a-table :columns="ruleCols" :data-source="shownAll" row-key="id" size="small"
+            :pagination="shownAll.length > PREVIEW_N ? { pageSize: PREVIEW_N, showTotal: (t: number) => `共 ${t} 条` } : false">
+            <template #bodyCell="{ column, record: r }">
+              <template v-if="column.dataIndex === 'id'">
+                <router-link :to="`/asset/rules/${r.id}`" @click.stop>{{ r.id }}</router-link>
+              </template>
+              <template v-else-if="column.key === 'clause'">
+                <span class="dim" :title="r.f?.clause_ref ? `${r.f.clause_ref.file} ${r.f.clause_ref.clause}` : ''">
+                  <template v-if="r.f?.clause_ref">{{ r.f.clause_ref.file }} {{ r.f.clause_ref.clause }}</template>
+                  <template v-else>—</template>
+                </span>
+              </template>
+              <template v-else-if="column.key === 'outcome'">
+                <a-tag :color="OUT[r.outcome]?.color || 'default'">{{ OUT[r.outcome]?.text }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'msg'">
+                <span class="dim" :title="r.f ? r.f.message : ''">
+                  <template v-if="r.f">{{ r.f.message }}</template>
+                  <template v-else><MarkText :text="r.ex!.why" /></template>
+                </span>
+              </template>
+              <template v-else-if="column.key === 'exp'">
+                <span v-if="r.f && (r.outcome === 'hit' || r.outcome === 'pending')" class="dim exp"
+                      @click.stop="openRule = openRule === r.id ? null : r.id">
+                  {{ openRule === r.id ? '收起' : '展开' }}
+                </span>
+              </template>
+            </template>
+            <!-- 展开行：判定证据 + 制度依据（挨着证据，不搬去闸门） -->
+            <template #expandedRowRender="{ record: r }">
+              <div v-if="r.f" class="ev-grid">
+                <div>
+                  <div class="ev-t">判定证据</div>
+                  <div class="ev-kv">
+                    <template v-for="([k, v], i) in evidenceRows(r.f)" :key="i">
+                      <span class="ek">{{ k }}</span><span>{{ v }}</span>
+                    </template>
+                  </div>
+                  <div v-if="r.f.matched_text" class="ev-matched">
+                    命中原文：<code>{{ r.f.matched_text }}</code>
+                  </div>
+                  <div v-if="r.f.llm_involved && r.f.llm_rationale" class="ev-llm">
+                    <a-tag color="blue">模型辅助</a-tag>{{ r.f.llm_rationale }}
+                  </div>
+                  <label v-if="r.outcome === 'hit'" class="ev-dis" @click.stop>
+                    <input type="checkbox" :checked="disagree.includes(r.id)" @change="toggleDisagree(r.id)" />
+                    我不认可这条命中（提交后逐条回流误报统计）
+                  </label>
+                </div>
+                <div>
+                  <div class="ev-t">制度依据</div>
+                  <div v-if="r.f.clause_ref" class="ev-clause">
+                    {{ r.f.clause_ref.file }} · {{ r.f.clause_ref.clause }}
+                    <div class="ev-clause-text">{{ r.f.clause_ref.text }}</div>
+                    <div v-if="r.f.clause_ref.confidence" class="ev-conf">来源可信度：{{ r.f.clause_ref.confidence }}</div>
+                  </div>
+                  <div v-else class="dim">软规则：由大模型辅助研判，结论仅供人工参考。</div>
+                </div>
+              </div>
+            </template>
+            <template #emptyText>
+              <a-empty :image-style="{ height: '40px' }" description="没有该状态的规则" />
+            </template>
+          </a-table>
+          <div v-if="disagree.length" class="dis-note">
+            已勾 {{ disagree.length }} 条不认可 —— 提交后逐条回流误报统计，
             「偏差与回流」页按规则可见
           </div>
-        </div>
+        </a-card>
 
         <!-- 单据附件（1:1 缩略图，点开大图） -->
-        <div class="card" style="margin-bottom: 16px">
-          <div class="card-head">
-            <h2>单据附件</h2>
-            <div class="grow"></div>
-            <span style="font-size: 12px; color: var(--weak)">{{ bill?.attach_pages != null ? `申报 ${bill.attach_pages} 张 · ` : '' }}实际 {{ (bill?.attachments || []).length }} 张</span>
-          </div>
+        <a-card size="small" class="blk" title="单据附件">
+          <template #extra>
+            <span class="dim">{{ bill?.attach_pages != null ? `申报 ${bill.attach_pages} 张 · ` : '' }}实际 {{ (bill?.attachments || []).length }} 张</span>
+          </template>
           <div class="atts">
             <button v-for="a in bill?.attachments || []" :key="a.id" class="att" @click="a.has_file && openAtt(a)">
               <div class="thumb">
@@ -651,56 +640,43 @@ const CONCL: Record<string, { label: string; cls: string }> = {
                 <span class="t">{{ a.attach_type || '未判类型' }}</span>
               </div>
             </button>
-            <div v-if="!(bill?.attachments || []).length" style="grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--weak); font-size: 13px">
+            <div v-if="!(bill?.attachments || []).length" class="atts-empty">
               本单没有附件记录
             </div>
           </div>
-        </div>
+        </a-card>
 
-        <!-- 复核记录（demo 契约：时间/操作人/动作/意见）。
-             人工留痕（后端 manual_review，2026-10-25 起有读取接口）与 AI 审核
-             轮次合并按时间倒序——留痕看得见才算留了 -->
-        <div class="card">
-          <div class="card-head">
-            <h2>复核记录</h2>
-            <div class="grow"></div>
-          </div>
-          <table class="tbl">
-            <thead><tr><th class="num" style="width: 120px">时间</th><th style="width: 110px">操作人</th><th style="width: 170px">动作</th><th>意见</th></tr></thead>
-            <tbody>
-              <tr v-for="h in histRows" :key="h.key">
-                <td class="num" style="color: var(--weak); white-space: nowrap">{{ h.tm }}</td>
-                <td>{{ h.who }}</td>
-                <td>{{ h.act }}</td>
-                <td style="color: var(--muted)">{{ h.note }}</td>
-              </tr>
-              <tr v-if="!histRows.length" class="empty-row"><td :colspan="4">本单尚无复核记录</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <!-- 复核记录：人工留痕与 AI 审核轮次合并按时间倒序——留痕看得见才算留了 -->
+        <a-card size="small" class="blk" title="复核记录">
+          <a-table :columns="histCols" :data-source="histRows" row-key="key" size="small"
+            :pagination="histRows.length > PREVIEW_N ? { pageSize: PREVIEW_N } : false">
+            <template #bodyCell="{ column, record: h }">
+              <template v-if="column.dataIndex === 'tm'"><span class="dim">{{ h.tm }}</span></template>
+              <template v-else-if="column.dataIndex === 'note'"><span class="dim">{{ h.note }}</span></template>
+            </template>
+            <template #emptyText>
+              <a-empty :image-style="{ height: '40px' }" description="本单尚无复核记录" />
+            </template>
+          </a-table>
+        </a-card>
       </template>
     </Async>
 
-    <div v-if="!runId" class="card">
-      <div style="padding: 40px; text-align: center; color: var(--weak)">
-        {{ queueErr ? `队列取数失败：${queueErr}` : '没有待复核的单据' }}
-      </div>
-    </div>
+    <a-card v-if="!runId" size="small">
+      <a-empty style="padding: 40px 0"
+        :description="queueErr ? `队列取数失败：${queueErr}` : '没有待复核的单据'" />
+    </a-card>
     </div><!-- /qmain -->
 
     <!-- 退回理由弹窗 -->
-    <div class="mask" :class="{ show: showReturn }" @click.self="showReturn = false">
-      <div class="modal" role="dialog" aria-modal="true" aria-label="退回报账人">
-        <h3>退回报账人</h3>
-        <div class="sub">{{ report?.run.bill_no }}</div>
-        <textarea v-model="reason" placeholder="退回原因（必填）：缺少的材料或需修正的内容，将通知报账人修改后重新提交"></textarea>
-        <div class="hint">填写原因后方可提交；原因将进入偏差统计</div>
-        <div class="ops">
-          <button class="btn ghost" @click="showReturn = false">取消</button>
-          <button class="btn primary" :disabled="!reason.trim() || submitting" @click="submit('return')">{{ submitting ? '提交中…' : '确认退回' }}</button>
-        </div>
-      </div>
-    </div>
+    <a-modal v-model:open="showReturn" title="退回报账人" ok-text="确认退回" cancel-text="取消"
+      :ok-button-props="{ disabled: !reason.trim() || submitting, loading: submitting }"
+      :width="520" @ok="submit('return')">
+      <div class="dim" style="margin-bottom: 8px">{{ report?.run.bill_no }}</div>
+      <a-textarea v-model:value="reason" :rows="4"
+        placeholder="退回原因（必填）：缺少的材料或需修正的内容，将通知报账人修改后重新提交" />
+      <div class="dim" style="margin-top: 6px">填写原因后方可提交；原因将进入偏差统计</div>
+    </a-modal>
 
     <!-- 附件大图 -->
     <div class="lb" :class="{ show: lb }" @click.self="lb = null">
@@ -708,30 +684,104 @@ const CONCL: Record<string, { label: string; cls: string }> = {
         <div class="lb-img"><img :src="lb.url" :alt="lb.name" style="max-width: 100%; max-height: 100%; object-fit: contain"></div>
         <div class="lb-bar">
           <span class="n">{{ lb.name }}</span>
-          <button class="btn ghost" @click="lb = null">关闭</button>
+          <a-button size="small" @click="lb = null">关闭</a-button>
         </div>
       </div>
     </div>
-
-    <div class="toast" :class="{ show: toast }" role="status" aria-live="polite">{{ toast }}</div>
   </div>
 </template>
 
 <style scoped>
-/* 队列状态条右侧的三个按钮成组：窄屏换到第二行时整组贴右，
-   而不是被 flex 压成「刷新队/列」两行字。 */
-/* 三列金额表不撑满卡片：撑满时「费用项目」会独占三四百像素、内容只有 90px，
-   中间一大片空。定宽靠左，空白留在表格外面，看着才像一张表。 */
-.money { width: auto; }
-.money th:first-child { width: 260px; }
+/* 满高等高双栏：父容器（外壳 content）已是视口高，两栏 height:100% 继承同一基准，
+   各写 calc 魔法数迟早差一截（2026-10-26 实测教训）。右栏自己滚。 */
+.qwrap { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; }
+.qdrawer { display: flex; flex-direction: column; overflow: hidden; }
+.qdrawer :deep(.ant-card-body) { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 12px; }
+.qhead { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.qrow2 { display: flex; gap: 8px; }
+.qempty { text-align: center; padding: 24px 0; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.qlist { flex: 1; overflow-y: auto; min-height: 0; }
+.qrow {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 44px;
+  padding: 0 8px; border: 0; border-radius: 6px; background: none;
+  cursor: pointer; text-align: left; font-size: 13px;
+}
+.qrow:hover { background: #f5f5f5; }
+.qrow.cur { background: #e6f4ff; }
+.qrow .no { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(0, 0, 0, .8); }
+.qrow.cur .no { color: #1677ff; font-weight: 600; }
+.demo { transform: scale(.85); transform-origin: left center; }
+.hitn { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 20px; text-align: center; border-radius: 4px; padding: 0 4px; }
+.hitn.reject { color: #ff4d4f; background: #fff1f0; }
+.hitn.review { color: #d46b08; background: #fff7e6; }
+.qmeta { font-size: 12px; color: rgba(0, 0, 0, .45); padding-top: 8px; }
 
-/* 金额列右端贴着下一列，数字看着像挤在边界上：两侧各留 32px 气口。 */
-.money th:nth-child(2), .money td:nth-child(2) { padding-right: 32px; }
-.money th:nth-child(3), .money td:nth-child(3) { padding-left: 32px; }
+.qmain { overflow-y: auto; min-height: 0; padding-right: 2px; }
+.qbar { margin-bottom: 16px; }
+.qbar-in { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.qtag { font-size: 13px; padding: 2px 10px; }
+.grow { flex: 1; }
 
-.qacts { display: flex; gap: 8px; margin-left: auto; flex: none; }
-.qacts .btn { flex: none; white-space: nowrap; }
-/* 命中规则表：结论与操作两列居中，规则/依据/证据摘要左对齐 */
-.hit-tbl th:nth-child(3), .hit-tbl td:nth-child(3),
-.hit-tbl th:nth-child(5), .hit-tbl td:nth-child(5) { text-align: center; }
+/* 复核闸门 */
+.bill-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.billno { font-size: 16px; }
+.amt { margin-left: auto; font-size: 14px; }
+.amt .num { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.amt small { color: rgba(0, 0, 0, .45); }
+.facts { display: flex; gap: 24px; margin-top: 8px; flex-wrap: wrap; }
+.facts span { font-size: 13px; }
+.facts i { font-style: normal; color: rgba(0, 0, 0, .45); margin-right: 6px; }
+.ai-line { font-size: 13px; color: rgba(0, 0, 0, .65); margin-top: 10px; padding-top: 10px; border-top: 1px solid #f0f0f0; }
+.act { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+.act .rev { width: 120px; flex: none; }
+.act .note { flex: 1; min-width: 160px; }
+.done-row { gap: 10px; }
+
+.blk { margin-bottom: 16px; }
+.dim { font-size: 12px; color: rgba(0, 0, 0, .45); }
+.kvg { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 32px; }
+.kvg .k { display: inline-block; width: 90px; color: rgba(0, 0, 0, .45); font-size: 13px; padding: 6px 0; }
+.kvg .v { font-size: 13px; }
+.sum-row { font-weight: 600; }
+
+/* 证据展开 */
+.exp { cursor: pointer; }
+.exp:hover { color: #1677ff; }
+.ev-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; }
+.ev-t { font-size: 12px; color: rgba(0, 0, 0, .45); margin-bottom: 8px; }
+.ev-kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 13px; }
+.ek { color: rgba(0, 0, 0, .45); }
+.ev-matched { margin-top: 10px; font-size: 12.5px; color: rgba(0, 0, 0, .65); }
+.ev-matched code { background: #fafafa; padding: 1px 6px; border-radius: 4px; }
+.ev-llm { margin-top: 10px; font-size: 12.5px; }
+.ev-dis { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12.5px; cursor: pointer; }
+.ev-clause { font-size: 12.5px; color: rgba(0, 0, 0, .65); border: 1px solid #f0f0f0; border-radius: 6px; padding: 10px 12px; }
+.ev-clause-text { margin-top: 6px; }
+.ev-conf { margin-top: 6px; font-size: 11px; color: rgba(0, 0, 0, .45); }
+.dis-note { padding: 10px 0 0; font-size: 12.5px; color: #d46b08; }
+
+/* 附件卡 */
+.atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.att { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px;
+  border: 1px solid #f0f0f0; border-radius: 8px; background: #fff; cursor: pointer; }
+.att:hover { border-color: #91caff; }
+.thumb { width: 110px; height: 110px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: #fafafa; color: rgba(0, 0, 0, .25); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.meta { display: flex; flex-direction: column; gap: 2px; text-align: center; min-width: 0; width: 100%; }
+.meta .n { font-size: 12px; color: rgba(0, 0, 0, .75); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta .t { font-size: 11px; color: rgba(0, 0, 0, .45); }
+.atts-empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: rgba(0, 0, 0, .45); font-size: 13px; }
+
+/* 附件大图 */
+.lb { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, .55);
+  display: none; align-items: center; justify-content: center; }
+.lb.show { display: flex; }
+.lb-card { background: #fff; border-radius: 10px; padding: 16px; max-width: min(1100px, 92vw); }
+.lb-img { max-height: 76vh; overflow: auto; }
+.lb-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+.lb-bar .n { font-size: 13px; color: rgba(0, 0, 0, .65); }
+
+@media (max-width: 1100px) {
+  .qwrap { grid-template-columns: 260px minmax(0, 1fr); }
+}
 </style>
