@@ -11,6 +11,8 @@ import { allRoles, login, type Role } from '../data/session'
 import * as iam from '../data/iam'
 
 const router = useRouter()
+/** 测试模式标记：一键登录与演示提示只在开发构建出现，生产构建整段消失 */
+const isDev = !!import.meta.env.DEV
 /** 角色来自 IAM（服务端 sys_role 表），新建的角色刷新就会出现在这里 */
 const roleList = computed(() =>
   allRoles().map((r) => ({
@@ -23,7 +25,8 @@ const roleList = computed(() =>
 )
 const pick = ref<Role>(roleList.value[0]?.key || '')
 const account = ref(roleList.value[0]?.account || '')
-const password = ref('demo-1234')
+// 密码不预填：DEV 由一键登录分支带入；生产构建不出现演示密码
+const password = ref('')
 const busy = ref(false)
 const err = ref('')
 
@@ -113,7 +116,8 @@ async function submit() {
 
         <a-button type="primary" size="large" block style="margin-top: 18px"
                   :loading="busy" @click="submit">登录</a-button>
-        <div class="login-note">演示账号的密码统一是 demo-1234</div>
+        <!-- 测试提示只在 DEV 显示：生产构建 v-if=false 整段消失，不出现演示密码 -->
+        <div v-if="isDev" class="login-note">测试模式：点角色行直接进入 · 密码统一 demo-1234</div>
       </div>
     </div>
   </div>
