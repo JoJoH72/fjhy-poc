@@ -1251,6 +1251,28 @@ export interface MyWork {
   note: string
 }
 
+// ── 系统 · 操作日志（管理员台账，服务端分页）────────────────────────────────
+export interface OpLogRow {
+  id: number
+  at: string
+  actor: string
+  /** 真名。空时后端已回退成账号，不会是空串 */
+  actor_name: string
+  role: string
+  category: string
+  action: string
+  target: string
+  detail: string
+  ok: boolean
+  ip: string
+}
+export interface OpLogPage {
+  items: OpLogRow[]
+  total: number
+  /** 分类下拉选项（带计数）。key: login / iam / publish / review */
+  categories: { key: string; label: string; n: number }[]
+}
+
 // ── 规则资产 ─────────────────────────────────────────────────────────────────
 export const api = {
   health: () => request<Record<string, unknown>>('/health'),
@@ -1285,6 +1307,10 @@ export const api = {
   iamDeleteRole: (key: string) =>
     request<{ ok: boolean }>(`/api/iam/roles/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   iamReset: () => request<{ ok: boolean }>('/api/iam/reset', { method: 'POST', body: '{}' }),
+
+  // ── 系统 · 操作日志（仅管理员；服务端分页，台账只增不减）────────────────
+  opLog: (p: { category?: string; q?: string; page?: number; size?: number } = {}) =>
+    request<OpLogPage>(`/api/op-log${qs(p)}`),
 
 
   assetNav: () => request<{ items: NavCount[]; banner: DemoBanner }>('/api/asset/nav'),

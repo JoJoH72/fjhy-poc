@@ -110,16 +110,14 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
             <div class="sub">真实 {{ kpi.real.total }} · 演示 {{ kpi.demo.total }}</div>
           </a-card></a-col>
           <a-col :xs="12" :md="8" :xl="5"><a-card size="small">
-            <a-statistic title="预审通过率" :value="kpi.passRate ?? '—'">
-              <template #suffix><span v-if="kpi.passRate != null">%</span></template>
-            </a-statistic>
+            <a-statistic title="预审通过率" :value="kpi.passRate ?? '—'"
+              :suffix="kpi.passRate != null ? '%' : ''" />
             <div class="sub">真实单 0 误拦</div>
           </a-card></a-col>
           <a-col :xs="12" :md="8" :xl="5"><a-card size="small">
             <a-statistic title="待人工率" :value="kpi.pendRate ?? '—'"
-              :value-style="{ color: (kpi.pendRate ?? 0) > 20 ? '#faad14' : undefined }">
-              <template #suffix><span v-if="kpi.pendRate != null">%</span></template>
-            </a-statistic>
+              :suffix="kpi.pendRate != null ? '%' : ''"
+              :value-style="{ color: (kpi.pendRate ?? 0) > 20 ? '#faad14' : undefined }" />
             <div class="sub">缺取数字段为主</div>
           </a-card></a-col>
           <a-col :xs="12" :md="8" :xl="5"><a-card size="small">
@@ -134,8 +132,10 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
           </a-card></a-col>
         </a-row>
 
-        <a-row :gutter="[16, 16]" style="margin-top: 16px">
-          <a-col :xs="24" :xl="10"><a-card size="small" title="预审结论分布">
+        <!-- 第二排三卡：等高断言（高度差<=4px）——col 与卡都 stretch 撑满栅格行高，
+             内容短的「预审结论分布」由分布行自己的行距自然填满 -->
+        <a-row :gutter="[16, 16]" style="margin-top: 16px" class="chart-row">
+          <a-col :xs="24" :xl="10" class="stretch"><a-card size="small" title="预审结论分布" class="fill">
             <template #extra>
               <span class="lg"><i style="background:#52c41a"></i>通过</span>
               <span class="lg"><i style="background:#faad14"></i>待复核</span>
@@ -150,11 +150,13 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
             </div>
           </a-card></a-col>
 
-          <a-col :xs="24" :sm="12" :xl="7"><a-card size="small" title="规则覆盖">
+          <a-col :xs="24" :sm="12" :xl="7" class="stretch"><a-card size="small" title="规则覆盖" class="fill">
             <div class="donut-wrap">
+              <!-- gradient 形态的 stroke-color 会渲染非法 SVG <stop offset="from">，
+                   控制台报 Error: <stop> attribute offset —— 渐变改用合法对象值 -->
               <a-progress type="dashboard" :size="132"
                 :percent="data.rules.total ? Math.round((data.rules.executable / data.rules.total) * 100) : 0"
-                :stroke-color="{ from: '#4096ff', to: '#1677ff' }" />
+                :stroke-color="{ '0%': '#4096ff', '100%': '#1677ff' }" />
               <div class="rule-rows">
                 <div v-for="r in ruleRows" :key="r.k" class="rule-row">
                   <span><i class="dot" :style="{ background: r.c }"></i>{{ r.k }}</span>
@@ -164,7 +166,7 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
             </div>
           </a-card></a-col>
 
-          <a-col :xs="24" :sm="12" :xl="7"><a-card size="small" title="附件识别">
+          <a-col :xs="24" :sm="12" :xl="7" class="stretch"><a-card size="small" title="附件识别" class="fill">
             <template #extra>
               <a-tag v-if="attOf(data)" color="success">
                 {{ attOf(data)!.cls.typed }} / {{ attOf(data)!.cls.total }}
@@ -251,4 +253,9 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
 
 .llm-note { font-size: 12px; color: rgba(0, 0, 0, .45); }
 .dim { color: rgba(0, 0, 0, .45); }
+
+/* 第二排三卡等高：a-row 是 flex，col stretch 后以行高为基准，卡 height:100% 继承 */
+.chart-row { display: flex; flex-wrap: wrap; }
+.chart-row .stretch { display: flex; }
+.chart-row .fill { width: 100%; }
 </style>

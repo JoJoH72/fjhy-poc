@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .. import db, iam_auth, mask
+from . import op_log
 
 router = APIRouter(prefix="/api", tags=["系统 · 用户与角色"])
 
@@ -34,7 +35,7 @@ SEED_ROLES = [
     ("engineer", "规则管理员", "维护制度文件与审核规则：上传、审定、发布", "all",
      ["doc-lib", "rules", "publish", "trace"], True, "/asset/docs"),
     ("admin", "系统管理员", "平台、模型、账号与系统配置", "all",
-     ["users", "llm", "ops", "startup", "knowstruct"], True, "/sys/users"),
+     ["users", "llm", "ops", "startup", "knowstruct", "oplog"], True, "/sys/users"),
     ("leader", "领导查询", "只读查看整体质量与偏差", "all",
      ["dash", "workbench", "trace", "deviation"], True, "/dash"),
 ]
@@ -114,6 +115,9 @@ def login(body: dict = Body(...)):
     # **账号不存在 / 停用 / 密码错误，统一回「账号或密码不正确」**：
     # 分开说就能枚举账号是否存在，等于把半个登录口送出去。
     if not u or not u["enabled"] or not iam_auth.verify_password(pwd, u["pwd_hash"]):
+        op_log.log("login", "登录", actor=account,
+                   actor_name=(u or {}).get("user_name", ""), ok=False,
+                   detail="失败（账号/停用/密码错，统一口径不留哪个错）")
         raise HTTPException(status_code=401, detail="账号或密码不正确")
 
     iam_auth.destroy_expired()
@@ -122,6 +126,8 @@ def login(body: dict = Body(...)):
     full = db.query_one(
         "SELECT u.*, r.role_name, r.home, r.data_scope FROM sys_user u "
         "JOIN sys_role r ON r.role_key = u.role_key WHERE u.account = %s", (account,))
+    op_log.log("login", "登录", actor=account, actor_name=full["user_name"],
+               role_key=full["role_key"], detail=f"进入{full['role_name']}工作台")
     resp = JSONResponse(_me_out(full))
     resp.set_cookie(iam_auth.COOKIE_NAME, token, httponly=True, samesite="lax",
                     path="/", max_age=iam_auth.SESSION_TTL_HOURS * 3600)
@@ -184,6 +190,8 @@ def create_role(request: Request, body: dict = Body(...)):
         (key, name, str(body.get("desc") or "").strip(), scope,
          __import__("json").dumps(perms, ensure_ascii=False), _first_home(perms)))
     r = db.query_one("SELECT * FROM sys_role WHERE role_key = %s", (key,))
+    op_log.log_by_request(request, "iam", "新增角色", target=name,
+                          detail=f"菜单 {len(perms)} 项 · 数据范围 {scope}")
     return _role_out(r, 0)
 
 
@@ -209,6 +217,8 @@ def update_role(role_key: str, request: Request, body: dict = Body(...)):
         "WHERE role_key = %s",
         (name, str(body.get("desc") or "").strip(), scope,
          __import__("json").dumps(perms, ensure_ascii=False), role_key))
+    op_log.log_by_request(request, "iam", "修改角色", target=name,
+                          detail=f"菜单 {len(perms)} 项 · 数据范围 {scope}")
     return _role_out(db.query_one("SELECT * FROM sys_role WHERE role_key = %s", (role_key,)),
                      db.scalar("SELECT count(*) FROM sys_user WHERE role_key = %s", (role_key,)))
 
@@ -225,6 +235,7 @@ def delete_role(role_key: str, request: Request):
     if n:
         raise HTTPException(status_code=400, detail=f"还有 {n} 个账号属于该角色，先调整他们的角色")
     db.execute("DELETE FROM sys_role WHERE role_key = %s", (role_key,))
+    op_log.log_by_request(request, "iam", "删除角色", target=r["role_name"])
     return {"ok": True, "deleted": role_key}
 
 
@@ -238,13 +249,14 @@ def _first_home(perms: list[str]) -> str:
     order = ["dash",
              "mywork", "ai-review", "workbench", "report", "trace", "deviation",
              "doc-lib", "rules", "publish",
-             "users", "llm", "ops", "startup", "knowstruct"]
+             "users", "llm", "ops", "startup", "knowstruct", "oplog"]
     paths = {"mywork": "/review/my",
              "ai-review": "/review/ai-review", "workbench": "/review/bills",
              "report": "/review/report", "trace": "/review/trace", "deviation": "/review/deviation",
              "doc-lib": "/asset/docs", "rules": "/asset/rules-lib", "publish": "/asset/releases",
              "users": "/sys/users", "llm": "/sys/llm", "ops": "/sys/agents",
-             "startup": "/sys/startup", "knowstruct": "/sys/knowstruct", "dash": "/dash"}
+             "startup": "/sys/startup", "knowstruct": "/sys/knowstruct", "dash": "/dash",
+             "oplog": "/sys/oplog"}
     for k in order:
         if k in perms:
             return paths[k]
@@ -343,6 +355,8 @@ def create_user(request: Request, body: dict = Body(...)):
         (account, name, phone, str(body.get("dept") or "").strip(), role_key,
          bool(body.get("enabled", True)), iam_auth.hash_password(pwd)))
     _sync_user_orgs(account, body.get("orgs"))
+    op_log.log_by_request(request, "iam", "新增账号", target=f"{name}（{account}）",
+                          detail=f"角色 {db.scalar('SELECT role_name FROM sys_role WHERE role_key = %s', (role_key,))}")
     out = _user_out(db.query_one("SELECT * FROM sys_user WHERE account = %s", (account,)))
     out["orgs"] = _orgs_of([account]).get(account, [])
     return out
@@ -385,6 +399,13 @@ def update_user(account: str, request: Request, body: dict = Body(...)):
         (name, phone, dept, role_key,
          u["enabled"] if enabled is None else bool(enabled), account))
     _sync_user_orgs(account, body.get("orgs"))
+    # 停用/启用与信息修改分开口径——管理员翻日志时关心的是「谁被停了」
+    if enabled is not None and bool(enabled) != u["enabled"]:
+        op_log.log_by_request(request, "iam", "启用账号" if enabled else "停用账号",
+                              target=f"{name}（{account}）")
+    else:
+        op_log.log_by_request(request, "iam", "修改账号", target=f"{name}（{account}）",
+                              detail=f"角色 {role_key}")
     out = _user_out(db.query_one("SELECT * FROM sys_user WHERE account = %s", (account,)))
     out["orgs"] = _orgs_of([account]).get(account, [])
     return out
@@ -398,6 +419,8 @@ def delete_user(account: str, request: Request):
         raise HTTPException(status_code=404, detail="用户不存在")
     _check_account_guard(me, account, enabled=False if u["role_key"] == "admin" and u["enabled"] else None)
     db.execute("DELETE FROM sys_user WHERE account = %s", (account,))
+    op_log.log_by_request(request, "iam", "删除账号",
+                          target=f"{u['user_name']}（{account}）")
     return {"ok": True, "deleted": account}
 
 
@@ -413,6 +436,8 @@ def reset_password(account: str, request: Request, body: dict = Body(...)):
                (iam_auth.hash_password(pwd), account))
     # 改了密码就把这个账号的旧会话全部踢下线，否则旧 Cookie 还能用 12 小时
     db.execute("DELETE FROM sys_session WHERE account = %s", (account,))
+    op_log.log_by_request(request, "iam", "重置密码", target=account,
+                          detail="旧会话已全部下线")
     return {"ok": True}
 
 
@@ -444,4 +469,6 @@ def reset(request: Request):
                 "phone_no = EXCLUDED.phone_no, dept = EXCLUDED.dept, role_key = EXCLUDED.role_key, "
                 "enabled = TRUE, pwd_hash = EXCLUDED.pwd_hash",
                 (account, name, phone, dept, role_key, DEMO_PWD_HASH))
+    op_log.log_by_request(request, "iam", "恢复默认", target="角色与账号",
+                          detail="演示复位：自建角色与账号清空，内置五账号复原")
     return {"ok": True, "users": len(SEED_USERS), "roles": len(SEED_ROLES)}

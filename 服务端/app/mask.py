@@ -468,8 +468,11 @@ class MaskMiddleware:
         # 要落进审定留痕当署名——闭集合把它打成「林*」，签名等于被涂掉
         # （doclib.py reviewers 端点注释写明了这个语义）。只豁免这一条路径，
         # /api/extract/* 其余接口照常过脱敏：条款原文里出现人名仍要打星。
+        # /api/op-log 同理（2026-10-27）：操作日志的 actor_name / target 是
+        # 「谁做了什么」的台账署名，被打成「林*」就查不出是谁干的——
+        # 台账要的是可追责，不是不可读。仅此一条查询面，写入端不带敏感值。
         skip_scrub = scope.get("path", "").startswith(
-            ("/api/iam/", "/api/auth/", "/api/extract/reviewers"))
+            ("/api/iam/", "/api/auth/", "/api/extract/reviewers", "/api/op-log"))
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":

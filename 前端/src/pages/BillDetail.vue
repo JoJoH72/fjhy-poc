@@ -121,6 +121,19 @@ const fmtAmt = (v: number | null | undefined) =>
   v != null ? Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'
 const dt = (s: string | null | undefined) => (s || '').slice(0, 19).replace('T', ' ')
 
+/** 行键（费用明细 / 审批记录无稳定业务键）：按记录对象发号。
+ *  AntD4 弃用 rowKey(record, index) 双参（控制台警告），这里用单参 + WeakMap。 */
+const rowSeq = new WeakMap<object, string>()
+let rowSeqN = 0
+const rowKeyOf = (r: unknown): string => {
+  if (r && typeof r === 'object') {
+    let k = rowSeq.get(r)
+    if (!k) { k = 'r' + ++rowSeqN; rowSeq.set(r as object, k) }
+    return k
+  }
+  return String(r)
+}
+
 const detailCols = [
   { title: '费用项目', dataIndex: 'expense_item', width: 260 },
   { title: '金额（元）', dataIndex: 'amount', width: 160, align: 'right' as const },
@@ -260,7 +273,7 @@ const histCols = [
 
       <a-card size="small" class="blk" :title="`费用明细（${(data as any).details.length} 行）`">
         <a-table :columns="detailCols" :data-source="(data as any).details"
-          :row-key="(_: any, i: number) => i" size="small"
+          :row-key="rowKeyOf" size="small"
           :pagination="(data as any).details.length > 10 ? { pageSize: 10 } : false">
           <template #bodyCell="{ column, record }">
             <template v-if="column.dataIndex === 'amount'">{{ fmtAmt(record.amount) }}</template>
@@ -273,8 +286,7 @@ const histCols = [
 
       <a-card v-if="(data as any).travelers?.length" size="small" class="blk"
         :title="`出行人员（${(data as any).travelers.length} 人）`">
-        <a-table :data-source="(data as any).travelers" :row-key="(_: any, i: number) => i"
-          size="small" :pagination="false"
+        <a-table :data-source="(data as any).travelers" row-key="emp_no" size="small" :pagination="false"
           :columns="[
             { title: '工号', dataIndex: 'emp_no', width: 160 },
             { title: '姓名', dataIndex: 'name', width: 160 },
@@ -386,7 +398,7 @@ const histCols = [
 
       <a-card size="small" class="blk" :title="`审批记录（${(data as any).approvals.length} 条）`">
         <a-table :columns="apprCols" :data-source="(data as any).approvals"
-          :row-key="(_: any, i: number) => i" size="small"
+          :row-key="rowKeyOf" size="small"
           :pagination="(data as any).approvals.length > 10 ? { pageSize: 10 } : false">
           <template #bodyCell="{ column, record: a }">
             <template v-if="column.dataIndex === 'node'">

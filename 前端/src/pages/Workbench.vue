@@ -114,13 +114,24 @@ const rowSelection = computed(() => canReview.value ? {
 <template>
   <div class="wb">
     <a-row :gutter="[16, 16]">
-      <a-col :span="5"><a-card size="small"><a-statistic title="待复核" :value="kpi.todo"
-        :suffix="`（真实 ${kpi.realTodo}）`" :value-style="{ color: kpi.todo ? '#cf1322' : undefined }" /></a-card></a-col>
-      <a-col :span="5"><a-card size="small"><a-statistic title="今日新进" :value="kpi.todayNew" /></a-card></a-col>
-      <a-col :span="5"><a-card size="small"><a-statistic title="大额待审（≥1万）" :value="kpi.big" /></a-card></a-col>
-      <a-col :span="4"><a-card size="small"><a-statistic title="单据总量" :value="kpi.total" /></a-card></a-col>
+      <a-col :span="5"><a-card size="small">
+        <a-statistic title="待复核" :value="kpi.todo"
+          :value-style="{ color: kpi.todo ? '#cf1322' : undefined }" />
+        <div class="sub">真实 {{ kpi.realTodo }}</div>
+      </a-card></a-col>
+      <a-col :span="5"><a-card size="small"><a-statistic title="今日新进" :value="kpi.todayNew" />
+        <div class="sub">按审核完成时间</div>
+      </a-card></a-col>
+      <a-col :span="5"><a-card size="small"><a-statistic title="大额待审（≥1万）" :value="kpi.big" />
+        <div class="sub">单张金额口径</div>
+      </a-card></a-col>
+      <a-col :span="4"><a-card size="small"><a-statistic title="单据总量" :value="kpi.total" />
+        <div class="sub">含真实与演示</div>
+      </a-card></a-col>
       <a-col :span="5"><a-card size="small"><a-statistic title="误报/漏报"
-        :value="`${deviation.fp ?? '—'} / ${deviation.fn ?? '—'}`" /></a-card></a-col>
+        :value="`${deviation.fp ?? '—'} / ${deviation.fn ?? '—'}`" />
+        <div class="sub">人工复核回流</div>
+      </a-card></a-col>
     </a-row>
 
     <a-card size="small" style="margin-top: 16px">
@@ -201,4 +212,6 @@ const rowSelection = computed(() => canReview.value ? {
 <style scoped>
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
 .dim { color: rgba(0, 0, 0, 0.45); font-size: 13px; }
+/* 与 Dashboard.vue 同款统计卡副行 */
+.sub { font-size: 12px; color: rgba(0, 0, 0, 0.45); margin-top: 2px; }
 </style>

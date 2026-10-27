@@ -243,6 +243,18 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stop()
 })
+
+/** 行键：数据源无稳定业务键时按记录对象发号（单参，AntD4 弃用双参 rowKey） */
+const rowSeq = new WeakMap<object, string>()
+let rowSeqN = 0
+const rowKeyOf = (r: unknown): string => {
+  if (r && typeof r === 'object') {
+    let k = rowSeq.get(r)
+    if (!k) { k = 'r' + ++rowSeqN; rowSeq.set(r as object, k) }
+    return k
+  }
+  return String(r)
+}
 </script>
 
 <template>
@@ -262,8 +274,9 @@ onBeforeUnmount(() => {
         <template v-if="ov">
           <a-row :gutter="[16, 16]">
             <a-col :xs="12" :md="6"><a-card size="small" class="kpi">
-              <a-statistic title="运行中（近 24 小时）" :value="stats.live"
-                :suffix="`/ ${stats.total}`" />
+              <a-statistic title="运行中（近 24 小时）" :value="stats.live">
+                <template #suffix><span class="sfx">/ {{ stats.total }}</span></template>
+              </a-statistic>
               <div class="sub">感知 {{ stats.l0 }} · 执行 {{ stats.l1 }} · 协同 {{ stats.l2 }}</div>
             </a-card></a-col>
             <a-col :xs="12" :md="6"><a-card size="small" class="kpi">
@@ -480,7 +493,7 @@ onBeforeUnmount(() => {
             <a-alert v-if="!showAllChecks && !checks.failed" type="success" show-icon style="margin-bottom: 12px"
               :message="`${checks.total} 项全过。和启动时跑的是同一套——另写一份校验就会出现「启动能过、页面报错」这种谁也说不清的状态。`" />
             <a-table v-else :data-source="checks.items.filter((x) => showAllChecks || !x.ok)"
-              :row-key="(_: any, i: number) => i" size="small" :pagination="false"
+              :row-key="rowKeyOf" size="small" :pagination="false"
               :columns="[
                 { title: '结果', key: 'ok', width: 80, align: 'center' },
                 { title: '检查项', dataIndex: 'check', width: 340 },
@@ -512,7 +525,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <a-table v-if="sig.pool.length" :data-source="sig.pool"
-              :row-key="(_: any, i: number) => i" size="small" :pagination="false"
+              :row-key="rowKeyOf" size="small" :pagination="false"
               :columns="[
                 { title: '通道', dataIndex: 'channel', width: 260 },
                 { title: '状态', key: 'st', width: 100, align: 'center' },
@@ -710,6 +723,7 @@ onBeforeUnmount(() => {
 .blk { margin-bottom: 16px; }
 .dim { font-size: 12px; color: rgba(0, 0, 0, .45); }
 .sub { font-size: 12px; color: rgba(0, 0, 0, .45); margin-top: 2px; }
+.sfx { font-size: 12px; font-weight: normal; color: rgba(0, 0, 0, .45); margin-left: 4px; }
 .kpi :deep(.ant-statistic-title) { font-size: 13px; }
 .kpi :deep(.ant-statistic-content) { font-size: 22px; }
 .blk-note { font-size: 12px; color: rgba(0, 0, 0, .55); margin: 8px 0 12px; line-height: 1.7; }

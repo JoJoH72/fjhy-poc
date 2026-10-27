@@ -49,7 +49,11 @@ const router = createRouter({
     { path: '/asset/rules-lib', component: () => import('./pages/RulesLib.vue') },
     // 知识结构（2026-10-26 IA 重排新页，仅系统管理员）：本体三元只读视图
     { path: '/sys/knowstruct', component: () => import('./pages/KnowStruct.vue') },
-    // IA 重排 redirect（2026-10-26）：老链接不 404——已发出去的地址与书签照旧能开
+    // 操作日志（2026-10-27 M2 管理员新页）：谁、何时、对什么做了什么
+    { path: '/sys/oplog', component: () => import('./pages/OpLog.vue') },
+    // IA 重排 redirect（2026-10-26）：老链接不 404——已发出去的地址与书签照旧能开。
+    // 2026-10-27 起源组件（Extract/Workshop/BizOnto/ProcessOnto/RuleOnto 五页）
+    // 已物理删除，这些路径只留 redirect。
     { path: '/asset/llm', redirect: '/sys/llm' },
     { path: '/asset/extract', redirect: '/asset/docs' },       // 抽取并入制度文件（#8）
     { path: '/asset/workshop', redirect: '/sys/knowstruct' },  // 工场=实施工具归知识结构

@@ -58,6 +58,8 @@ const ALL: NavItem[] = [
   // 知识结构=本体三元的技术视图（只读）：本体退出业务界面后的去处，
   // 实施排障要看，不给业务角色
   { key: 'knowstruct', label: '知识结构', path: '/sys/knowstruct', built: true, roles: ['admin'] },
+  // 操作日志=M2 管理员新功能：登录/用户角色/发布的动作留痕（只读台账）
+  { key: 'oplog', label: '操作日志', path: '/sys/oplog', built: true, roles: ['admin'] },
 
   // ── 领导（leader）──
   { key: 'dash', label: '总览看板', path: '/dash', built: true, roles: ['leader'] },
@@ -72,7 +74,7 @@ export const NAV: NavGroup[] = [
 export const ROLE_ORDER: Record<string, string[]> = {
   auditor: ['mywork', 'ai-review', 'workbench', 'report', 'trace'],
   engineer: ['doc-lib', 'rules', 'publish', 'trace'],
-  admin: ['users', 'llm', 'ops', 'startup', 'knowstruct'],
+  admin: ['users', 'llm', 'ops', 'startup', 'knowstruct', 'oplog'],
   leader: ['dash', 'workbench', 'trace', 'deviation'],
 }
 

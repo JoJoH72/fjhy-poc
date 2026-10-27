@@ -386,6 +386,18 @@ const histCols = [
   { title: '动作', dataIndex: 'act', width: 190 },
   { title: '意见', dataIndex: 'note' },
 ]
+
+/** 行键：数据源无稳定业务键时按记录对象发号（单参，AntD4 弃用双参 rowKey） */
+const rowSeq = new WeakMap<object, string>()
+let rowSeqN = 0
+const rowKeyOf = (r: unknown): string => {
+  if (r && typeof r === 'object') {
+    let k = rowSeq.get(r)
+    if (!k) { k = 'r' + ++rowSeqN; rowSeq.set(r as object, k) }
+    return k
+  }
+  return String(r)
+}
 </script>
 
 <template>
@@ -502,7 +514,7 @@ const histCols = [
         </a-card>
 
         <a-card size="small" class="blk" title="费用明细">
-          <a-table :data-source="bill?.details || []" :row-key="(_: any, i: number) => i"
+          <a-table :data-source="bill?.details || []" :row-key="rowKeyOf"
             size="small" :pagination="false"
             :columns="[
               { title: '费用项目', dataIndex: 'expense_item', width: 260 },
@@ -526,7 +538,7 @@ const histCols = [
         </a-card>
 
         <a-card size="small" class="blk" title="审批流程">
-          <a-table :data-source="bill?.approvals || []" :row-key="(_: any, i: number) => i"
+          <a-table :data-source="bill?.approvals || []" :row-key="rowKeyOf"
             size="small" :pagination="false"
             :columns="[
               { title: '审批环节', dataIndex: 'node', width: 180 },

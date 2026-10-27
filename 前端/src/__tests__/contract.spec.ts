@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ApiError } from '../api'
 import { NAV, ROLE_ORDER, ITEM_BY_KEY, flatItems } from '../data/navTree'
@@ -33,7 +33,7 @@ describe('导航树', () => {
   it('四角色菜单各自 ≤6 项且顺序钉死', () => {
     expect(ROLE_ORDER.auditor).toEqual(['mywork', 'ai-review', 'workbench', 'report', 'trace'])
     expect(ROLE_ORDER.engineer).toEqual(['doc-lib', 'rules', 'publish', 'trace'])
-    expect(ROLE_ORDER.admin).toEqual(['users', 'llm', 'ops', 'startup', 'knowstruct'])
+    expect(ROLE_ORDER.admin).toEqual(['users', 'llm', 'ops', 'startup', 'knowstruct', 'oplog'])
     expect(ROLE_ORDER.leader).toEqual(['dash', 'workbench', 'trace', 'deviation'])
     for (const keys of Object.values(ROLE_ORDER)) {
       expect(keys.length).toBeLessThanOrEqual(6)
@@ -358,104 +358,7 @@ describe('Key 存储格式', () => {
   })
 })
 
-describe('规则本体 · 统一口径', () => {
-  const src = readFileSync(resolve(__dirname, '../api.ts'), 'utf-8')
-  const page = readFileSync(resolve(__dirname, '../pages/RuleOnto.vue'), 'utf-8')
-
-  it('归并组与口径冲突的客户端方法在 onto 下，不在 extract 下', () => {
-    // 「统一口径是本体要做的事，规则抽取只负责抽取」。
-    // 两处都挂着同一组接口更糟：改了一处忘另一处，两个页面显示的冲突数会不一样。
-    // 注意别把引号写进断言：这几条是模板字符串（反引号 + ${qs(...)}），
-    // 带着单引号断言会红，而代码是对的——第一版就这么红了一次。
-    expect(src).toContain('/api/onto/conflicts')
-    expect(src).toContain('/api/onto/groups')
-    expect(src).not.toContain('/api/extract/conflicts')
-    expect(src).not.toContain('/api/extract/groups')
-  })
-
-  it('三档与五档一个都不许少', () => {
-    // verdict 的「判不出」和 state 的「编号对不上」是后端刻意不下断言的档位。
-    // 前端把它们折叠掉，等于替后端下了它不肯下的结论：
-    //   判不出 → 未落地   人会去新增一条其实已经存在的规则（重复规则对同一张单给两条结论）
-    //   编号对不上 → 查无依据  人会去改一条其实有依据的规则
-    for (const v of ['已落地', '未落地', '判不出']) expect(page).toContain(v)
-    for (const st of ['有制度依据', '仅规则表', '编号对不上', '查无依据', '来源未写明']) {
-      expect(page).toContain(st)
-    }
-  })
-
-  it('双向对账不许合成一个覆盖率', () => {
-    expect(page).toContain('不合成一个覆盖率')
-    expect(src).not.toMatch(/coverage_rate|覆盖率:/)
-  })
-
-  it('采纳表单不给控制类型等默认值', () => {
-    // 预填一个控制类型，人就会直接点确认；而控制类型选错，
-    // 就是把「提醒」变成「拦单」，或者反过来让一道闸静默失效。
-    expect(page).toContain("form.value = { name:")
-    expect(page).not.toMatch(/control_type:\s*'(禁止|警告)'/)
-  })
-
-  it('协同视图只有一份实现，两条链共用', () => {
-    // 留两份拷贝的下场：两个页面上「跑到一半失败」长得不一样，
-    // 而没人说得清哪个才是对的。后端对应 app/agent_job.py。
-    expect(existsSync(resolve(__dirname, '../components/AgentRuntime.vue'))).toBe(true)
-    const ex = readFileSync(resolve(__dirname, '../pages/Extract.vue'), 'utf-8')
-    expect(ex).toContain('AgentRuntime')
-    expect(page).toContain('AgentRuntime')
-    // 进度条样式也只许有一份：两份会各自调，然后两条链的条看起来不一样
-    expect(ex).not.toContain('.pano .bus')
-    expect(page).not.toContain('.pano .bus')
-    // 草稿台账必须有审定入口（演示待办④）：后端 /drafts/{id}/review 一直都在，
-    // 前端曾经整整没接——端点空转等于「专家确认」不存在。审定的署名也不许
-    // 退回手工输入（ReviewerSelect 从账号清单选）。
-    expect(ex).toContain('exReview')
-    expect(ex).toContain('ReviewerSelect')
-  })
-})
-
-describe('本体工场 · 装载两步的闸', () => {
-  const src = readFileSync(
-    resolve(__dirname, '../components/OntoLoadSteps.vue'), 'utf-8')
-
-  it('灰不灰照抄后端，前端不自己判', () => {
-    // 前端判一遍 = 两套规则，而前端那套永远先过期。
-    expect(src).toContain('ontoLoadAssetsReady')
-    expect(src).toContain('!gate?.ok')
-    // 不许出现前端自己拼的判定条件（比如照 checks 里某一项自己算）
-    expect(src).not.toMatch(/checks\.(every|some|filter)\s*\(/)
-  })
-
-  it('闸取不到时按保守的一侧落：当作没过', () => {
-    // 取不到就放行，等于网络抖一下就能绕过这道闸。
-    const fallback = src.slice(src.indexOf('catch (e)'), src.indexOf('async function run'))
-    expect(fallback).toContain('ok: false')
-  })
-
-  it('两档照显，不许折叠成一档', () => {
-    // warning 折进 blocker 会把能用的功能锁死（库里现在就有一条 OUT 绑不上）；
-    // blocker 折进 warning 会让坏数据静默进库。
-    expect(src).toContain("'blocker'")
-    expect(src).toContain("t-pend")   // warning 用待定色，不是失败色
-    expect(src).toContain("t-hit")    // blocker 才是失败色
-  })
-
-  it('灰着的按钮说得出为什么灰，而且不是悬停提示', () => {
-    expect(src).toContain('gate.reason')
-    expect(src).not.toMatch(/title=["']\{\{\s*gate/)
-  })
-
-  it('③ 的按钮受闸控制，② 不受', () => {
-    const btn3 = src.slice(src.indexOf('loadAssets">'), src.indexOf('loadAssets">') + 200)
-    expect(src).toContain(':disabled="!!busy || !gate?.ok" @click="loadAssets"')
-    expect(btn3.length).toBeGreaterThan(0)
-    // ② 只受 busy 控制：本体装载本身没有前置
-    expect(src).toContain(':disabled="!!busy" @click="loadOnto"')
-  })
-
-  it('不许再对外说装载会清空 release_current', () => {
-    const api = readFileSync(resolve(__dirname, '../api.ts'), 'utf-8')
-    expect(api).not.toContain('why_not_a_button')
-    expect(src).not.toContain('清空 release_current')
-  })
-})
+// 2026-10-27 死代码清理：RuleOnto / Extract / OntoLoadSteps 随五页退役一并删除，
+// 原先钉在它们身上的两个 describe（规则本体·统一口径、本体工场·装载两步的闸）
+// 同步移除——被测文件已不存在。规则管理员的新落点是 RulesLib / DocLib，
+// 后续若在那些页面重立口径契约，应按新页面重新钉。

@@ -102,19 +102,24 @@ const dt = (s: string | null) => (s || '').slice(0, 16).replace('T', ' ')
   <div class="mywork">
     <Async :load="load" :deps="String(reload)">
       <template #default="{ data }">
+        <!-- 四卡结构一致（title + value + .sub 副行）：长文案不进 suffix——
+             suffix 挤在 24px 大数字旁会折成两行小字，与大数字卡格格不入 -->
         <a-row :gutter="[16, 16]">
           <a-col :span="6"><a-card size="small">
             <a-statistic title="待办任务" :value="data.todo.total" />
+            <div class="sub">认领后办理</div>
           </a-card></a-col>
           <a-col :span="6"><a-card size="small">
             <a-statistic title="待认领" :value="data.pool.total" />
+            <div class="sub">全审核岗共享池</div>
           </a-card></a-col>
           <a-col :span="6"><a-card size="small">
-            <a-statistic title="今日已办" :value="data.stats.today" :suffix="`/ 本月 ${data.stats.month}`" />
+            <a-statistic title="今日已办" :value="data.stats.today" />
+            <div class="sub">本月 {{ data.stats.month }}</div>
           </a-card></a-col>
           <a-col :span="6"><a-card size="small">
-            <a-statistic title="累计复核" :value="data.stats.total"
-              :suffix="`（通过 ${data.stats.agree} · 退回 ${data.stats.ret}）`" />
+            <a-statistic title="累计复核" :value="data.stats.total" />
+            <div class="sub">通过 {{ data.stats.agree }} · 退回 {{ data.stats.ret }}</div>
           </a-card></a-col>
         </a-row>
 
@@ -207,4 +212,6 @@ const dt = (s: string | null) => (s || '').slice(0, 16).replace('T', ' ')
 
 <style scoped>
 .dim { color: rgba(0, 0, 0, 0.45); font-size: 12px; font-weight: normal; }
+/* 与 Dashboard.vue 同款副行：卡片底部 12px 灰字 */
+.sub { font-size: 12px; color: rgba(0, 0, 0, 0.45); margin-top: 2px; }
 </style>

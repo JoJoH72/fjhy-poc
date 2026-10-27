@@ -16,6 +16,18 @@ const route = useRoute()
 const id = computed(() => String(route.params.id))
 
 const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录入资产', '可推导'])
+
+/** 行键：数据源无稳定业务键时按记录对象发号（单参，AntD4 弃用双参 rowKey） */
+const rowSeq = new WeakMap<object, string>()
+let rowSeqN = 0
+const rowKeyOf = (r: unknown): string => {
+  if (r && typeof r === 'object') {
+    let k = rowSeq.get(r)
+    if (!k) { k = 'r' + ++rowSeqN; rowSeq.set(r as object, k) }
+    return k
+  }
+  return String(r)
+}
 </script>
 
 <template>
@@ -149,7 +161,7 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
       </a-card>
 
       <a-card v-if="(data as any).relations?.length" size="small" class="blk" title="与其他规则的关系">
-        <a-table :data-source="(data as any).relations" :row-key="(_: any, i: number) => i"
+        <a-table :data-source="(data as any).relations" :row-key="rowKeyOf"
           size="small" :pagination="false"
           :columns="[
             { title: '关系', dataIndex: 'rel_type', width: 130 },
@@ -175,7 +187,7 @@ const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录�
         <a-empty v-if="!(data as any).recent_findings?.length"
           :image-style="{ height: '40px' }" description="这条规则还没有产生过任何判定记录" />
         <a-table v-else :data-source="(data as any).recent_findings"
-          :row-key="(_: any, i: number) => i" size="small"
+          :row-key="rowKeyOf" size="small"
           :pagination="(data as any).recent_findings.length > 10 ? { pageSize: 10 } : false"
           :columns="[
             { title: '单据', key: 'bill', width: 220 },

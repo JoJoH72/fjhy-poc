@@ -363,6 +363,18 @@ const visionCols = [
 ]
 
 onMounted(loadRoots)
+
+/** 行键：数据源无稳定业务键时按记录对象发号（单参，AntD4 弃用双参 rowKey） */
+const rowSeq = new WeakMap<object, string>()
+let rowSeqN = 0
+const rowKeyOf = (r: unknown): string => {
+  if (r && typeof r === 'object') {
+    let k = rowSeq.get(r)
+    if (!k) { k = 'r' + ++rowSeqN; rowSeq.set(r as object, k) }
+    return k
+  }
+  return String(r)
+}
 </script>
 
 <template>
@@ -649,7 +661,7 @@ onMounted(loadRoots)
           </a-tag>
         </div>
         <a-table v-if="ledger.length" :columns="ledgerCols" :data-source="ledger"
-          :row-key="(_: any, i: number) => i" size="small"
+          :row-key="rowKeyOf" size="small"
           :pagination="ledger.length > 10 ? { pageSize: 10, showTotal: (n: number) => `共 ${n} 条` } : false">
           <template #bodyCell="{ column, record: u }">
             <template v-if="column.key === 'at'"><span class="dim">{{ t(u.uploaded_at) }}</span></template>

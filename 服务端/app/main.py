@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse                # noqa: E402
 
 from app import config, db, mask                          # noqa: E402
 from app import iam_auth                                  # noqa: E402
-from app.api import (agents, ai_review, asset, doclib, domain, iam, onto, pub,  # noqa: E402
+from app.api import (agents, ai_review, asset, doclib, domain, iam, onto, op_log, pub,  # noqa: E402
                      publish, review, sys_llm)  # noqa: E402
 from app.audit import recorder as rec                     # noqa: E402
 from app.rules import engine, impl                        # noqa: E402,F401
@@ -93,6 +93,8 @@ app.add_middleware(mask.MaskMiddleware)
 app.add_middleware(iam_auth.SessionMiddleware)
 
 app.include_router(iam.router)
+# 操作日志（M2 管理员新功能）：查询面在这里，写入点散在 iam/publish 的动作里
+app.include_router(op_log.router)
 app.include_router(asset.router)
 app.include_router(domain.router)
 app.include_router(review.router)

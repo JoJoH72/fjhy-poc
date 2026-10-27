@@ -15,8 +15,9 @@
 """
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
-from .. import release_pack as rp
+from .. import db, release_pack as rp
 from ..iam_auth import current_user
+from . import op_log
 
 router = APIRouter(prefix="/api/publish", tags=["发布管理"])
 
@@ -63,12 +64,16 @@ def asset(release_id: str, layer: str):
 
 
 @router.post("/freeze")
-def freeze(body: dict = Body(...), _g=Depends(require_engineer)):
+def freeze(request: Request, body: dict = Body(...), _g=Depends(require_engineer)):
     """把工作区的八层**原样抄一份**存进库，建成草稿。
 
     抄完之后改 YAML、重装规则、文件库重扫，都动不了这一份。
     """
-    return _err(rp.freeze, body.get("version"), body.get("by"), body.get("note"))
+    out = _err(rp.freeze, body.get("version"), body.get("by"), body.get("note"))
+    op_log.log_by_request(request, "publish", "冻结新版本",
+                          target=str(body.get("version") or ""),
+                          detail=f"冻结人 {body.get('by') or ''}")
+    return out
 
 
 @router.post("/releases/{release_id}/review")
@@ -77,19 +82,39 @@ def review(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)
 
 
 @router.post("/releases/{release_id}/publish")
-def publish(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
+def publish(release_id: str, request: Request, body: dict = Body(...), _g=Depends(require_engineer)):
     """签字发布。**不自动切为当前**——发布和生效是两件事。"""
-    return _err(rp.publish, release_id, body.get("by"))
+    out = _err(rp.publish, release_id, body.get("by"))
+    op_log.log_by_request(request, "publish", "签字发布", target=_ver_of(release_id),
+                          detail=f"签字人 {body.get('by') or ''}")
+    return out
 
 
 @router.post("/releases/{release_id}/current")
-def switch_current(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
-    return _err(rp.switch_current, release_id, body.get("by"))
+def switch_current(release_id: str, request: Request, body: dict = Body(...),
+                   _g=Depends(require_engineer)):
+    out = _err(rp.switch_current, release_id, body.get("by"))
+    op_log.log_by_request(request, "publish", "切换生效版本", target=_ver_of(release_id),
+                          detail=f"操作人 {body.get('by') or ''}")
+    return out
 
 
 @router.post("/releases/{release_id}/rollback")
-def rollback(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
-    return _err(rp.rollback, release_id, body.get("to"), body.get("by"), body.get("reason"))
+def rollback(release_id: str, request: Request, body: dict = Body(...), _g=Depends(require_engineer)):
+    out = _err(rp.rollback, release_id, body.get("to"), body.get("by"), body.get("reason"))
+    op_log.log_by_request(request, "publish", "回滚版本", target=_ver_of(release_id),
+                          detail="回滚至 %s · 原因 %s · 操作人 %s"
+                          % (_ver_of(body.get("to")) if body.get("to") else "（无生效版本）",
+                             body.get("reason") or "", body.get("by") or ""))
+    return out
+
+
+def _ver_of(release_id) -> str:
+    """release_id → 版本号。台账上人认的是 rs-20261021-01，不是 rel-0007。"""
+    if not release_id:
+        return ""
+    return db.scalar("SELECT rule_set_version FROM release WHERE release_id = %s",
+                     (str(release_id),)) or str(release_id)
 
 
 @router.post("/releases/{release_id}/discard")
