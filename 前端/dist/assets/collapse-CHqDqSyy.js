@@ -1,0 +1,1 @@
+import{r as a}from"./index-DXShHRU1.js";const t=10;function f(){const e=a(!1);function u(n){return e.value||n.length<=t?n:n.slice(0,t)}function l(n){return{show:n.length>t,rest:e.value?-1:n.length-t,toggle:()=>{e.value=!e.value}}}function r(){e.value=!1}return{view:u,more:l,reset:r,expanded:e}}export{f as u};
