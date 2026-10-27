@@ -142,9 +142,40 @@ def test_切换留痕():
     assert who == "测试员"
 
 
-def test_概览的本体数不含旧草稿版():
-    """ontology_entity 里躺着 0.1 与 v0.1-draft 两版，各 17 行。
-    直接 count(*) 得 34；按 max(version) 取「最新」会选中 **v0.1-draft**
+@pytest.fixture
+def extra_draft_version():
+    """种一个非当前的草稿版本体，测完删。
+
+    这两个「数不含旧草稿版」用例原本**依赖环境残留**（库里恰好躺着
+    v0.1-draft 两版数据才成立）——2026-10-27 本地库被 entrypoint 全链
+    重载后只剩 0.1 一版，用例在干净库上假红。测试要的前提自己种，
+    不许指望演示环境「上次留下的旧数据」。"""
+    from app import db as _db
+    _db.execute("""INSERT INTO ontology_version (version, source_file, source_hash, is_current)
+                   VALUES ('v0.1-draft', 'test-seed', 'test-seed', FALSE)
+                   ON CONFLICT (version) DO NOTHING""")
+    n = _db.scalar("SELECT count(*) FROM ontology_entity")
+    if n:
+        _db.execute("""INSERT INTO ontology_entity (entity_id, version, name, source)
+                       SELECT entity_id, 'v0.1-draft', name, 'test-seed'
+                         FROM ontology_entity WHERE version <> 'v0.1-draft'
+                       ON CONFLICT DO NOTHING""")
+    n2 = _db.scalar("SELECT count(*) FROM ontology_concept")
+    if n2:
+        _db.execute("""INSERT INTO ontology_concept
+                         (concept_id, version, entity_id, name, data_type, availability)
+                       SELECT concept_id, 'v0.1-draft', entity_id, name, data_type, availability
+                         FROM ontology_concept WHERE version <> 'v0.1-draft'
+                       ON CONFLICT DO NOTHING""")
+    yield "v0.1-draft"
+    _db.execute("DELETE FROM ontology_version WHERE version = 'v0.1-draft'")
+    _db.execute("DELETE FROM ontology_entity WHERE version = 'v0.1-draft'")
+    _db.execute("DELETE FROM ontology_concept WHERE version = 'v0.1-draft'")
+
+
+def test_概览的本体数不含旧草稿版(extra_draft_version):
+    """ontology_entity 里躺着 0.1 与 v0.1-draft 两版。
+    直接 count(*) 把两版加总；按 max(version) 取「最新」会选中 **v0.1-draft**
     （TEXT 比大小 v > 0）。两种写法都错，必须走 ontology_version.is_current。"""
     o = dm.overview()
     total_all = db.scalar("SELECT count(*) FROM ontology_entity")

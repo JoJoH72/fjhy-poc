@@ -36,6 +36,8 @@ export interface IamUser {
   enabled: boolean
   createdAt: string
   lastLogin: string | null
+  /** 单位绑定（审核专业组）。空=不限单位看全池 */
+  orgs?: { id: string; name: string }[]
 }
 
 export interface IamRole {
@@ -150,6 +152,8 @@ export interface UserInput {
   roleKey: string
   enabled: boolean
   password?: string
+  /** 单位绑定 id 列表（审核专业组）。undefined=本次不改；[]=清空回全池 */
+  orgs?: string[]
 }
 
 type Ret = { ok: boolean; msg: string }
@@ -167,6 +171,7 @@ export async function saveUser(input: UserInput): Promise<Ret> {
       await api.iamUpdateUser(input.id, {
         name, phone: input.phone, dept: input.dept.trim(),
         roleKey: input.roleKey, enabled: input.enabled,
+        ...(input.orgs !== undefined ? { orgs: input.orgs } : {}),
       })
       await refresh()
       return { ok: true, msg: `已保存 ${name}` }
@@ -174,6 +179,7 @@ export async function saveUser(input: UserInput): Promise<Ret> {
     await api.iamCreateUser({
       name, account, phone: input.phone.replace(/\s/g, ''), dept: input.dept.trim(),
       roleKey: input.roleKey, enabled: input.enabled, password: input.password,
+      ...(input.orgs !== undefined ? { orgs: input.orgs } : {}),
     })
     await refresh()
     return { ok: true, msg: `已新增 ${name}` }

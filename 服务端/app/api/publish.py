@@ -13,11 +13,22 @@
 管理面 /api/publish 会改状态、能看草稿。混在一个前缀下，日后想给消费面
 加鉴权或限流就得逐个接口挑，挑错一个就是漏。
 """
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from .. import release_pack as rp
+from ..iam_auth import current_user
 
 router = APIRouter(prefix="/api/publish", tags=["发布管理"])
+
+
+def require_engineer(request: Request) -> dict:
+    """发布口角色闸（2026-10-26 IA 重排）：冻结/送审/发布/回滚是规则管理员的职责。
+    GET 不拦（领导与审计只读场景要看版本列表）。"""
+    u = current_user(request)
+    if u["role_key"] not in ("engineer", "admin"):
+        raise HTTPException(403, "该操作仅限规则管理员（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    return u
 
 
 def _err(fn, *a, **kw):
@@ -52,7 +63,7 @@ def asset(release_id: str, layer: str):
 
 
 @router.post("/freeze")
-def freeze(body: dict = Body(...)):
+def freeze(body: dict = Body(...), _g=Depends(require_engineer)):
     """把工作区的八层**原样抄一份**存进库，建成草稿。
 
     抄完之后改 YAML、重装规则、文件库重扫，都动不了这一份。
@@ -61,28 +72,28 @@ def freeze(body: dict = Body(...)):
 
 
 @router.post("/releases/{release_id}/review")
-def review(release_id: str, body: dict = Body(...)):
+def review(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     return _err(rp.review, release_id, body.get("by"))
 
 
 @router.post("/releases/{release_id}/publish")
-def publish(release_id: str, body: dict = Body(...)):
+def publish(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     """签字发布。**不自动切为当前**——发布和生效是两件事。"""
     return _err(rp.publish, release_id, body.get("by"))
 
 
 @router.post("/releases/{release_id}/current")
-def switch_current(release_id: str, body: dict = Body(...)):
+def switch_current(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     return _err(rp.switch_current, release_id, body.get("by"))
 
 
 @router.post("/releases/{release_id}/rollback")
-def rollback(release_id: str, body: dict = Body(...)):
+def rollback(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     return _err(rp.rollback, release_id, body.get("to"), body.get("by"), body.get("reason"))
 
 
 @router.post("/releases/{release_id}/discard")
-def discard(release_id: str, body: dict = Body(...)):
+def discard(release_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     """删草稿。已发布的版本删不掉——那是资产。"""
     return _err(rp.discard, release_id, body.get("by"))
 

@@ -28,15 +28,13 @@ SEED_ACCOUNTS = ["linjia", "chenfang", "hetech", "wangzong", "admin"]
 DEMO_PWD_HASH = ("pbkdf2:60000:fjhy-demo-salt:"
                  "33b7da85b0e405ce7a3fc13a751483d6b7b128f62a3b3f8f2c6041e1a628a577")
 SEED_ROLES = [
-    # mywork=个人工作台（2026-10-26 客户待办#1），排在审核组第一位、做落地页：
-    # 登录即「我的待办」，而不是全量单据清单——工单按账号匹配从首页开始成立。
+    # 2026-10-26 IA 重排（0044）：四角色按真实工作重排菜单，本体退出业务界面
     ("auditor", "审核岗", "复核 AI 结论、处置单据", "all",
      ["mywork", "ai-review", "workbench", "report", "trace"], True, "/review/my"),
-    ("engineer", "知识工程师", "维护制度、规则与本体资产", "all",
-     ["doc-lib", "extract", "workshop", "biz-onto", "onto", "proc", "publish", "trace"],
-     True, "/asset/docs"),
+    ("engineer", "规则管理员", "维护制度文件与审核规则：上传、审定、发布", "all",
+     ["doc-lib", "rules", "publish", "trace"], True, "/asset/docs"),
     ("admin", "系统管理员", "平台、模型、账号与系统配置", "all",
-     ["agents", "llm", "startup", "users"], True, "/sys/agents"),
+     ["users", "llm", "ops", "startup", "knowstruct"], True, "/sys/users"),
     ("leader", "领导查询", "只读查看整体质量与偏差", "all",
      ["dash", "workbench", "trace", "deviation"], True, "/dash"),
 ]
@@ -238,16 +236,15 @@ def _first_home(perms: list[str]) -> str:
     第 3 个菜单上——用户看到的就是「为什么总不是第一个」。
     """
     order = ["dash",
-             "doc-lib", "extract", "workshop", "biz-onto", "onto", "proc", "publish",
              "mywork", "ai-review", "workbench", "report", "trace", "deviation",
-             "agents", "llm", "startup", "users"]
+             "doc-lib", "rules", "publish",
+             "users", "llm", "ops", "startup", "knowstruct"]
     paths = {"mywork": "/review/my",
              "ai-review": "/review/ai-review", "workbench": "/review/bills",
              "report": "/review/report", "trace": "/review/trace", "deviation": "/review/deviation",
-             "doc-lib": "/asset/docs", "extract": "/asset/extract", "workshop": "/asset/workshop",
-             "biz-onto": "/asset/biz", "onto": "/asset/rules", "proc": "/asset/process",
-             "publish": "/asset/releases", "agents": "/sys/agents", "llm": "/sys/llm",
-             "startup": "/sys/startup", "users": "/sys/users", "dash": "/dash"}
+             "doc-lib": "/asset/docs", "rules": "/asset/rules-lib", "publish": "/asset/releases",
+             "users": "/sys/users", "llm": "/sys/llm", "ops": "/sys/agents",
+             "startup": "/sys/startup", "knowstruct": "/sys/knowstruct", "dash": "/dash"}
     for k in order:
         if k in perms:
             return paths[k]

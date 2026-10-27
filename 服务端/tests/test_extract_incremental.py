@@ -99,10 +99,27 @@ def test_AI草稿的文件范围是真的在筛而不是碰巧为空():
     """
     rows = db.query("""SELECT file_id FROM doc_lib_file
                         WHERE NOT missing AND parse_state='已解析'
-                        ORDER BY rel_path LIMIT 2""")
+                        ORDER BY rel_path""")
     if len(rows) < 2:
         pytest.skip("需要至少两份已解析的文件")
-    x, y = rows[0]["file_id"], rows[1]["file_id"]
+    # x = 挂候选的文件（种子写进它）；y = 一份**自己没有待跑候选**的文件。
+    # 取前两份当 x/y 在「全库仅剩的候选恰好挂在第二份上」时会假红
+    # （2026-10-27 本地库重载后就长这样）：file_ids=[y] 本就该抽 0 条，
+    # 但不是因为筛对了，而是因为没得抽——用例失去鉴别力还绿着。
+    def _own_backlog(fid):
+        return db.scalar("""
+            SELECT count(*) FROM doclib_clause c
+             WHERE c.file_id = %s AND c.doc_kind = ANY(%s)
+               AND cardinality(c.covered_by)=0 AND c.features && %s
+               AND NOT EXISTS (SELECT 1 FROM doclib_draft d
+                                WHERE d.clause_id = c.clause_id
+                                  AND d.rulable IS NOT NULL)""",
+            (fid, list(dx.CANDIDATE_KINDS), list(dx.CANDIDATE_FEATURES))) or 0
+
+    x = rows[0]["file_id"]
+    y = next((r["file_id"] for r in rows[1:] if _own_backlog(r["file_id"]) == 0), None)
+    if not y:
+        pytest.skip("找不到一份没有待跑候选的文件来当干净目标")
     cid = "FJHY-TEST-INC-SCOPE-c1"
     db.execute("""INSERT INTO doclib_clause(clause_id, file_id, seq, clause_no, body,
                                             char_pos, features, doc_kind,

@@ -28,6 +28,15 @@
 - 服务端 `SessionMiddleware` 拦所有 `/api/*`，白名单只有登录、登出、`/api/iam/roles`（登录页要用）。业务测试用 `FJHY_AUTH_MODE=off` 关掉鉴权，鉴权本身由 `tests/test_iam.py` 覆盖。
 - `/api/iam/*`、`/api/auth/*` **整段跳过字段脱敏**：账号名会被闭集合姓名吃成「林*」。手机号在接口里手动按 M03 脱敏，密码摘要永不出接口，x-fjhy-masked 照写。
 - 角色与菜单权限的唯一事实来源是数据库；前端 `data/iam.ts` 只是启动时拉一次的响应式缓存。navTree 的 `roles` 字段已退化为历史注释，**不要再按它判断可见性**。
+
+## 服务器部署（2026-10-26 接管，详见当日日志）
+- **线上唯一入口**：`http://192.168.106.141:8900`（内网/VPN 可达）。部署目录 **`/data/user/fjhy-poc`**（旧 `/data/heyi/fjhy-poc-sync` 已废弃，别再从那边 up/同步——同 compose 项目名会抢容器）。
+- **共享机纪律**：全机 28 容器，只碰 `fjhy-poc` 前缀的 3 个；sdafi-* / kingsware-* / fjpg_demo_* / gitlab-ce / public-* 一律不动。
+- **SSH 免密**：本机 `~/.ssh/id_ed25519` → 服务器 user。跑命令用 `python C:/Users/JoJo/.ssh/fjhy_run.py '命令'`；user 在 docker 组（docker 免 sudo）、sudo 组（进别人目录才要 sudo）。
+- **更新链**：本地 build → tar（排除 服务端/var、node_modules、.git、.workbuddy；tar 输出路径写 `/c/...` 不写 `C:/...`）→ scp + md5 → 解包 → `cd 部署 && docker compose --env-file .env.server -f docker-compose.server.yml up -d --build` → 盯 `docker logs fjhy-poc-backend` 全绿。
+- **更新前必备份**：`pg_dump | gzip > /data/user/backups/`；entrypoint 重启会重灌数据面（幂等），页面上点出来的模型补判结果会回装载态。
+- **验证口径**：登录 admin/demo-1234 → bills total=69（40 真+29 演）、/health 88 表/42 迁移/0 problems、附件 file 200、未登录 401。
+- 演示账号 5 个：admin / linjia / chenfang / hetech / wangzong，密码统一 demo-1234（仅 POC）。
 - 系统管理员是内置超管：`permits` 对「用户与角色」「系统自检」硬放行，权限矩阵只读，防自锁。
 - **不要把 `app.use(router)` 写在 `iam.init()` 之前**：Vue Router 在 use() 时就跑首次导航，权限缓存还空会被判成无权限、把人踢回登录页。
 

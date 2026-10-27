@@ -13,7 +13,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ApiError } from '../api'
-import { NAV, RA_NAV, REVIEW_NAV, SYS_NAV, flatItems } from '../data/navTree'
+import { NAV, ROLE_ORDER, ITEM_BY_KEY, flatItems } from '../data/navTree'
 import { isComplete, label as domainLabel } from '../data/domainState'
 import {
   ERR_KINDS,
@@ -29,101 +29,40 @@ import Outcome from '../components/Outcome.vue'
 import Async from '../components/Async.vue'
 
 describe('导航树', () => {
-  it('领域知识资产有且只有 7 个栏目：4 个一级 + 本体工场下 3 个', () => {
-    // 5 → 6：2026-10-19 新增「业务本体」。它原来没有页面——17 实体 / 121 概念 /
-    // 21 枚举只能在接口里看到，而**本体怎么建的**这一步整个在系统之外
-    // （人读材料手写 YAML + 命令行装载）。
-    // 6 → 7：2026-10-20 新增「本体工场」。业务本体那一页补的是「能看见候选」，
-    // 补不了「客户自己把三元本体从零搭一遍」——那条流水线仍然被切在三个页面上，
-    // 外加两条只能在命令行跑的装载。工场把它合成一条，八步。
-    // 7 → 4+3：2026-10-21 把业务/规则/流程三个本体页收进「本体工场」做子项
-    // （用户决定）。**页面一个没少，还是 7 个**，变的是隶属关系——
-    // 所以这里两个数都要钉：一级 4 个，压平 7 个。只钉一个的话，
-    // 哪天有人把子项又平铺回去，另一个数仍然对得上，测试照样绿。
-    // 数字留在旧值的话，这条测试就变成了保护一个已经作废的口径。
-    expect(RA_NAV).toHaveLength(4)
-    expect(flatItems(RA_NAV)).toHaveLength(7)
-  })
-
-  it('领域知识资产这一组有落地页入口', () => {
-    // 组名是进「选领域/实例」那一页的唯一入口。path 没了，组名退化成死文字，
-    // 而页面还在、路由还通——**没有任何报错**，只是谁也进不去了。
-    expect(NAV.find((g) => g.key === 'asset')!.path).toBe('/asset')
-    // 其余组没有落地页：点了没反应的链接比没有链接更坏
-    expect(NAV.find((g) => g.key === 'review')!.path).toBeUndefined()
-    expect(NAV.find((g) => g.key === 'sys')!.path).toBeUndefined()
-  })
-
-  it('大模型配置在「系统」组，不在领域知识资产里', () => {
-    // 它是系统级配置，不是规则加工链上的一环。混进加工链会让那条链读不清。
-    expect(RA_NAV.map((x) => x.key)).not.toContain('llm')
-    expect(SYS_NAV.map((x) => x.key)).toContain('llm')
-    // 路由也得跟着走，否则菜单在「系统」下而地址栏还是 /asset/…，看着像挂错了
-    expect(SYS_NAV.find((x) => x.key === 'llm')!.path).toBe('/sys/llm')
-  })
-
-  it('栏目按规则加工链排序，顺序不能乱', () => {
-    // 制度文件库 → 规则抽取 → 本体工场（业务本体 → 规则本体 → 流程本体）→ 发布管理
-    // 这个顺序本身就是信息：上游没有的东西，下游不可能凭空长出来。
-    // **工场排在三个本体页之前**：它是搭建入口，那三页是搭完之后看的；
-    // 现在那三页就挂在它下面，隶属关系直接写在菜单结构里。
-    // 顺序打乱，用户就看不出这条依赖关系了。
-    expect(RA_NAV.map((x) => x.key)).toEqual(['doc-lib', 'extract', 'workshop', 'publish'])
-    expect(RA_NAV.find((x) => x.key === 'workshop')!.children!.map((x) => x.key)).toEqual([
-      'biz-onto',
-      'onto',
-      'proc',
-    ])
-    // 压平之后就是那条加工链本身，一字不差
-    expect(flatItems(RA_NAV).map((x) => x.key)).toEqual([
-      'doc-lib',
-      'extract',
-      'workshop',
-      'biz-onto',
-      'onto',
-      'proc',
-      'publish',
-    ])
-  })
-
-  it('每个菜单项都有路径', () => {
-    // 菜单项不再带说明文字：侧栏是导航不是文档，口径写在各页页首。
-    // 路径仍然要钉——路径写错是白屏，比没有说明严重得多。
-    for (const g of NAV) {
-      for (const it of flatItems(g.items)) {
-        expect(it.path, `${it.key} 缺 path`).toMatch(/^\//)
-      }
+  // 2026-10-26 IA 重排后的新契约：平铺、按角色组织、本体退出业务界面。
+  it('四角色菜单各自 ≤6 项且顺序钉死', () => {
+    expect(ROLE_ORDER.auditor).toEqual(['mywork', 'ai-review', 'workbench', 'report', 'trace'])
+    expect(ROLE_ORDER.engineer).toEqual(['doc-lib', 'rules', 'publish', 'trace'])
+    expect(ROLE_ORDER.admin).toEqual(['users', 'llm', 'ops', 'startup', 'knowstruct'])
+    expect(ROLE_ORDER.leader).toEqual(['dash', 'workbench', 'trace', 'deviation'])
+    for (const keys of Object.values(ROLE_ORDER)) {
+      expect(keys.length).toBeLessThanOrEqual(6)
     }
   })
 
-  it('未接通的栏目必须写明缺什么，而且不许隐藏', () => {
-    // 藏起来会让人以为功能不存在；标成未接，才知道是「还没做」而不是「做不了」。
-    const all = NAV.flatMap((g) => flatItems(g.items))
-    for (const it of all) {
+  it('本体退出业务界面：engineer 的菜单里没有本体与工场', () => {
+    const gone = ['workshop', 'biz-onto', 'onto', 'proc', 'extract']
+    for (const k of gone) {
+      expect(ROLE_ORDER.engineer, `engineer 不该有 ${k}`).not.toContain(k)
+    }
+    // 知识结构（本体的新去处）只归系统管理员
+    expect(ROLE_ORDER.admin).toContain('knowstruct')
+    expect(ROLE_ORDER.engineer).not.toContain('knowstruct')
+  })
+
+  it('每个菜单项都有路径且接通', () => {
+    for (const it of flatItems(NAV.flatMap((g) => g.items))) {
+      expect(it.path, `${it.key} 缺 path`).toMatch(/^\//)
       if (!it.built) {
         expect(it.todo, `${it.key} 标了 built=false 但没写 todo`).toBeTruthy()
       }
     }
-    // 有 todo 的也必须出现在导航里（即不被过滤掉）
-    //
-    // 原来这里还有一条 `withTodo.length > 0`，用来防止这条测试空转。
-    // 现在所有栏目都接通了、一个 todo 都没有，于是它开始报假红——
-    // **而假红比没有测试坏**：它会让人养成「红了先看看是不是又是那条」的习惯。
-    // 真正的不变量是上面那条（built=false 必须写 todo），它与「现在有没有未接栏目」无关。
-    const withTodo = all.filter((x) => x.todo)
-    for (const it of withTodo) {
-      expect(NAV.some((g) => flatItems(g.items).includes(it))).toBe(true)
+    // ROLE_ORDER 引用的 key 必须都能解析成菜单项
+    for (const keys of Object.values(ROLE_ORDER)) {
+      for (const k of keys) {
+        expect(ITEM_BY_KEY[k], `${k} 在 ROLE_ORDER 里但 navTree 没有这项`).toBeTruthy()
+      }
     }
-    // 空转防护改成钉「导航本身不是空的」——这才是这组测试真正依赖的前提
-    expect(all.length).toBeGreaterThan(0)
-  })
-
-  // 顺序也钉住（2026-10-24 demo 契约）：AI 智能审核是入口，工作台是出口，
-  // 审核报告是一级菜单（审核岗的日常动线），再往后追溯与回流。
-  it('审核端的五个页面都在而且顺序没乱', () => {
-    expect(REVIEW_NAV.map((x) => x.key)).toEqual([
-      'ai-review', 'workbench', 'report', 'trace', 'deviation',
-    ])
   })
 })
 

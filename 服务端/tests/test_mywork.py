@@ -41,7 +41,15 @@ def _real_bills_untouched():
 
 
 def _pick_demo_bill() -> str:
-    """挑一张可以下手的演示单：有审核轮次、无人工结论、无有效认领。"""
+    """挑一张可以下手的演示单：有审核轮次、无人工结论、无有效认领。
+
+    池子空时分两类情况：
+      · 全库没有演示单 → 环境没装载，报错退出；
+      · 有演示单但没有 review_run → 是字母序靠前的测试（如 test_detection）
+        调 generator.generate() 清掉了审核轮次、而补偿只在 session 收尾跑。
+        这里自举补跑一次规则链路（与 conftest 收尾补偿同源，不调大模型），
+        让本文件不依赖测试顺序。
+    """
     row = db.query_one(
         """SELECT b.bill_no FROM expense_bill b
             WHERE b.is_demo = TRUE
@@ -50,7 +58,22 @@ def _pick_demo_bill() -> str:
               AND NOT EXISTS (SELECT 1 FROM review_assignment a
                               WHERE a.bill_no=b.bill_no AND a.released_at IS NULL)
             ORDER BY b.bill_no LIMIT 1""")
-    assert row, "库里没有可用的演示单（全部已有结论或被认领）——请先跑演示数据生成"
+    if not row:
+        n_demo = db.scalar("SELECT count(*) FROM expense_bill WHERE is_demo") or 0
+        assert n_demo, "库里没有演示单——环境没装载，请先跑装载链"
+        from app.api import ai_review as ar
+        res = ar.audit_demo_bills(reason="test_mywork 池子自举（前序测试清了审核轮次）")
+        assert any(r.status == "ok" for r in res), "演示单补审全部失败：%s" % [
+            (r.bill_no, r.status) for r in res[:3]]
+        row = db.query_one(
+            """SELECT b.bill_no FROM expense_bill b
+                WHERE b.is_demo = TRUE
+                  AND EXISTS (SELECT 1 FROM review_run r WHERE r.bill_no=b.bill_no)
+                  AND NOT EXISTS (SELECT 1 FROM manual_review m WHERE m.bill_no=b.bill_no)
+                  AND NOT EXISTS (SELECT 1 FROM review_assignment a
+                                  WHERE a.bill_no=b.bill_no AND a.released_at IS NULL)
+                ORDER BY b.bill_no LIMIT 1""")
+        assert row, "补审后仍无可用的演示单（全部已有结论或被认领）"
     return row["bill_no"]
 
 

@@ -165,13 +165,33 @@ def test_现状报的是当前版本不是两版加总():
 
     不带 version 条件地 count，会把两版加起来——实测一度把
     17 实体 / 121 概念报成了 34 / 240，而这个数是要写进汇报的。
-    """
+
+    草稿版自己种、测完删（2026-10-27）：原来靠环境里恰好残留的
+    v0.1-draft，entrypoint 重载后干净库上这条会假红。"""
     from app import db
-    st = client.get("/api/onto/workshop/state").json()
-    v = st["onto"]["version"]
-    assert st["onto"]["概念"] == db.scalar(
-        "SELECT count(*) FROM ontology_concept WHERE version=%s", (v,))
-    assert st["onto"]["概念"] < db.scalar("SELECT count(*) FROM ontology_concept")
+    db.execute("""INSERT INTO ontology_version (version, source_file, source_hash, is_current)
+                  VALUES ('v0.1-draft', 'test-seed', 'test-seed', FALSE)
+                  ON CONFLICT (version) DO NOTHING""")
+    db.execute("""INSERT INTO ontology_entity (entity_id, version, name, source)
+                  SELECT entity_id, 'v0.1-draft', name, 'test-seed'
+                    FROM ontology_entity WHERE version <> 'v0.1-draft'
+                  ON CONFLICT DO NOTHING""")
+    db.execute("""INSERT INTO ontology_concept
+                    (concept_id, version, entity_id, name, data_type, availability)
+                  SELECT concept_id, 'v0.1-draft', entity_id, name, data_type, availability
+                    FROM ontology_concept WHERE version <> 'v0.1-draft'
+                  ON CONFLICT DO NOTHING""")
+    try:
+        st = client.get("/api/onto/workshop/state").json()
+        v = st["onto"]["version"]
+        assert st["onto"]["概念"] == db.scalar(
+            "SELECT count(*) FROM ontology_concept WHERE version=%s", (v,))
+        assert st["onto"]["概念"] < db.scalar(
+            "SELECT count(*) FROM ontology_concept")
+    finally:
+        db.execute("DELETE FROM ontology_concept WHERE version = 'v0.1-draft'")
+        db.execute("DELETE FROM ontology_entity WHERE version = 'v0.1-draft'")
+        db.execute("DELETE FROM ontology_version WHERE version = 'v0.1-draft'")
 
 
 # ── 感知 Agent 读的键，必须真的在 perceive() 的产出里 ──────────────────────

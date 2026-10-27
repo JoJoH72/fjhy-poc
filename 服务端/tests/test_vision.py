@@ -149,12 +149,27 @@ def test_不回退到文本模型():
 # 五、只读该读的页
 # ─────────────────────────────────────────────────────────────────────────────
 def test_只读表格页与空白页():
-    """27 页全读一遍是几万 token，而其中 23 页的原生文字层本来就是好的。"""
-    rows = vision.pages_to_read(200)
-    assert rows, "一页都没挑出来"
-    for r in rows:
-        assert r["has_table"] or r["chars"] == 0, \
-            "挑了一页既不是表格也不是空白的:%s p%s" % (r["file_name"], r["page_no"])
+    """27 页全读一遍是几万 token，而其中 23 页的原生文字层本来就是好的。
+
+    候选页自己种一行（2026-10-27）：这用例原靠环境里恰好有「表格页/空白页」
+    的 OCR 数据，本地库被 entrypoint 重载后 doc_lib_ocr 只剩 4 行纯文字页，
+    干净库上假红。种一行 has_table、一行 chars=0，测完删。"""
+    fid = db.scalar("SELECT file_id FROM doc_lib_file LIMIT 1")
+    if not fid:
+        pytest.skip("文件库是空的")
+    db.execute("""INSERT INTO doc_lib_ocr(file_id, page_no, text, chars, has_table, engine, dpi)
+                  VALUES (%s, 9901, 'x', 3, TRUE, 'test-seed', 170),
+                         (%s, 9902, '', 0, FALSE, 'test-seed', 170)
+                  ON CONFLICT DO NOTHING""", (fid, fid))
+    try:
+        rows = vision.pages_to_read(200)
+        mine = [r for r in rows if r["file_id"] == fid and r["page_no"] in (9901, 9902)]
+        assert len(mine) == 2, "种的两页（表格/空白）没都被挑出来"
+        for r in rows:
+            assert r["has_table"] or r["chars"] == 0, \
+                "挑了一页既不是表格也不是空白的:%s p%s" % (r["file_name"], r["page_no"])
+    finally:
+        db.execute("DELETE FROM doc_lib_ocr WHERE file_id=%s AND page_no IN (9901, 9902)", (fid,))
 
 
 def test_出网要留痕():

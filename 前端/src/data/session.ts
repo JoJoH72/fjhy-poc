@@ -9,7 +9,7 @@
  * 真正的权限判断在服务端 `/api/*` 中间件与 `current_admin()`，
  * 改 localStorage 只能骗过界面，骗不过接口。
  */
-import { NAV, flatItems } from './navTree'
+import { NAV, flatItems, ITEM_BY_KEY } from './navTree'
 import * as iam from './iam'
 import { api, type Me } from '../api'
 
@@ -48,8 +48,9 @@ export function allRoles(): RoleDef[] {
 
 /** 角色的落地页：配置的 home 若已失去权限，退到第一个有权限的菜单 */
 function firstHome(r: iam.IamRole): string {
-  const all = NAV.flatMap((g) => flatItems(g.items))
-  for (const it of all) if (iam.permits(r.key, it.key)) return it.path
+  for (const it of flatItems(NAV.flatMap((g) => g.items))) {
+    if (iam.permits(r.key, it.key)) return it.path
+  }
   return '/login'
 }
 
@@ -121,26 +122,14 @@ export function isReadonly(role: Role, path: string): boolean {
 /**
  * 路由权限：返回能访问该路径的角色 key 列表；null = 不拦（没有对应菜单的页面）。
  * 按菜单算而不是写死前缀表——权限可以在页面上改，写死会出现
- * 「侧栏没了但地址栏还能进」。
+ * 「侧栏没了但地址栏还能进」。平铺 IA 后无分组，直接按项匹配。
  */
 export function allowedRoles(path: string): Role[] | null {
   const seg = '/' + path.split('/').filter(Boolean).slice(0, 3).join('/')
-  type Cand = { path: string; key: string; group?: boolean }
-  const cands: Cand[] = []
-  for (const g of NAV) {
-    if (g.path) cands.push({ path: g.path, key: '@group:' + g.key, group: true })
-    for (const it of flatItems(g.items)) cands.push({ path: it.path, key: it.key })
-  }
-  const hit = cands
-    .filter((c) => seg === c.path || seg.startsWith(c.path + '/'))
+  const items = flatItems(NAV.flatMap((g) => g.items))
+  const hit = items
+    .filter((it) => seg === it.path || seg.startsWith(it.path + '/'))
     .sort((a, b) => b.path.length - a.path.length)[0]
   if (!hit) return null
-
-  const keys = allRoles().map((r) => r.role)
-  if (!hit.group) return keys.filter((k) => iam.permits(k, hit.key))
-
-  const g = NAV.find((x) => '@group:' + x.key === hit.key)
-  if (!g) return keys
-  const itemKeys = flatItems(g.items).map((it) => it.key)
-  return keys.filter((k) => itemKeys.some((ik) => iam.permits(k, ik)))
+  return allRoles().map((r) => r.role).filter((k) => iam.permits(k, hit.key))
 }

@@ -1,27 +1,14 @@
 /**
- * 导航树。
+ * 导航树（2026-10-26 IA 重排版，设计/产品企业级化总体规划_v0.1.md §3）。
  *
- * 领域知识资产的二级菜单**按规则加工链排序**，不是按字母或重要性：
- *   制度文件库 → 规则抽取 → 本体工场（业务本体 / 规则本体 / 流程本体）→ 发布管理
+ * 原则：
+ * 1. **每个角色 ≤6 项，一律平铺**——菜单按角色过滤后直接渲染，不再有分组层
+ *    （App.vue 侧栏吃 items，不看 groups）。
+ * 2. 菜单名 = 角色的工作动词/名词，不是实现层词汇：本体三页退出业务界面
+ *    （归系统管理员"知识结构"只读）；本体工场=实施工具同归；智能体→运行监控。
+ * 3. key 是权限键（sys_role.perms），改名不改 key；path 改了必须留 redirect。
  *
- * **三个本体页是本体工场的子项**（2026-10-21 按要求）：三元本体就是工场搭出来的，
- * 平铺成同级会让人以为是四个互不相干的栏目，看不出「工场是入口、那三页是
- * 搭完之后看的」这层隶属关系。key 和 path 都没动，发出去的链接照旧能打开。
- *
- * 大模型配置原先挂在这条链上（标为「支撑项」），2026-10-18 按要求移到「系统」组：
- * 它是系统级配置，不是加工链上的一环，挂在链里反而让这条链读不清。
- * 路由随之从 /asset/llm 改为 /sys/llm，老路径留一条 redirect——
- * 已经发出去的链接和浏览器书签不该因为菜单挪了位置就 404。
- *
- * 这个顺序本身就是信息：上游没有的东西，下游不可能凭空长出来。
- * 每条规则都必须能回溯到制度文件库里的某一份文件、某一条条款。
- * 菜单顺序打乱，用户就看不出这条依赖关系了。
- *
- * `built` 标记哪些已经接了真实后端。**没接的不要藏起来**——
- * 藏起来会让人以为功能不存在；标成未接，才知道是「还没做」而不是「做不了」。
- *
- * 菜单项不带说明文字（2026-10-18 按要求去掉）：侧栏是导航，不是文档。
- * 每一栏的口径写在该页页首，看页面的人才需要看它。
+ * `built` 标记是否已接真实后端；菜单项不带说明文字（侧栏是导航不是文档）。
  */
 export interface NavItem {
   key: string
@@ -30,185 +17,65 @@ export interface NavItem {
   built: boolean
   /** 未接时的说明。built=false 必须写，否则不知道缺什么 */
   todo?: string
-  /** 隶属于本项的子菜单。目前只有「本体工场」有：三元本体是它搭出来的 */
-  children?: NavItem[]
-  /** 可见角色（2026-10-24 角色规划）。缺省 = 全部角色可见 */
+  /** 可见角色（种子口径；运行态以 sys_role.perms 为准） */
   roles?: string[]
 }
 
-/**
- * 把带子项的菜单压平成一串。
- *
- * **凡是「遍历所有菜单项」的地方都要用它**：漏掉子项的校验等于没校验——
- * 子项的 path 写错一样是白屏，而它不在 g.items 里，循环根本碰不到它。
- */
+/** 把带子项的菜单压平成一串（遍历所有菜单项的地方都要用它） */
 export function flatItems(items: NavItem[]): NavItem[] {
-  return items.flatMap((it) => [it, ...(it.children || [])])
+  return items
 }
 
 export interface NavGroup {
   key: string
   label: string
   items: NavItem[]
-  /**
-   * 组自己的落地页。目前只有「领域知识资产」有：点组名进去选领域/实例。
-   * 其余组没有，组名就是个标题，点了不动——**有没有落地页要看得出来**，
-   * 所以 App.vue 里只有带 path 的组名才渲染成链接。
-   */
   path?: string
-  /** 可见角色（2026-10-24 角色规划）。缺省 = 全部角色可见 */
   roles?: string[]
 }
 
-export const RA_NAV: NavItem[] = [
-  {
-    key: 'doc-lib',
-    label: '制度文件库',
-    path: '/asset/docs',
-    built: true,
-    roles: ['engineer'],
-  },
-  {
-    key: 'extract',
-    label: '规则抽取',
-    path: '/asset/extract',
-    built: true,
-    roles: ['engineer'],
-  },
-  {
-    // 本体工场排在三个本体页**之前**：它是搭建入口，那三页是搭完之后看的。
-    // 八步一条流水线，把原来切在三页上、外加两条命令行的过程合成一条。
-    // 三元本体挂成它的子项——隶属关系要在菜单上看得出来。
-    key: 'workshop',
-    label: '本体工场',
-    path: '/asset/workshop',
-    built: true,
-    roles: ['engineer'],
-    children: [
-      {
-        // 业务本体在规则本体**之前**：规则引用概念，上游没有的概念下游长不出来。
-        // 顺序照用户 2026-10-19 的说法排：源头 → 规则 → 业务本体 → 规则本体 → 版本发布。
-        key: 'biz-onto',
-        label: '业务本体',
-        path: '/asset/biz',
-        built: true,
-      },
-      {
-        key: 'onto',
-        label: '规则本体',
-        path: '/asset/rules',
-        built: true,
-      },
-      {
-        key: 'proc',
-        label: '流程本体',
-        path: '/asset/process',
-        built: true,
-      },
-    ],
-  },
-  {
-    key: 'publish',
-    label: '发布管理',
-    path: '/asset/releases',
-    built: true,
-    roles: ['engineer'],
-  },
+/** 全部菜单项（唯一事实来源；分组只服务于「按角色过滤」的中间结构） */
+const ALL: NavItem[] = [
+  // ── 审核岗（auditor）──
+  { key: 'mywork', label: '个人工作台', path: '/review/my', built: true, roles: ['auditor'] },
+  { key: 'ai-review', label: '智能审核', path: '/review/ai-review', built: true, roles: ['auditor'] },
+  { key: 'workbench', label: '审核工作台', path: '/review/bills', built: true, roles: ['auditor', 'leader'] },
+  { key: 'report', label: '审核报告', path: '/review/report', built: true, roles: ['auditor'] },
+  { key: 'trace', label: '审计追溯', path: '/review/trace', built: true, roles: ['auditor', 'leader', 'engineer'] },
+  { key: 'deviation', label: '偏差与回流', path: '/review/deviation', built: true, roles: ['leader'] },
+
+  // ── 规则管理员（engineer）── 四项=四步工作流：传文件→跑AI→审定→发布
+  // 制度文件页=文件库+抽取合并（客户待办#8「上传后直接同步抽取」）
+  { key: 'doc-lib', label: '制度文件', path: '/asset/docs', built: true, roles: ['engineer'] },
+  { key: 'rules', label: '规则库', path: '/asset/rules-lib', built: true, roles: ['engineer'] },
+  { key: 'publish', label: '发布管理', path: '/asset/releases', built: true, roles: ['engineer'] },
+
+  // ── 系统管理员（admin）──
+  { key: 'users', label: '用户与角色', path: '/sys/users', built: true, roles: ['admin'] },
+  { key: 'llm', label: '模型配置', path: '/sys/llm', built: true, roles: ['admin'] },
+  { key: 'ops', label: '运行监控', path: '/sys/agents', built: true, roles: ['admin'] },
+  { key: 'startup', label: '系统自检', path: '/sys/startup', built: true, roles: ['admin'] },
+  // 知识结构=本体三元的技术视图（只读）：本体退出业务界面后的去处，
+  // 实施排障要看，不给业务角色
+  { key: 'knowstruct', label: '知识结构', path: '/sys/knowstruct', built: true, roles: ['admin'] },
+
+  // ── 领导（leader）──
+  { key: 'dash', label: '总览看板', path: '/dash', built: true, roles: ['leader'] },
 ]
 
-export const REVIEW_NAV: NavItem[] = [
-  {
-    // AI智能审核在审核工作台之上：它是入口，工作台是出口。
-    // 智能审核触发 → 规则引擎 + LLM 三层跑完 → 不合格单流入工作台。
-    key: 'ai-review',
-    label: 'AI 智能审核',
-    path: '/review/ai-review',
-    built: true,
-    roles: ['auditor'],
-  },
-  {
-    key: 'workbench',
-    label: '审核工作台',
-    path: '/review/bills',
-    built: true,
-    roles: ['auditor', 'leader'],
-  },
-  {
-    // 审核报告作为一级菜单（2026-10-24 demo 契约：林嘉四项 ai/bench/report/trace）。
-    // 旧工程里它只是工作台点进去的详情页；demo 把它升为菜单——审核岗的日常
-    // 就是「进报告 → 逐张复核」，不该每次都绕工作台。免 runId 进入时自动选队列首张。
-    key: 'report',
-    label: '审核报告',
-    path: '/review/report',
-    built: true,
-    roles: ['auditor'],
-  },
-  {
-    key: 'trace',
-    label: '审计追溯',
-    path: '/review/trace',
-    built: true,
-    roles: ['auditor', 'leader', 'engineer'],
-  },
-  {
-    // 偏差与回流 2026-10-24 移到领导查询：四象限/缺口编号是管理视角，
-    // 审核岗不需要（业务审计时确定的口径，见 设计/功能与角色规划_v0.1.md）
-    key: 'deviation',
-    label: '偏差与回流',
-    path: '/review/deviation',
-    built: true,
-    roles: ['leader'],
-  },
-]
-
-export const SYS_NAV: NavItem[] = [
-  {
-    // 智能体工作台放在系统组的**第一个**：它是全站 12 个 Agent 唯一能一次看全的
-    // 地方（契约在文件里、状态在 agent_state、痕迹在信号与周期台账里，三处分散）。
-    // 2026-10-19 按要求新增。
-    key: 'agents',
-    label: '智能体工作台',
-    path: '/sys/agents',
-    built: true,
-    roles: ['admin'],
-  },
-  {
-    key: 'llm',
-    label: '大模型配置',
-    path: '/sys/llm',
-    built: true,
-    roles: ['admin'],
-  },
-  {
-    key: 'startup',
-    label: '系统自检',
-    path: '/sys/startup',
-    built: true,
-    roles: ['admin'],
-  },
-  {
-    // 用户与角色：一期为前端演示配置（后端无用户体系，缺口已登记）
-    key: 'users',
-    label: '用户与角色',
-    path: '/sys/users',
-    built: true,
-    roles: ['admin'],
-  },
-]
-
-export const DASH_NAV: NavItem[] = [
-  {
-    key: 'dash',
-    label: '总览看板',
-    path: '/dash',
-    built: true,
-    roles: ['leader'],
-  },
-]
-
+/** NAV 兼容旧结构（App.vue/groups 遍历用）：单组包全部，不再有分组层 */
 export const NAV: NavGroup[] = [
-  { key: 'dash', label: '总览', items: DASH_NAV, roles: ['leader'] },
-  { key: 'asset', label: '领域知识资产', items: RA_NAV, path: '/asset', roles: ['engineer'] },
-  { key: 'review', label: '报账单审核', items: REVIEW_NAV, roles: ['auditor', 'leader', 'engineer'] },
-  { key: 'sys', label: '系统', items: SYS_NAV, roles: ['admin'] },
+  { key: 'all', label: '功能菜单', items: ALL },
 ]
+
+/** 角色种子顺序（菜单渲染顺序以此为准） */
+export const ROLE_ORDER: Record<string, string[]> = {
+  auditor: ['mywork', 'ai-review', 'workbench', 'report', 'trace'],
+  engineer: ['doc-lib', 'rules', 'publish', 'trace'],
+  admin: ['users', 'llm', 'ops', 'startup', 'knowstruct'],
+  leader: ['dash', 'workbench', 'trace', 'deviation'],
+}
+
+export const ITEM_BY_KEY: Record<string, NavItem> = Object.fromEntries(
+  ALL.map((it) => [it.key, it]),
+)

@@ -924,6 +924,13 @@ export interface Bill {
    *  AI 结论与人工结论并列，谁判的一目了然 */
   manual_decision: 'agree' | 'agree_with_note' | 'return' | null
   manual_decided_at: string | null
+  /** 核算主体（列表接口 2026-10-26 起直接返回，不再靠详情渐进填充） */
+  org_id: string | null
+  org_name: string | null
+  /** 有效认领（null=未认领，在池子里可认领）。真名署名，mask 署名字段豁免 */
+  claim_account: string | null
+  claim_label: string | null
+  claimed_at: string | null
 }
 
 /** 人工复核留痕（manual_review 表，只读出口）。署名字段是 user_label——
@@ -1200,6 +1207,48 @@ export interface IamRoleDto {
 export interface IamUserDto {
   id: string; name: string; account: string; phone: string; dept: string
   roleKey: string; enabled: boolean; createdAt: string; lastLogin: string | null
+  /** 单位绑定（审核专业组）。空数组=不限单位看全池（2026-10-26 客户待办#1） */
+  orgs?: { id: string; name: string }[]
+}
+
+/** 个人工作台（/api/my/work）——我的待办 / 可认领池 / 我的已审 / 我的统计 */
+export interface MyWorkItem {
+  bill_no: string
+  doc_date: string | null
+  biz_type: string
+  amount: number | null
+  is_demo: boolean
+  org_name: string | null
+  run_id: string | null
+  conclusion: 'pass' | 'review' | 'reject' | null
+  hit_count: number | null
+  pending_count: number | null
+  finished_at: string | null
+  claimed_at: string | null
+}
+export interface MyWorkHistory {
+  bill_no: string
+  decision: 'agree' | 'agree_with_note' | 'return'
+  decided_at: string
+  return_reason: string | null
+  amount: number | null
+  is_demo: boolean
+  org_name: string | null
+  ai_conclusion: string | null
+}
+export interface MyWork {
+  me: { account: string; user_name: string; orgs: string[] }
+  todo: { items: MyWorkItem[]; total: number }
+  pool: { items: MyWorkItem[]; total: number }
+  history: { items: MyWorkHistory[]; total: number }
+  stats: {
+    total: number
+    agree: number
+    ret: number
+    today: number
+    month: number
+  }
+  note: string
 }
 
 // ── 规则资产 ─────────────────────────────────────────────────────────────────
@@ -1216,6 +1265,8 @@ export const api = {
 
   iamRoles: () => request<{ items: IamRoleDto[] }>('/api/iam/roles'),
   iamUsers: () => request<{ items: IamUserDto[] }>('/api/iam/users'),
+  /** 核算主体清单（用户编辑器的单位多选用） */
+  iamOrgs: () => request<{ items: { id: string; name: string }[] }>('/api/iam/orgs'),
   iamCreateUser: (b: Record<string, unknown>) =>
     request<IamUserDto>('/api/iam/users', { method: 'POST', body: JSON.stringify(b) }),
   iamUpdateUser: (account: string, b: Record<string, unknown>) =>
@@ -1328,6 +1379,18 @@ export const api = {
   // ── 审核端 ─────────────────────────────────────────────────────────────────
   bills: (p: Record<string, unknown> = {}) => request<Page<Bill>>(`/api/bills${qs(p)}`),
   bill: (no: string) => request<Record<string, unknown>>(`/api/bills/${encodeURIComponent(no)}`),
+
+  // ── 个人工作台 / 工单认领（2026-10-26 客户待办#1）─────────────────────────
+  /** 认领即锁定：有效认领期间他人不可再审此单；不处理可 release 放回池子 */
+  billClaim: (no: string) =>
+    request<{ ok: boolean; bill_no: string; assignee: string; claim_label: string; note: string }>(
+      `/api/bills/${encodeURIComponent(no)}/claim`, { method: 'POST' }),
+  /** 释放只许认领人自己（后端 403 闸），释放后单据回池子 */
+  billRelease: (no: string) =>
+    request<{ ok: boolean; bill_no: string; released: string }>(
+      `/api/bills/${encodeURIComponent(no)}/release`, { method: 'POST' }),
+  /** 个人工作台一次拉全：我的待办 / 可认领池 / 我的已审 / 我的统计 */
+  myWork: () => request<MyWork>(`/api/my/work`),
 
   // ── 单据附件：读图判类型 ───────────────────────────────────────────────────
   // **真出网、真计费**，而且发出去的是真实发票与出差申请单（含姓名、身份证号片段）。

@@ -1,5 +1,7 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHashHistory } from 'vue-router'
+import Antd from 'ant-design-vue'
+import 'ant-design-vue/dist/reset.css'
 import App from './App.vue'
 import { api } from './api'
 import * as iamStore from './data/iam'
@@ -20,16 +22,17 @@ const router = createRouter({
     { path: '/dash', component: () => import('./pages/Dashboard.vue') },
     // 领域知识资产的落地页：选领域/实例。**放在 /asset/* 之前无所谓**，
     // vue-router 按最具体的匹配，不是按先后。
+    // 2026-10-26 IA 重排：extract/workshop/biz/process 四条老路由在文件末尾统一
+    // redirect（客户链接不 404），这里不再注册原组件。
     { path: '/asset', component: () => import('./pages/DomainHome.vue') },
     { path: '/asset/docs', component: () => import('./pages/DocLib.vue') },
-    { path: '/asset/extract', component: () => import('./pages/Extract.vue') },
-    { path: '/asset/workshop', component: () => import('./pages/Workshop.vue') },
-    { path: '/asset/biz', component: () => import('./pages/BizOnto.vue') },
     { path: '/asset/rules', component: () => import('./pages/RuleOnto.vue') },
     { path: '/asset/rules/:id', component: () => import('./pages/RuleDetail.vue') },
-    { path: '/asset/process', component: () => import('./pages/ProcessOnto.vue') },
     { path: '/asset/releases', component: () => import('./pages/Publish.vue') },
     { path: '/review/ai-review', component: () => import('./pages/AIReview.vue') },
+    // 个人工作台（2026-10-26 客户待办#1）：我的待办 / 可认领池 / 我的已审。
+    // 审核岗登录落地页（后端 sys_role.home=/review/my）。
+    { path: '/review/my', component: () => import('./pages/MyWork.vue') },
     { path: '/review/bills', component: () => import('./pages/Workbench.vue') },
     { path: '/review/bills/:no', component: () => import('./pages/BillDetail.vue') },
     { path: '/review/report', component: () => import('./pages/ReviewReport.vue') },
@@ -42,9 +45,18 @@ const router = createRouter({
     { path: '/sys/llm', component: () => import('./pages/LlmConfig.vue') },
     // 用户与角色（2026-10-24 新增，角色：系统管理员；后端无用户体系，前端演示配置）
     { path: '/sys/users', component: () => import('./pages/Users.vue') },
-    // 大模型配置 2026-10-18 从领域知识资产移到系统组。老路径保留，
-    // 否则已经发出去的链接会白屏——白屏会被当成构建坏了，而不是「菜单挪了」。
+    // 规则库（2026-10-26 IA 重排新页，规则管理员）：规则清单/报销标准/明细三页签
+    { path: '/asset/rules-lib', component: () => import('./pages/RulesLib.vue') },
+    // 知识结构（2026-10-26 IA 重排新页，仅系统管理员）：本体三元只读视图
+    { path: '/sys/knowstruct', component: () => import('./pages/KnowStruct.vue') },
+    // IA 重排 redirect（2026-10-26）：老链接不 404——已发出去的地址与书签照旧能开
     { path: '/asset/llm', redirect: '/sys/llm' },
+    { path: '/asset/extract', redirect: '/asset/docs' },       // 抽取并入制度文件（#8）
+    { path: '/asset/workshop', redirect: '/sys/knowstruct' },  // 工场=实施工具归知识结构
+    { path: '/asset/biz', redirect: '/sys/knowstruct' },
+    { path: '/asset/process', redirect: '/sys/knowstruct' },
+    { path: '/sys/agents', redirect: '/sys/agents' },          // 运行监控沿用原路径原页
+    // 规则本体老路径与规则库新路径冲突：/asset/rules 是规则详情前缀，保持不变
     // 根路径：有会话进角色落地页，没会话进登录
     { path: '/', redirect: () => {
       const s = session.current()
@@ -85,6 +97,7 @@ router.beforeEach((to) => {
 // 18 个页面都要渲染后端文案里的 **加粗**，全局注册省去每个文件各自 import，
 // 且类型声明在 global-components.d.ts 里统一维护。
 const app = createApp(App)
+app.use(Antd)
 app.component('MarkText', MarkText)
 
 /**

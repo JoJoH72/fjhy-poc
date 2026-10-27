@@ -712,8 +712,23 @@
    （非浮层、无开关无钉住——2026-10-25 用户定稿），与详情并排，
    无遮挡、无 z-index 纠缠。本块放在文件末尾——.qrow 是按钮，
    得后写压过上面的 .v2 button 基础样式。 */
-.v2.qwrap { display: flex; gap: 16px; align-items: flex-start; }
-.v2.qwrap .qmain { flex: 1; min-width: 0; }
+/* 等高双栏（2026-10-26 改）：两列同高拉伸，右侧内容自己滚——
+   左栏再也不会「短一截」或跟页面滚动错位。窄屏退回单栏。
+   高度不用魔法数：撑满父容器（外壳 content 已是视口高），100% 减状态条即可。 */
+.v2.qwrap {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  height: calc(100% - 52px);   /* 状态条(qbar)占的高度，撑满其余 */
+  min-height: 480px;
+}
+.v2.qwrap .qmain {
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;                 /* 滚动条不压内容 */
+}
 .v2 .qbar {
   display: flex; align-items: center; gap: 12px; padding: 10px 16px; margin-bottom: 16px;
   /* 窄屏放不下就整行换到第二行；**子项一律不收缩**——
@@ -724,9 +739,9 @@
 .v2 .qbar .qpos { font-size: 12.5px; color: var(--weak); font-variant-numeric: tabular-nums; }
 .v2 .qdrawer {
   flex: 0 0 340px; width: 340px;
-  position: sticky; top: 0;
   display: flex; flex-direction: column;
-  height: calc(100vh - 100px); min-height: 320px;
+  /* 等高由父容器 grid stretch 决定，这里只设下限——左右基准天生一致 */
+  min-height: 480px;
   overflow: hidden;
 }
 .v2 .qdrawer .qhead { padding: 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
@@ -758,8 +773,8 @@
 .v2 .qrow .ck { color: var(--ok); flex: none; }
 .v2 .qmeta { flex: none; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--weak); font-variant-numeric: tabular-nums; }
 /* 窄屏回退：先收窄队列栏，实在放不下就整个藏掉（状态条翻张仍可用） */
-@media (max-width: 1180px) { .v2 .qdrawer { flex-basis: 280px; width: 280px; } }
-@media (max-width: 1020px) { .v2.qwrap .qdrawer { display: none; } }
+@media (max-width: 1180px) { .v2 .qdrawer { flex-basis: 280px; width: 280px; } .v2.qwrap { grid-template-columns: 280px minmax(0, 1fr); } }
+@media (max-width: 1020px) { .v2.qwrap .qdrawer { display: none; } .v2.qwrap { grid-template-columns: minmax(0, 1fr); } .v2.qwrap .qmain { max-height: none; } }
 
 /* ═══════════════════════════════════════════════════════════════════════
  * 响应式基线（2026-10-25）

@@ -26,12 +26,27 @@ ConflictError 单独回 409：那不是「你输错了」，而是「这件事�
 
 正文预览的脱敏由全局 MaskMiddleware 覆盖（所有 JSON 出口），这里不重复做。
 """
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from .. import doclib
+from ..iam_auth import current_user
 from .common import must_exist
 
 router = APIRouter(prefix="/api/doclib", tags=["规则资产 · 制度文件库"])
+
+
+def require_engineer(request: Request) -> dict:
+    """资产写口角色闸（2026-10-26 IA 重排）：制度文件/抽取/发布是规则管理员的职责。
+
+    前端菜单收敛不是权限边界——SessionMiddleware 只验登录不验角色。
+    与 review.py 的审核岗闸（manual 403）同一模式：403 不是 401，
+    人已登录，只是职责不对。GET 不拦（审计追溯等只读场景要读清单）。
+    """
+    u = current_user(request)
+    if u["role_key"] not in ("engineer", "admin"):
+        raise HTTPException(403, "该操作仅限规则管理员（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    return u
 
 
 def _guard(fn, *a, **kw):
@@ -89,7 +104,7 @@ def roots(instance_id: str = Query(None, description="不传用当前实例")):
 
 
 @router.post("/roots")
-def add_roots(body: dict = Body(...)):
+def add_roots(body: dict = Body(...), _g=Depends(require_engineer)):
     """纳入服务器上已有的目录（引用根，原地只读）。逐个独立判定，一个失败不影响其余。
 
     **这不是上传。** 它要求路径在**服务器**上存在；客户端本机的文件走 /upload。
@@ -114,7 +129,8 @@ def upload(files: list[UploadFile] = File(..., description="一次可多份，�
                            "webkitRelativePath）；不传就只用文件名"),
            subdir: str = Form(None, description="统一放进托管根下的某个子目录"),
            by: str = Form(None, description="上传人署名"),
-           instance_id: str = Form(None, description="不传用当前实例")):
+           instance_id: str = Form(None, description="不传用当前实例"),
+           _g=Depends(require_engineer)):
     """把客户端本机的制度文件传到服务器的托管目录。
 
     落在 var/doclib/{领域id}/{实例id}/ 下，**按内容 sha256 去重**，
@@ -160,14 +176,14 @@ def storage(instance_id: str = Query(None),
 
 
 @router.patch("/roots/{root_id}")
-def patch_root(root_id: str, body: dict = Body(...)):
+def patch_root(root_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     ok = doclib.set_root(root_id, body.get("enabled"), body.get("label"))
     must_exist(ok or None, "文件夹 " + root_id)
     return {"root_id": root_id, "ok": True}
 
 
 @router.delete("/roots/{root_id}")
-def remove_root(root_id: str, confirm: str = Query("", description="必须传 confirm=yes")):
+def remove_root(root_id: str, confirm: str = Query("", description="必须传 confirm=yes"), _g=Depends(require_engineer)):
     if confirm != "yes":
         raise HTTPException(400, "移出文件库需要二次确认，请传 confirm=yes")
     r = _guard(doclib.remove_root, root_id)
@@ -177,7 +193,7 @@ def remove_root(root_id: str, confirm: str = Query("", description="必须传 co
 
 # ── 扫描 ────────────────────────────────────────────────────────────────────
 @router.post("/scan")
-def scan(body: dict = Body(None)):
+def scan(body: dict = Body(None), _g=Depends(require_engineer)):
     """扫描并形成快照。第二次及以后会给出变化清单（新增/修改/消失）。
 
     不传 root_ids 时只扫**当前实例**的根。
@@ -297,7 +313,7 @@ def ocr_engine():
 
 
 @router.post("/ocr")
-def run_ocr(body: dict = Body(None)):
+def run_ocr(_g=Depends(require_engineer), body: dict = Body(None)):
     """对「需OCR」的文件跑本机 OCR。不出网、不计费。"""
     b = body or {}
     try:
@@ -316,7 +332,7 @@ from .. import vision_ocr as vocr   # noqa: E402
 
 
 @router.post("/vision-ocr")
-def run_vision_ocr(body: dict = Body(None)):
+def run_vision_ocr(_g=Depends(require_engineer), body: dict = Body(None)):
     """扫描件 → 视觉模型逐页转写（出网计费，页间并行）。"""
     b = body or {}
     try:
@@ -364,7 +380,7 @@ def vision_pages(limit: int = Query(40, ge=1, le=200)):
 
 
 @router.post("/vision/read")
-def vision_read(body: dict = Body(...)):
+def vision_read(_g=Depends(require_engineer), body: dict = Body(...)):
     """读一页。**这一下会出网、会计费。**"""
     b = body or {}
     if not b.get("file_id") or b.get("page_no") is None:
@@ -396,7 +412,7 @@ def vision_storage():
 
 
 @router.post("/vision/verify")
-def vision_verify(body: dict = Body(...)):
+def vision_verify(_g=Depends(require_engineer), body: dict = Body(...)):
     """人工签字。**签字之前，读图出来的数字不许进任何规则阈值。**
 
     模型读图不等于人眼读图：它同样会把看不清的格子编出来，而且编得通顺。
@@ -428,7 +444,7 @@ ex_router = APIRouter(prefix="/api/extract", tags=["规则资产 · 制度抽取
 
 
 @ex_router.post("/split")
-def split(body: dict = Body(None)):
+def split(_g=Depends(require_engineer), body: dict = Body(None)):
     """条款切分。不调模型、不出网。
 
     `only_changed=true` 只切增量（从没抽过的 + 抽过之后又被改过的）。
@@ -462,7 +478,7 @@ def ex_tasks(limit: int = Query(20, ge=1, le=200)):
 
 
 @ex_router.post("/ai")
-def ai(body: dict = Body(None)):
+def ai(_g=Depends(require_engineer), body: dict = Body(None)):
     """AI 草稿。**真调模型、真出网、真计费**，所以只在点击时跑，一次最多 limit 条。"""
     b = body or {}
     try:
@@ -486,7 +502,7 @@ def drafts(task_id: str = Query(None), state: str = Query(None),
 
 
 @ex_router.post("/drafts/{draft_id}/review")
-def review(draft_id: str, body: dict = Body(...)):
+def review(draft_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     try:
         ok = dx.review_draft(draft_id, body.get("state"), body.get("reviewer"),
                              body.get("reason"))
@@ -504,7 +520,7 @@ from .. import rule_detail   # noqa: E402
 # 少了可信度就会出事——OCR 来的数字和原生文本的数字在页面上长得一模一样，
 # 而项目纪律是只有原生文本与人眼读图能进硬阈值。
 @ex_router.post("/details")
-def details_run(body: dict = Body(None)):
+def details_run(_g=Depends(require_engineer), body: dict = Body(None)):
     """按表头名把表格行映射成规则明细 + 把已成稿的草稿投影进同一张表。
 
     **不出网、不计费、不调模型。**
@@ -540,7 +556,7 @@ def details_tags():
 
 
 @ex_router.post("/details/{detail_id}/review")
-def details_review(detail_id: str, body: dict = Body(...)):
+def details_review(detail_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     try:
         ok = rule_detail.review(detail_id, body.get("state"), body.get("reviewer"),
                                 body.get("reason"))
@@ -583,7 +599,7 @@ def reviewers():
 
 
 @ex_router.post("/details/{detail_id}/tags")
-def details_tag_add(detail_id: str, body: dict = Body(...)):
+def details_tag_add(detail_id: str, body: dict = Body(...), _g=Depends(require_engineer)):
     """人工标签。**署名和理由都不许空**——没有依据的标签等于没有。"""
     try:
         rule_detail.add_tag(detail_id, body.get("tag"), body.get("by"), body.get("why"))
@@ -593,7 +609,7 @@ def details_tag_add(detail_id: str, body: dict = Body(...)):
 
 
 @ex_router.delete("/details/{detail_id}/tags/{tag}")
-def details_tag_del(detail_id: str, tag: str):
+def details_tag_del(detail_id: str, tag: str, _g=Depends(require_engineer)):
     return {"detail_id": detail_id, "tag": tag, "ok": rule_detail.del_tag(detail_id, tag)}
 
 
@@ -622,7 +638,7 @@ def incremental():
 
 
 @ex_router.post("/run")
-def run_job(body: dict = Body(None)):
+def run_job(_g=Depends(require_engineer), body: dict = Body(None)):
     """启动一次抽取协同。**包含 AI 草稿那一步，会真出网、真计费。**
 
     `only_changed` 默认 **true**（增量）：四个 Agent 全链只处理
