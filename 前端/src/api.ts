@@ -621,6 +621,60 @@ export interface OntoGraph {
                 needs_confirm: boolean; gap_id: string | null }[]
   note: string
 }
+
+// ── 关系图谱完整版（规则库第四页签，P1-G）──────────────────────────────────
+/** 溯源三要素：制度文件名 + 条款号 + 可信度。tooltip 一行说完「凭什么」 */
+export interface GraphSource {
+  file: string | null
+  clause: string | null
+  confidence: string | null
+}
+export interface GraphRuleNode {
+  rule_id: string; rule_name: string; dimension: string; dimension_name: string
+  risk_class: string | null; control_type: string | null; rule_class: string
+  compiled: boolean; demo_executable: boolean; feasibility: string | null
+  priority: number | null
+  /** 近 30 天命中次数（review_finding outcome=hit 聚合）。呼吸光晕∝它 */
+  hit_count: number
+  layer: 'rule'
+  source: GraphSource | null
+}
+export interface GraphRuleEdge {
+  rule_id: string; rel_type: 'overrides' | 'priority_over' | 'conflicts_with'
+  other_rule: string; needs_confirm: boolean; gap_id: string | null
+  /** conflicts_with 且 needs_confirm——红虚线脉冲、点击直开对比抽屉 */
+  conflict_open: boolean
+  note: Record<string, unknown> | null
+}
+export interface GraphConceptNode {
+  concept_id: string; concept_name: string; entity_id: string; entity_name: string
+  data_type: string; availability: string; gap_id: string | null
+  sensitive: boolean; n_rules: number
+  layer: 'concept'
+}
+export interface OntoGraphRich {
+  ontology_version: string
+  entities: { entity_id: string; entity_name: string; source: string | null; concepts: number
+              avail: number | null; gap: number | null; degree: number; isolated: boolean
+              layer: 'biz' }[]
+  entity_edges: { from_entity: string; to_entity: string; rel_type: string
+                  cardinality: string | null; source: string | null; note: string | null }[]
+  rule_nodes: GraphRuleNode[]
+  rule_edges: GraphRuleEdge[]
+  concept_nodes: GraphConceptNode[]
+  concept_edges: { concept_id: string; rule_id: string; role: string }[]
+  dimensions: { id: string; name: string }[]
+  note: string
+}
+/** 概念下钻：定义 + 可得性 + 引用它的规则清单（role=read/threshold/exist） */
+export interface ConceptRules {
+  concept_id: string; concept_name: string; entity_id: string; entity_name: string | null
+  data_type: string; availability: string; gap_id: string | null
+  sensitive: boolean; ocr_sourced: boolean; note: string | null; alias: string[]
+  rules: { rule_id: string; rule_name: string; dimension: string
+           control_type: string | null; compiled: boolean
+           demo_executable: boolean; role: string }[]
+}
 export interface DomainInstance {
   instance_id: string
   domain_id: string
@@ -951,6 +1005,44 @@ export interface RelationCompare {
     | { kind: 'clause'; label: string; sources: { code: string; clause_no: string
         found: boolean; clause: CompareClause | null }[] }
     | { kind: 'unknown'; label: string }
+}
+
+// ── 异议收件箱（B-P0-1，规则库「异议」页签）─────────────────────────────────
+/** 聚合行：一条规则的异议汇总。n 含已处置；pending_n>0 → state=pending */
+export interface FeedbackAgg {
+  rule_id: string
+  rule_name: string | null
+  dimension: string | null
+  n: number
+  pending_n: number
+  /** 带 A-P0-1 逐条文字意见的条数（历史行无 note 不计入） */
+  note_n: number
+  last_at: string | null
+  /** pending 待处置 / keep 已维持 / revise 已修订 */
+  state: 'pending' | 'keep' | 'revise'
+}
+/** 明细行：一条异议。note 有则显示、无则不渲染（历史兼容） */
+export interface FeedbackItem {
+  id: number
+  bill_no: string | null
+  run_id: string | null
+  at: string | null
+  note: string | null
+  /** 当时判定的 message 原文（标注可下钻） */
+  finding_message: string | null
+  /** 提出异议的审核员（user_label 口径，不打星） */
+  user_label: string | null
+  decision: 'keep' | 'revise' | undefined
+  resolved_by: string | null
+  resolved_note: string | null
+  resolved_at: string | null
+}
+export interface FeedbackDetail {
+  rule_id: string
+  rule: Record<string, unknown> | null
+  items: FeedbackItem[]
+  total: number
+  note: string
 }
 
 export interface Bill {
@@ -1413,6 +1505,19 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) }),
   rule: (id: string) =>
     request<Record<string, unknown>>(`/api/asset/rules/${encodeURIComponent(id)}`),
+  // ── 异议收件箱（B-P0-1）：审核岗「不认可」回流的规则侧汇总 ──────────────────
+  /** 聚合列表（state=pending/keep/revise/all；pending 计数给页签 tab 用） */
+  feedbackInbox: (state?: string) =>
+    request<{ items: FeedbackAgg[]; total: number; pending: number; note: string }>(
+      `/api/asset/feedbacks${qs({ state })}`),
+  /** 一条规则的异议明细（聚合抽屉数据源） */
+  feedbackDetail: (ruleId: string) =>
+    request<FeedbackDetail>(`/api/asset/feedbacks/${encodeURIComponent(ruleId)}`),
+  /** 处置（keep 维持规则·说明必填 / revise 确认为规则问题·返回修订预填） */
+  feedbackResolve: (fid: number, body: { decision: 'keep' | 'revise'; note?: string }) =>
+    request<{ ok: boolean; id: number; decision: string; rule_id: string
+              prefill: string | null; note: string }>(
+      `/api/asset/feedbacks/${fid}/resolve`, { method: 'POST', body: JSON.stringify(body) }),
 
   lookupTables: () => request<{ items: Record<string, unknown>[] }>('/api/asset/lookup-tables'),
   /** 单张标准表：行数据 + 对账（源表行数 vs 归并行数）。类型原为宽 Record，报销标准
@@ -1806,6 +1911,11 @@ export const api = {
     request<{ items: OntoAdoption[]; note: string }>('/api/onto/adoptions'),
   ontoRelations: () => request<OntoRelations>('/api/onto/relations'),
   ontoGraph: () => request<OntoGraph>('/api/onto/graph'),
+  // 关系图谱完整版（规则库第四页签）：hit_count/概念引用边/溯源三要素/分层标签
+  ontoGraphRich: () => request<OntoGraphRich>('/api/onto/graph/rich'),
+  // 概念节点下钻：引用它的规则清单
+  ontoConceptRules: (id: string) =>
+    request<ConceptRules>(`/api/onto/concepts/${encodeURIComponent(id)}/rules`),
   ontoStorage: () => request<{ items: StorageRow[]; note: string }>('/api/onto/storage'),
 
   // -- 栏目四 · 流程本体 -------------------------------------------------------

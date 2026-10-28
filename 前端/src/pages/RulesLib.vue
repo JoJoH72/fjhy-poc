@@ -9,10 +9,19 @@
  * 现按接口真实字段（rule_name/review_state/origin；table_id/rows 两段式）重接，
  * 数据全部复用现有只读接口，不动后端。
  */
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
 import type { ExDetail } from '../api'
+
+// 图谱组件异步加载：ECharts（+~170KB gzip）只在第一次点开「关系图谱」页签时下载，
+// 规则清单首屏不背这个包。
+const RelationGraph = defineAsyncComponent(() =>
+  import('../components/RelationGraph.vue'))
+
+// 异议收件箱（B-P0-1）：审核岗「不认可」回流的规则侧汇总与处置。第四页签。
+const FeedbackInbox = defineAsyncComponent(() =>
+  import('../components/FeedbackInbox.vue'))
 
 const tab = ref('rules')
 const kw = ref('')
@@ -271,7 +280,7 @@ function valueText(rowValue: Record<string, unknown>): string {
                       </template>
                       <template v-else-if="column.key === 'origin'">
                         <a-tooltip :title="d.origin === 'AI草稿'
-                          ? '模型起草，数值需人工逐条核' : '确定性映射（不出网不计费）'">
+                          ? '模型起草，数值需人工逐条核对' : '确定性映射，不出网不计费'">
                           <a-tag :color="ORIGIN_COLOR[d.origin] || 'default'">
                             {{ d.origin === 'AI草稿' ? 'AI草稿' : d.origin }}
                           </a-tag>
@@ -309,7 +318,7 @@ function valueText(rowValue: Record<string, unknown>): string {
                                 <a-tag v-for="n in d.numbers" :key="n"
                                   :color="suspectNums(d).has(n) ? 'error' : 'default'"
                                   :title="suspectNums(d).has(n)
-                                    ? '原文里找不到这个数值——模型可能编的，须人工核对' : '原文里有此数值'">
+                                    ? '原文中未找到该数值，疑似模型幻觉，须人工核对' : '原文中有此数值'">
                                   {{ n }}{{ suspectNums(d).has(n) ? ' ⚠' : '' }}
                                 </a-tag>
                               </template>
@@ -323,6 +332,20 @@ function valueText(rowValue: Record<string, unknown>): string {
                   </a-table>
                 </template>
               </Async>
+            </a-tab-pane>
+            <!-- B-P0-1 异议收件箱：审核岗勾「不认可这条命中」的回流汇总与处置。
+                 聚合 + 明细抽屉 + 处置两动作（维持/转修订），处置进操作日志。 -->
+            <a-tab-pane key="feedback" tab="异议">
+              <FeedbackInbox :open="tab === 'feedback'" />
+            </a-tab-pane>
+            <!-- P1-G 关系图谱：一张图三层（全景/规则/概念/业务），ECharts 按需引入。
+                 粒子承载信息：光晕∝近30天命中、红虚线脉冲=待裁决冲突、连线粒子=覆盖/优先方向。
+                 数据源 /api/onto/graph/rich（薄出口，引擎零改动）。 -->
+            <a-tab-pane key="graph" tab="关系图谱">
+              <div class="dim" style="margin-bottom: 8px">
+                规则、概念与业务实体的关系全景——点节点看详情，Ctrl+点两个规则做对比
+              </div>
+              <RelationGraph :open="tab === 'graph'" />
             </a-tab-pane>
           </a-tabs>
         </a-card>

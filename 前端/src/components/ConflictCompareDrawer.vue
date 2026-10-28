@@ -137,7 +137,7 @@ const sameNote = computed(() =>
 
 async function submit() {
   if (!resolution.value.trim()) {
-    message.warning('裁决必须写结论——三个月后看这条规则的人只看得到这段话')
+    message.warning('裁决须填写结论（留痕口径）')
     return
   }
   submitting.value = true
@@ -148,7 +148,7 @@ async function submit() {
       by: who.value,
     })
     message.success(decision.value === 'merge'
-      ? '裁决已留痕。人工合并需修订规则并随版本发布后才生效'
+      ? '裁决已留痕；人工合并需修订规则并随版本发布后生效'
       : '裁决已留痕（操作日志可查）')
     emit('resolved')
     emit('update:open', false)
@@ -166,7 +166,7 @@ async function submit() {
     title="冲突对比与裁决"
     @close="emit('update:open', false)">
     <div v-if="loading" style="padding: 40px; text-align: center; color: rgba(0,0,0,.45)">
-      正在取两侧口径…
+      正在加载两侧口径…
     </div>
     <div v-else-if="err" style="padding: 24px">
       <a-alert type="error" show-icon message="取对比数据失败" :description="err" />
@@ -225,7 +225,7 @@ async function submit() {
                   </template>
                 </p>
                 <div v-if="data.left.source_clause_full.fallback_text" class="q-note">
-                  条款号在条款库对不上，以上为装载时备份的出处原文
+                  条款库未命中该条款号，以上为装载时备份的出处原文
                 </div>
               </div>
             </template>
@@ -276,7 +276,7 @@ async function submit() {
                   </template>
                 </p>
                 <div v-else class="q-note">
-                  出处文件未切条款或不在可比对集——不猜文件、不编原文
+                  出处文件未切条款或不在比对集内，无原文可显示
                 </div>
               </div>
               <!-- 数值分歧（note 的 their/our value）：原文缺失时的差异主证据 -->
@@ -305,7 +305,7 @@ async function submit() {
         <div class="diff-title">
           八要素对照
           <a-tag v-if="nDiff" color="orange">{{ nDiff }} 项不同</a-tag>
-          <span v-else class="dim">各要素一致（分歧在原文表述）</span>
+          <span v-else class="dim">各要素一致，分歧仅在原文表述</span>
         </div>
         <table class="diff-table">
           <tbody>
@@ -330,7 +330,7 @@ async function submit() {
         </a-radio-group>
         <div class="rg-row">
           <a-textarea v-model:value="resolution" :rows="2" style="flex: 1"
-            placeholder="裁决结论（必填）：为什么采这一边——三个月后看这条规则的人只看得到这段话" />
+            placeholder="裁决结论（必填）：所依据的口径与理由，随留痕可查" />
         </div>
         <div class="rg-row">
           <span class="dim">裁决人：<b>{{ who }}</b>（会话登录人）</span>

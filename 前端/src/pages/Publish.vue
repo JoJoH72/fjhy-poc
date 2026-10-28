@@ -157,7 +157,7 @@ const relCols = [
 ]
 const epCols = [
   { title: '接口', dataIndex: 'path', width: 330 },
-  { title: '给的是什么', dataIndex: 'what' },
+  { title: '返回内容', dataIndex: 'what' },
 ]
 const layerCols = [
   { title: '#', dataIndex: 'ord', width: 40, align: 'center' as const },
@@ -183,9 +183,9 @@ const storeCols = [
   { title: '表', dataIndex: 'table_name', width: 230 },
   { title: '行数', dataIndex: 'rows', width: 60, align: 'right' as const },
   { title: '存的是什么', dataIndex: 'what', width: 190 },
-  { title: '谁写的', dataIndex: 'written_by', width: 130 },
+  { title: '写入方', dataIndex: 'written_by', width: 130 },
   { title: '重算时', dataIndex: 'on_recalc', width: 140 },
-  { title: '为什么这么存', key: 'why' },
+  { title: '存储原因', key: 'why' },
 ]
 const dt = (s: unknown) => String(s || '—').slice(0, 19).replace('T', ' ')
 
@@ -208,7 +208,7 @@ onMounted(() => loadWs())
       <a-tab-pane key="ws" tab="工作区">
         <a-alert v-if="err" type="error" show-icon :message="err" style="margin-bottom: 12px" />
         <template v-if="ws">
-          <h3 class="sec">现在能发什么</h3>
+          <h3 class="sec">工作区快照</h3>
           <div class="sub"><MarkText :text="ws.note" /></div>
           <a-table :columns="wsCols" :data-source="ws.layers" row-key="layer" size="small"
             :pagination="false" :row-class-name="(r: any) => r.is_triple ? 'row-tri' : ''">
@@ -239,9 +239,9 @@ onMounted(() => loadWs())
                 规则 新增 <b>{{ ws.diff.added }}</b> / 修改 <b>{{ ws.diff.modified }}</b>
                 / 退役 <b>{{ ws.diff.retired }}</b> / 未变 {{ ws.diff.unchanged }}
                 <span v-if="ws.diff.layers_changed.length" class="dim">
-                  · 变了的层：{{ ws.diff.layers_changed.join('、') }}
+                  · 变化的层：{{ ws.diff.layers_changed.join('、') }}
                 </span>
-                <span v-else class="dim">· 九层都没变，这一版和生效版内容相同</span>
+                <span v-else class="dim">· 与生效版内容相同</span>
               </template>
               <template v-else>
                 <a-tag color="warning">没有可比的已发布版本</a-tag>
@@ -256,7 +256,7 @@ onMounted(() => loadWs())
               { title: '闸门', dataIndex: 'gate', width: 150 },
               { title: '结果', key: 'ok', width: 80, align: 'center' },
               { title: '口径', key: 'detail', width: 240 },
-              { title: '怎么算的', key: 'how' },
+              { title: '计算方式', key: 'how' },
             ]">
             <template #bodyCell="{ column, record: g }">
               <template v-if="column.key === 'ok'">
@@ -273,7 +273,7 @@ onMounted(() => loadWs())
           <div class="row" style="margin-top: 12px">
             <a-input v-model:value="version" placeholder="版本号" style="width: 170px" />
             <a-input v-model:value="who" placeholder="冻结人署名（必填）" style="width: 160px" />
-            <a-input v-model:value="note" placeholder="发布说明：为什么发这一版" style="flex: 1" />
+            <a-input v-model:value="note" placeholder="发布说明" style="flex: 1" />
             <a-button type="primary" :disabled="!!busy || !canFreeze || !version || !who" @click="doFreeze">
               冻结为新版本
             </a-button>
@@ -290,7 +290,7 @@ onMounted(() => loadWs())
           （{{ ws.current.release_id }}）—— {{ ws.current.why }}
         </div>
         <div class="row" style="margin-bottom: 8px">
-          <a-input v-model:value="who" placeholder="操作人署名（选填，只记在痕迹里）" style="width: 220px" />
+          <a-input v-model:value="who" placeholder="操作人署名（选填）" style="width: 220px" />
         </div>
         <a-table :columns="relCols" :data-source="rows" row-key="release_id" size="small"
           :pagination="false"
@@ -323,7 +323,9 @@ onMounted(() => loadWs())
                   @click="act('已签字发布', () => api.relPublish(r.release_id, who))">签字发布</a-button>
                 <a-button size="small" :disabled="!!busy || !who" style="margin-left: 4px"
                   @click="act('已删草稿', () => api.relDiscard(r.release_id, who))">删草稿</a-button>
-                <span v-if="!r.layers" class="dim">没冻内容（装载脚本建的工作区草稿）</span>
+                <a-tooltip v-if="!r.layers" title="空草稿：未冻结内容">
+                  <span class="dim">无内容</span>
+                </a-tooltip>
               </template>
               <template v-else-if="r.status === 'reviewing'">
                 <a-button size="small" :disabled="!!busy || !who"
@@ -375,9 +377,8 @@ onMounted(() => loadWs())
                   </template>
                 </a-table>
                 <div v-else class="blk-note">
-                  这一版没有快照内容（<code>frozen_at</code> 为空的空壳）。
-                  装载脚本建的工作区草稿就是这样——它只记了规则条数，没抄九层。
-                  要发版请到「工作区」点<b>冻结为新版本</b>。
+                  本版无快照内容（空壳草稿，仅记录规则条数）。
+                  发版请到「工作区」点<b>冻结为新版本</b>。
                 </div>
                 <pre v-if="pay" class="snap">{{ pay.layer }}  sha {{ pay.sha }}
 {{ pay.text }}</pre>
@@ -394,15 +395,15 @@ onMounted(() => loadWs())
                            { to: rbTarget, by: who, reason }))">回滚这一版</a-button>
                 </div>
                 <div v-if="detail.items.length" class="dim" style="font-size: 12px; margin-top: 8px">
-                  逐条规则的变更：
+                  逐条规则变更：
                   <template v-for="k in ['added', 'modified', 'retired', 'unchanged']" :key="k">
                     {{ CHANGE[k] }} {{ detail.items.filter((x) => x.change === k).length }} ·
                   </template>
-                  <b>这不是该版本的内容</b>——内容在「规则」那一层的快照里。
+                  版本内容见「规则」层快照
                 </div>
               </template>
             </div>
-            <div v-else class="dim">点发布号查看详情</div>
+            <div v-else class="dim">点发布号展开详情</div>
           </template>
         </a-table>
         <div class="blk-note" style="margin-top: 8px">
@@ -452,8 +453,7 @@ onMounted(() => loadWs())
 
         <h3 class="sec">可消费的版本</h3>
         <div v-if="!published.length" class="blk-note">
-          还没有任何一版签字发布，所以对外接口现在是空的——
-          <b>这不等于接口没做</b>。去「工作区」冻结一版，再「签字发布」。
+          暂无已签字发布的版本，对外接口无数据。发布路径：「工作区」冻结 → 「签字发布」。
         </div>
         <a-table v-else :columns="pubCols" :data-source="published" row-key="release_id"
           size="small" :pagination="published.length > 10 ? { pageSize: 10 } : false">
@@ -488,7 +488,7 @@ onMounted(() => loadWs())
             <template v-else-if="column.dataIndex === 'bytes'">{{ l.bytes ?? '—' }}</template>
           </template>
         </a-table>
-        <div v-else class="blk-note">还没有人拉过。</div>
+        <div v-else class="blk-note">暂无拉取记录</div>
       </a-tab-pane>
 
       <a-tab-pane key="store" tab="存储">

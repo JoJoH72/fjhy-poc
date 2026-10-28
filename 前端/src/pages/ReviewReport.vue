@@ -82,9 +82,9 @@ async function loadQueue() {
       const lastQ = last ? queue.value.find((q) => q.run_id === last) : null
       if (lastQ) {
         pickQueue(lastQ)
-        message.info(`已回到上次处理到的一张（${lastQ.no.replace(/^(FJPG-BX|FJHY-DEMO-)/, '')}）`)
+        message.info(`已回到上次处理的一张（${lastQ.no.replace(/^(FJPG-BX|FJHY-DEMO-)/, '')}）`)
       } else {
-        if (last) message.info('上次处理到的那张已有复核结论（或被他人审掉），从队首继续')
+        if (last) message.info('上次处理的单据已有复核结论，从队首继续')
         pickQueue(queue.value[0])
       }
     }
@@ -313,7 +313,7 @@ async function submit(decision: 'agree' | 'return') {
   const reasonText = reason.value.trim()
   const noteText = note.value.trim()
   if (decision === 'return' && !reasonText) {
-    submitErr.value = '退回必须给理由——理由是误报/漏报回流的起点'
+    submitErr.value = '退回须填写原因（记入留痕并回流偏差统计）'
     return
   }
   submitting.value = true
@@ -328,6 +328,7 @@ async function submit(decision: 'agree' | 'return') {
                    : withNote ? noteText : undefined,
       return_category: decision === 'return' ? returnCat.value : undefined,
       disagree_with: disagree.value,
+      disagree_notes: disagreeNotes.value,
       verified: verified.value,
     })
     // 提交成功后当前单会移出队列，下一张要在刷新前记住
@@ -352,6 +353,7 @@ async function submit(decision: 'agree' | 'return') {
     note.value = ''
     reason.value = ''
     disagree.value = []
+    disagreeNotes.value = {}
     verified.value = []
     showReturn.value = false
     // 提交即「本单已处理」：通过/退回都自动下一张（600ms 让人看清结果）
@@ -367,8 +369,22 @@ async function submit(decision: 'agree' | 'return') {
 }
 function toggleDisagree(rid: string) {
   const i = disagree.value.indexOf(rid)
-  i >= 0 ? disagree.value.splice(i, 1) : disagree.value.push(rid)
+  if (i >= 0) {
+    disagree.value.splice(i, 1)
+    // 取消勾选立即丢弃该条的意见草稿——意见只属于「本次勾选+本次提交」，
+    // 取消了还留着，下次重勾会带出旧话（与换单清账同一纪律）。
+    delete disagreeNotes.value[rid]
+  } else {
+    disagree.value.push(rid)
+  }
 }
+
+/* ── 逐条异议文字意见（A-P0-1，2026-10-27）──
+ * 勾「不认可这条命中」旁的就地输入：规则管理员侧异议收件箱点开要看到
+ * 的就是这句原话——只有 rule_id 的回流无法处置。选填、maxlength 100、
+ * 提交后随 disagree 逐条回流 feedback_log.actual.note；键盘流不受影响
+ * （onKey 已判 tagName，输入框内不劫持）。 */
+const disagreeNotes = ref<Record<string, string>>({})
 
 /* ── 分项核实（P1-5）：「已人工核实」勾选，与「不认可」对偶 ──
  * AI 判不了的项，人核过后必须留分项痕迹——否则审计时说不清单子里哪几项
@@ -545,6 +561,7 @@ watch(() => report.value?.run.bill_no, (no) => {
   note.value = ''
   reason.value = ''
   disagree.value = []
+  disagreeNotes.value = {}
   verified.value = []
   returnCat.value = undefined
   submitErr.value = ''
@@ -679,8 +696,7 @@ const rowKeyOf = (r: unknown): string => {
       <!-- 提交后回看条（P0-9）：替代即逝 toast——队列栏里被提交的单已消失，
            8 秒内可一键回看刚才那张的报告（闸门锁定+留痕可见）。 -->
       <a-alert v-if="doneBanner" type="success" show-icon closable style="margin-top: 8px"
-        :message="doneBanner.text"
-        :description="undefined">
+        :message="doneBanner.text">
         <template #action>
           <a-button size="small" @click="router.push(`/review/report/${encodeURIComponent(doneBanner.runId)}`)">
             查看刚才的单
@@ -727,7 +743,7 @@ const rowKeyOf = (r: unknown): string => {
           </div>
           <div v-if="doneEntry" class="act done-row">
             <a-tag color="success">已复核：{{ doneLabel(doneEntry.d, !!doneEntry.note) }}</a-tag>
-            <span class="dim">留痕已入库存档（见下方复核记录），同一轮不重复记录</span>
+            <span class="dim">留痕见下方复核记录</span>
           </div>
           <div v-else class="act">
             <!-- 复核人只读（P0-4）：署名单一来源 = 会话。此前可编辑的输入框与
@@ -876,13 +892,21 @@ const rowKeyOf = (r: unknown): string => {
                   </div>
                   <label v-if="r.outcome === 'hit'" class="ev-dis" @click.stop>
                     <input type="checkbox" :checked="disagree.includes(r.id)" @change="toggleDisagreeEx(r.id)" />
-                    我不认可这条命中（提交后逐条回流误报统计）
+                    不认可此命中（提交后逐条回流误报统计）
                   </label>
+                  <!-- 逐条异议意见（A-P0-1）：勾选后就地展开，随不认可回流。
+                       选填——勾了不写也回流（规则侧收件箱照样收到 rule_id），
+                       写了才带原话。maxlength 100 与后端口径一致。 -->
+                  <div v-if="r.outcome === 'hit' && disagree.includes(r.id)" class="ev-note-row" @click.stop>
+                    <a-input v-model:value="disagreeNotes[r.id]" size="small" :maxlength="100"
+                      class="ev-note-input" aria-label="异议修改意见"
+                      placeholder="修改意见（选填，随不认可回流）" />
+                  </div>
                   <!-- 分项核实（P1-5）：与「不认可」对偶的正向勾选。hit 与 pending
                        都可用——AI 判不了的项，人核过后留分项痕迹。 -->
                   <label v-if="r.outcome === 'hit' || r.outcome === 'pending'" class="ev-ver" @click.stop>
                     <input type="checkbox" :checked="verified.includes(r.id)" @change="toggleVerifiedEx(r.id)" />
-                    已人工核实（{{ r.outcome === 'pending' ? '此判不了项我核过' : '此命中属实' }}，随复核留痕）
+                    已人工核实{{ r.outcome === 'pending' ? '（判不了项已核）' : '（命中属实）' }}，随复核留痕
                   </label>
                   <!-- 人工核点（P1-6）：行动指向——「这条判不了，你去看什么」 -->
                   <div v-if="r.f.human_check_hint" class="ev-hint">
@@ -906,7 +930,7 @@ const rowKeyOf = (r: unknown): string => {
           </a-table>
           <div v-if="disagree.length || verified.length" class="dis-note">
             <template v-if="verified.length">已人工核实 {{ verified.length }} 项（随复核留痕）</template>
-            <template v-if="disagree.length"><template v-if="verified.length"> · </template>已勾 {{ disagree.length }} 条不认可 —— 提交后逐条回流误报统计，「偏差与回流」页按规则可见</template>
+            <template v-if="disagree.length"><template v-if="verified.length"> · </template>不认可 {{ disagree.length }} 条（含意见 {{ Object.values(disagreeNotes).filter((v) => v && v.trim()).length }} 条）—— 提交后逐条回流，规则库「异议」页签可见</template>
           </div>
         </a-card>
 
@@ -1010,7 +1034,7 @@ const rowKeyOf = (r: unknown): string => {
       </div>
       <a-textarea v-model:value="reason" :rows="4" style="margin-top: 8px"
         placeholder="退回原因（必填）：缺少的材料或需修正的内容，将通知报账人修改后重新提交" />
-      <div class="dim" style="margin-top: 6px">填写原因后方可提交；原因将记入复核留痕，并作为漏报偏差候选回流统计</div>
+      <div class="dim" style="margin-top: 6px">原因记入复核留痕，并作为漏报偏差候选回流统计</div>
     </a-modal>
 
     <!-- 键盘快捷键帮助（P1-1）：没有帮助浮层的快捷键等于不存在 -->
@@ -1022,7 +1046,7 @@ const rowKeyOf = (r: unknown): string => {
         <div class="krow"><kbd>E</kbd><span>展开 / 收起首条证据</span></div>
         <div class="krow"><kbd>?</kbd><span>本帮助</span></div>
       </div>
-      <div class="dim" style="margin-top: 10px">输入框内按键不生效（正常打字）</div>
+      <div class="dim" style="margin-top: 10px">输入框内快捷键不生效</div>
     </a-modal>
 
     <!-- 附件大图查看器（P1-3）：缩放 / 拖拽 / 旋转 / 翻张 / 切换条 -->
@@ -1147,6 +1171,9 @@ const rowKeyOf = (r: unknown): string => {
 .ev-matched code { background: #fafafa; padding: 1px 6px; border-radius: 4px; }
 .ev-llm { margin-top: 10px; font-size: 12.5px; }
 .ev-dis { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12.5px; cursor: pointer; }
+/* 逐条异议意见（A-P0-1）：勾选后就地展开的单行输入 */
+.ev-note-row { margin-top: 6px; }
+.ev-note-input { max-width: 420px; }
 /* 分项核实（P1-5）与人工核点（P1-6） */
 .ev-ver { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12.5px; cursor: pointer; }
 .ev-hint { display: flex; align-items: flex-start; gap: 6px; margin-top: 10px; padding: 6px 10px;

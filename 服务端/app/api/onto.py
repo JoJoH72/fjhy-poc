@@ -384,6 +384,22 @@ def graph():
     return oc.graph()
 
 
+# 关系图谱完整版（规则库第四页签）：hit_count / 概念引用边 / 溯源三要素 / 分层标签。
+# 薄出口，引擎零改动；graph() 原样保留（旧消费者不动）。
+@router.get("/graph/rich")
+def graph_rich():
+    return oc.graph_rich()
+
+
+# 概念 → 引用它的规则清单（图谱概念节点下钻）。rule_concept 的只读反查。
+@router.get("/concepts/{concept_id}/rules")
+def concept_rules(concept_id: str):
+    c = oc.concept_rules(concept_id)
+    if not c:
+        raise HTTPException(404, "没有这个概念：%s" % concept_id)
+    return c
+
+
 # ── ⑤ 存储 ──────────────────────────────────────────────────────────────────
 @router.get("/storage")
 def storage():

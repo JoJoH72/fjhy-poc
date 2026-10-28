@@ -406,6 +406,127 @@ def graph():
                     "前者说明本体关系没建全，后者说明冲突的另一方还没成为规则。"}
 
 
+# ── 关系图谱（规则库第四页签，2026-10-27 P1-G）──────────────────────────────
+# 设计专章（打磨规划_规则管理员 §三）定的口径：**一张图、三层可切、信息长在粒子上**。
+# 这里是薄出口：所有数字实时取库，一条都不缓存——
+#   hit_count      review_finding 近 30 天命中次数（呼吸强度∝它）
+#   concept_edges  规则↔概念引用边（rule_concept 反查，下钻用）
+#   source         溯源三要素（文件名/条款号/可信度），tooltip 直接用
+#   layer          分层标签：biz(实体) / rule(规则) / concept(概念) / flow(流程)
+# 引擎零改动：只读 rule / rule_concept / review_finding 等现成表。
+# 维度名不在库里（装载器只装 D1..D10 的编号），从 YAML 的口径在这里做一份
+# 静态映射——**编号是库里的，名字是给人看的**，改维度要动的是 YAML 不是这里。
+DIM_NAMES = {
+    "D1": "主体与账户一致性", "D2": "审批单关联与一致性", "D3": "票据合规性",
+    "D4": "标准与限额", "D5": "补贴计发口径", "D6": "附件完整性",
+    "D7": "时间逻辑", "D8": "预算与分摊", "D9": "说明充分性", "D10": "单位特殊规则",
+}
+
+
+def graph_rich():
+    """关系图谱完整版出口。graph() 保持原样（旧出口有别的消费者），
+    这里在它之上补四样：全量规则节点（不只参与关系的 20 条）、
+    命中热度、概念引用边、溯源字段。"""
+    base = graph()
+    v = base["ontology_version"]
+
+    # ① 全量规则节点 + 命中热度（近 30 天 outcome='hit' 的 finding 按规则聚合）。
+    #    只统计 hit：pending 是「没跑成」，算进去会把「跑不动」画成「很热」。
+    hits = {r["rule_id"]: r["n"] for r in db.query("""
+        SELECT f.rule_id, count(*) AS n
+          FROM review_finding f
+          JOIN review_run rr ON rr.run_id = f.run_id
+         WHERE f.outcome = 'hit'
+           AND rr.started_at > now() - interval '30 days'
+         GROUP BY 1""")}
+    rnodes = db.query("""SELECT rule_id, name AS rule_name, dimension, risk_class,
+                                control_type, rule_class, compiled, demo_executable,
+                                feasibility, priority, source_clause
+                           FROM rule WHERE version = 1 ORDER BY rule_id""")
+    for r in rnodes:
+        r["hit_count"] = hits.get(r["rule_id"], 0)
+        r["layer"] = "rule"
+        r["dimension_name"] = DIM_NAMES.get(r["dimension"], r["dimension"])
+        # 溯源三要素：制度文件名 + 条款号 + 可信度（source_clause 是装载时
+        # 备份的 JSON；file 是类别代号（制度/要点/解答），原样给出——
+        # 代号→文件名的钉挂是另一套对账口径，这里不猜）。
+        sc = r.pop("source_clause") or {}
+        r["source"] = {"file": sc.get("file"), "clause": sc.get("clause"),
+                       "confidence": sc.get("confidence")} if sc else None
+
+    # ② 冲突边带上 note（裁决入口要展示 why/their_value）——graph() 没带
+    redges = db.query("""SELECT rule_id, rel_type, other_rule, needs_confirm,
+                                gap_id, note
+                           FROM rule_relation ORDER BY rule_id""")
+    for e in redges:
+        e["conflict_open"] = bool(e["rel_type"] == "conflicts_with" and e["needs_confirm"])
+        # note 是 JSON 字符串，解开给前端（解不开就置 None，不让一张图挂掉）
+        try:
+            e["note"] = json.loads(e["note"]) if e["note"] else None
+        except (ValueError, TypeError):
+            e["note"] = None
+
+    # ③ 概念节点（被规则引用的才进图——121 个概念里没被引用的画上去是噪声）
+    #    与概念→规则引用边。概念节点带可得性与缺口号：可得性不是绿的
+    #    在图上要能看出来（哪些规则吊在取不到的数据上）。
+    cedges = db.query("""SELECT rc.concept_id, rc.rule_id, rc.role
+                           FROM rule_concept rc
+                          WHERE rc.version = 1
+                          ORDER BY rc.concept_id, rc.rule_id""")
+    used = sorted({c["concept_id"] for c in cedges})
+    cnodes = db.query("""SELECT concept_id, name AS concept_name, entity_id,
+                                data_type, availability, gap_id, sensitive
+                           FROM ontology_concept WHERE version = %s
+                          AND concept_id = ANY(%s) ORDER BY concept_id""",
+                      (v, used)) if used else []
+    ent_name = {e["entity_id"]: e["entity_name"] for e in base["entities"]}
+    for c in cnodes:
+        c["layer"] = "concept"
+        c["entity_name"] = ent_name.get(c["entity_id"], "")
+        c["n_rules"] = sum(1 for e in cedges if e["concept_id"] == c["concept_id"])
+
+    # ④ 实体节点补 layer（graph() 的 entities 结构不动，加标签）
+    for e in base["entities"]:
+        e["layer"] = "biz"
+
+    return {
+        "ontology_version": v,
+        "entities": base["entities"], "entity_edges": base["entity_edges"],
+        "rule_nodes": rnodes, "rule_edges": redges,
+        "concept_nodes": cnodes, "concept_edges": cedges,
+        "dimensions": [{"id": k, "name": n} for k, n in DIM_NAMES.items()],
+        "note": "同一张图三层可切：业务（实体）/ 规则 / 概念。规则节点光晕∝近 30 天"
+                "命中次数；红色虚线脉冲=待裁决冲突（点开即对比裁决）；"
+                "灰点=零命中或不可执行。所有数字实时取库。",
+    }
+
+
+def concept_rules(concept_id):
+    """概念 → 引用它的规则清单（概念节点下钻用）。
+
+    rule_concept 本来就是这张清单，只是没有单独出口。带 role：
+    threshold 位（阈值概念）和 read 位的证据强度不同，分开标。
+    """
+    v = db.scalar("SELECT version FROM ontology_version WHERE is_current")
+    c = db.query_one("""SELECT concept_id, name AS concept_name, entity_id, data_type,
+                               availability, gap_id, sensitive, ocr_sourced, note, alias
+                          FROM ontology_concept WHERE concept_id=%s AND version=%s""",
+                     (concept_id, v))
+    if not c:
+        return None
+    c["entity_name"] = db.scalar(
+        "SELECT name FROM ontology_entity WHERE entity_id=%s AND version=%s",
+        (c["entity_id"], v))
+    c["rules"] = db.query("""SELECT r.rule_id, r.name AS rule_name, r.dimension,
+                                    r.control_type, r.compiled, r.demo_executable,
+                                    rc.role
+                               FROM rule_concept rc
+                               JOIN rule r ON r.rule_id = rc.rule_id AND r.version = rc.version
+                              WHERE rc.concept_id = %s AND rc.version = 1
+                              ORDER BY rc.role, r.rule_id""", (concept_id,))
+    return c
+
+
 # ── 存储 ────────────────────────────────────────────────────────────────────
 # 每一行都要说清三件事：谁写的、重算会不会被清、为什么这么定。
 # 页面上只给表名和行数没有意义——**人要知道的是「我点了重算，什么会消失」**。

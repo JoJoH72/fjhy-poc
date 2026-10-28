@@ -448,6 +448,218 @@ def relation_resolve(rule_id: str, request: Request, body: dict = None):
     return {"rule_id": rule_id, "decision": decision, "ok": True}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 异议收件箱（B-P0-1，2026-10-27）：审核岗「不认可这条命中」回流的消费侧。
+#
+# 回流侧早就在写（review.py manual_review → feedback_log，metric=
+# finding_vs_human / deviation_kind=false_positive / source=human_review），
+# 但规则管理员侧零呈现——审核岗提了异议没人收，客户 #2 的
+# 「意见回流至规则库侧汇总处理」断在中间。这里补消费侧：
+#   GET  /api/asset/feedbacks                  按规则聚合（页签计数用 pending）
+#   GET  /api/asset/feedbacks/{rule_id}        一条规则的异议明细（抽屉数据源）
+#   POST /api/asset/feedbacks/{fid}/resolve    处置（keep 维持 / revise 确认为规则问题）
+#
+# 与领导 Deviation 页同源双视图：共用 feedback_log 与同一聚合口径
+# （/api/deviation 的 false_positive_by_rule 与本接口的 n 是同一条 WHERE），
+# 不另起一套算法。处置动作（keep/revise）以 sys_op_log 为准——
+# op target 用精确键 feedback:{id}，聚合态从这里反查，不做字符串猜测。
+# ─────────────────────────────────────────────────────────────────────────────
+_FB_WHERE = """f.metric = 'finding_vs_human'
+   AND f.deviation_kind = 'false_positive'
+   AND f.source = 'human_review'
+   AND f.actual->>'rule_id' IS NOT NULL"""
+
+
+def _fb_decisions(fids: list) -> dict:
+    """异议 id → 处置动作（keep/revise）。处置动作的真身是 sys_op_log
+    （target=feedback:{id} 精确键）；resolved 三列只说「处置过了」，
+    「处置成什么」要看台账——台账只 INSERT 不删改，比任何状态列都可信。"""
+    out = {}
+    if not fids:
+        return out
+    for o in db.query(
+            """SELECT target, detail FROM sys_op_log
+               WHERE category='rule' AND action='处置异议'
+                 AND target = ANY(%s) ORDER BY id""",
+            (["feedback:%s" % i for i in fids],)):
+        try:
+            fid = int(o["target"].split(":", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        out[fid] = "revise" if "确认为规则问题" in (o["detail"] or "") else "keep"
+    return out
+
+
+@router.get("/feedbacks")
+def feedback_inbox(state: str = None, dimension: str = None):
+    """异议聚合列表（规则库「异议」页签数据源）。
+
+    state：pending 待处置 / keep 已维持 / revise 已修订 / all 全部（默认）。
+    排序：待处置优先、异议次数降序、最近时间倒序。聚合行不查明细——
+    明细点开抽屉再取（一页签一次聚合查询，量级 = 有异议的规则数）。
+    """
+    if state not in (None, "", "all", "pending", "keep", "revise"):
+        raise HTTPException(400, "state 只能是 pending / keep / revise / all")
+    where, params = _FB_WHERE, []
+    if dimension:
+        where += " AND r.dimension = %s"
+        params.append(dimension)
+    rows = db.query("""
+        SELECT f.actual->>'rule_id' AS rule_id,
+               max(r.name)          AS rule_name,
+               max(r.dimension)     AS dimension,
+               count(*)                                        AS n,
+               count(*) FILTER (WHERE f.resolved_by IS NULL)   AS pending_n,
+               count(*) FILTER (WHERE f.actual->>'note' IS NOT NULL) AS note_n,
+               max(f.observed_at)   AS last_at,
+               array_agg(f.id ORDER BY f.observed_at DESC)     AS fids
+        FROM feedback_log f
+        LEFT JOIN rule r ON r.rule_id = f.actual->>'rule_id' AND r.version = 1
+        WHERE """ + where + """
+        GROUP BY 1
+        ORDER BY (count(*) FILTER (WHERE f.resolved_by IS NULL)) DESC, count(*) DESC,
+                 max(f.observed_at) DESC""", tuple(params))
+    decisions = _fb_decisions([i for r in rows for i in (r["fids"] or [])])
+    items = []
+    for r in rows:
+        fids = r["fids"] or []
+        if (r["pending_n"] or 0) > 0:
+            st = "pending"
+        else:
+            acts = [decisions.get(i) for i in fids]
+            st = "revise" if acts and all(a == "revise" for a in acts) else "keep"
+        items.append({
+            "rule_id": r["rule_id"], "rule_name": r["rule_name"],
+            "dimension": r["dimension"], "n": r["n"], "pending_n": r["pending_n"],
+            "note_n": r["note_n"],
+            "last_at": r["last_at"].strftime("%Y-%m-%d %H:%M") if r["last_at"] else None,
+            "state": st,
+        })
+    if state in ("pending", "keep", "revise"):
+        items = [i for i in items if i["state"] == state]
+    return {"items": items, "total": len(items),
+            "pending": sum(1 for i in items if i["state"] == "pending"),
+            "note": "按规则聚合审核岗勾「不认可这条命中」的回流记录；"
+                    "明细与处置动作点开规则行可见。处置留痕进操作日志（规则类）。"}
+
+
+@router.get("/feedbacks/{rule_id}")
+def feedback_detail(rule_id: str):
+    """一条规则的异议明细（聚合抽屉数据源）。每条 = 单据链接 / 审核员 / 时间 /
+    当时判定 message 原文（标注可下钻）/ 逐条意见原话（A-P0-1 的 note，
+    有则显示无则不渲染，历史行天然兼容）/ 该条的处置状态与说明。"""
+    rows = db.query("""
+        SELECT f.id, f.subject_id AS bill_no, f.observed_at,
+               f.actual->>'run_id' AS run_id,
+               f.actual->>'note'   AS note,
+               f.resolved_by, f.resolved_note, f.resolved_at
+        FROM feedback_log f
+        WHERE """ + _FB_WHERE + " AND f.actual->>'rule_id' = %s ORDER BY f.observed_at DESC",
+        (rule_id,))
+    decisions = _fb_decisions([x["id"] for x in rows])
+    items = []
+    for x in rows:
+        # 当时判定的 message 原文从该轮 review_finding 取——收件箱点开要看到
+        # 「当时 AI 说了什么」；提出异议的审核员取该轮 manual_review 署名
+        # （出口叫 user_label：reviewer 字段名会被 M01 打星，署名不许打星）。
+        msg, reviewer = None, None
+        if x["run_id"]:
+            f0 = db.query_one(
+                "SELECT message FROM review_finding WHERE run_id=%s AND rule_id=%s "
+                "AND outcome='hit' LIMIT 1", (x["run_id"], rule_id))
+            msg = f0["message"] if f0 else None
+            m0 = db.query_one(
+                "SELECT reviewer AS user_label FROM manual_review WHERE run_id=%s "
+                "ORDER BY decided_at DESC LIMIT 1", (x["run_id"],))
+            reviewer = m0["user_label"] if m0 else None
+        items.append({
+            "id": x["id"], "bill_no": x["bill_no"], "run_id": x["run_id"],
+            "at": x["observed_at"].strftime("%Y-%m-%d %H:%M") if x["observed_at"] else None,
+            "note": x["note"], "finding_message": msg, "user_label": reviewer,
+            "decision": decisions.get(x["id"]),
+            "resolved_by": x["resolved_by"], "resolved_note": x["resolved_note"],
+            "resolved_at": x["resolved_at"].strftime("%Y-%m-%d %H:%M")
+            if x["resolved_at"] else None,
+        })
+    r = db.query_one("""SELECT rule_id, name AS rule_name, dimension, risk_class,
+                               rule_class, control_type, scope, logic, exception,
+                               priority, owner, compiled, demo_executable
+                        FROM rule WHERE rule_id=%s AND version=1""", (rule_id,))
+    if r:
+        for k in ("scope", "logic"):
+            if r.get(k) and not isinstance(r[k], str):
+                r[k] = json.dumps(r[k], ensure_ascii=False)
+    return {"rule_id": rule_id, "rule": r, "items": items, "total": len(items),
+            "note": "异议明细含审核岗逐条意见原话（勾「不认可」旁的选填输入）。"}
+
+
+RESOLVE_DECISIONS = ("keep", "revise")
+
+
+@router.post("/feedbacks/{fid}/resolve")
+def feedback_resolve(fid: int, request: Request, body: dict = None):
+    """处置一条异议（B-P0-1）：keep=维持规则 / revise=确认为规则问题。
+
+    keep：note 必填——「为什么维持」提出异议的审核员看得到这段话。
+    revise：note 选填（修订去向摘要）；实际修订走规则修订流程（B-P1-E），
+    这里只记处置意图并返回预填素材，不改规则口径。
+    落库：feedback_log 处置三列（迁移 0048，只 UPDATE 这三列不动存量字段）+
+    sys_op_log（category=rule，target=feedback:{id} 精确键——聚合态反查用）。
+    角色闸：规则管理员的动作（engineer/admin），审核岗不许自处置自己的异议。
+    """
+    from ..iam_auth import current_user
+    u = current_user(request)
+    if u["role_key"] not in ("engineer", "admin"):
+        raise HTTPException(403, "异议处置是规则管理员的动作（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    body = body or {}
+    decision = body.get("decision")
+    if decision not in RESOLVE_DECISIONS:
+        raise HTTPException(400, "decision 只能是 keep（维持规则）/ revise（确认为规则问题）")
+    note = str(body.get("note") or "").strip()
+    if decision == "keep" and not note:
+        raise HTTPException(400, "维持规则必须填写说明——提出异议的审核员看得到这段话")
+    row = db.query_one("""SELECT id, subject_id, actual, resolved_by
+                          FROM feedback_log WHERE id=%s AND metric='finding_vs_human'
+                            AND deviation_kind='false_positive'
+                            AND source='human_review'""", (fid,))
+    if not row:
+        raise HTTPException(404, "异议记录 %d 不存在（或不是审核岗回流的不认可异议）" % fid)
+    if row["resolved_by"]:
+        raise HTTPException(409, "该异议已由 %s 处置过，不重复处置；留痕见操作日志"
+                            % row["resolved_by"])
+    n = db.execute("""UPDATE feedback_log SET resolved_by=%s, resolved_note=%s,
+                      resolved_at=now() WHERE id=%s AND resolved_by IS NULL""",
+                   (u["account"], note or None, fid))
+    if not n:
+        raise HTTPException(409, "该异议刚被并发处置，刷新后查看")
+    rid = (row["actual"] or {}).get("rule_id") or ""
+    op_log.log_by_request(
+        request, "rule", "处置异议", target="feedback:%d" % fid,
+        detail="%s · 规则 %s · 单据 %s%s" % (
+            {"keep": "维持规则", "revise": "确认为规则问题，转规则修订"}[decision],
+            rid or "—", row["subject_id"] or "—",
+            " · 说明：%s" % note[:120] if note else ""))
+    prefill = None
+    if decision == "revise":
+        recent = db.query_one(
+            """SELECT actual->>'note' AS note FROM feedback_log
+               WHERE metric='finding_vs_human' AND deviation_kind='false_positive'
+                 AND source='human_review' AND actual->>'rule_id'=%s
+                 ORDER BY observed_at DESC LIMIT 1""", (rid,))
+        cnt = db.scalar(
+            """SELECT count(*) FROM feedback_log
+               WHERE metric='finding_vs_human' AND deviation_kind='false_positive'
+                 AND source='human_review' AND actual->>'rule_id'=%s""", (rid,))
+        prefill = "审核岗异议 %d 条，最近一条：%s" % (
+            cnt or 0, ((recent or {}).get("note") or "未附文字意见")[:60])
+    return {"ok": True, "id": fid, "decision": decision, "rule_id": rid,
+            "prefill": prefill,
+            "note": "处置已留痕（操作日志·规则类）。%s" % (
+                "修订理由预填已生成，转规则修订流程发起修订。" if decision == "revise"
+                else "维持说明对提出异议的审核员可见。")}
+
+
 @router.get("/lookup-tables")
 def list_lookup_tables():
     return {"items": db.query(

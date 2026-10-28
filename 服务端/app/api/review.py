@@ -650,6 +650,15 @@ def manual_review(run_id: str, body: dict, request: Request):
     if act and act["assignee"] != u["account"]:
         raise HTTPException(409, "该单据已被其他审核岗认领，正在其待办中，不可代审")
     disagree = [x for x in (body.get("disagree_with") or []) if isinstance(x, str)]
+    # 逐条文字意见（A-P0-1，2026-10-27）：审核岗勾「不认可」旁的就地输入。
+    # 形态 = {rule_id: 意见}。只保留本次勾选的规则——勾了没写的规则不带 note 键
+    # （收件箱按「有 note 则显示」渲染，历史行天然兼容）；没勾却塞了意见的丢弃，
+    # 不许出现「意见跟着没被勾的规则回流」的错挂。
+    raw_notes = body.get("disagree_notes") or {}
+    notes = {str(k): str(v).strip()[:100]
+             for k, v in raw_notes.items()
+             if isinstance(raw_notes, dict) and isinstance(v, str)
+             and k in disagree and v.strip()}
     # 分项核实（P1-5，2026-10-27）：对偶于 disagree 的正向勾选「已人工核实」。
     # 刻意**并入 agree_with 落库**而不是新开第二套勾选列——agree_with 的既有
     # 语义就是「明确认可的命中」，verified 是它的人工核实子集，两套「认可」
@@ -683,13 +692,21 @@ def manual_review(run_id: str, body: dict, request: Request):
             # 被评判的正是那个 Agent 的产出。feedback_log.cycle_id NOT NULL，
             # 老 run 没有 cycle 时只能跳过，并在返回里如实报数，不假报成功。
             written = 0
+            written_notes = 0
             for rid in disagree:
                 if not run["cycle_id"]:
                     break
+                # note 并入 actual JSON（A-P0-1）：disagree_with 保持数组形态不动
+                # （复核记录显示口径不变）；规则管理员侧收件箱点开异议时
+                # 「审核员为什么说不认可」就来自这里。没有意见的历史行无 note 键。
+                actual = {"rule_id": rid, "run_id": run_id}
+                if rid in notes:
+                    actual["note"] = notes[rid]
+                    written_notes += 1
                 rec.record_feedback(conn, run["cycle_id"], run["agent_id"], run["bill_no"],
                                     "finding_vs_human",
                                     {"human": "不认可该命中"},
-                                    {"rule_id": rid, "run_id": run_id},
+                                    actual,
                                     1.0, "false_positive", "human_review")
                 written += 1
             # 整单退回 vs AI 结论（2.11-E，2026-10-27）：前端退回弹窗一直承诺
@@ -724,8 +741,9 @@ def manual_review(run_id: str, body: dict, request: Request):
             "feedback_written": written,
             "false_negative_written": fn_written,
             "note": "人工结论已记录。%d 条不认可已逐条回流 feedback_log"
-                    "(finding_vs_human/false_positive)%s。" % (
+                    "(finding_vs_human/false_positive)%s%s。" % (
                         written,
+                        "；其中 %d 条附文字意见" % written_notes if written_notes else "",
                         "；整单退回已记偏差候选（conclusion_vs_human）" if fn_written else "")}
 
 

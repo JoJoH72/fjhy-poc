@@ -168,7 +168,7 @@ const reloadDetail = () => detailRef.value?.reload()
         </a-table>
         <div v-if="(data as any).entities?.length" style="margin-top: 12px">
           <b>存在性判断引用的实体</b>
-          <div class="dim">实体存在性判断与概念引用分开： 「这类附件在不在」和「某个字段的值是多少」是两件事。</div>
+          <div class="dim">判断「附件/对象是否存在」，区别于上表「字段取值」类概念引用</div>
           <a-table :data-source="(data as any).entities" row-key="entity_id" size="small"
             :pagination="false" style="margin-top: 6px"
             :columns="[
@@ -215,13 +215,13 @@ const reloadDetail = () => detailRef.value?.reload()
           </template>
         </a-table>
         <div class="dim" style="margin-top: 6px">
-          标「冲突」的行可点开对比：两条口径的原文并排、差异高亮，裁决后留痕。
+          「冲突」行可点开对比：原文并排、差异高亮，裁决后留痕
         </div>
       </a-card>
 
       <a-card size="small" class="blk" title="最近的判定">
         <a-empty v-if="!(data as any).recent_findings?.length"
-          :image-style="{ height: '40px' }" description="这条规则还没有产生过任何判定记录" />
+          :image-style="{ height: '40px' }" description="暂无判定记录" />
         <a-table v-else :data-source="(data as any).recent_findings"
           :row-key="rowKeyOf" size="small"
           :pagination="(data as any).recent_findings.length > 10 ? { pageSize: 10 } : false"

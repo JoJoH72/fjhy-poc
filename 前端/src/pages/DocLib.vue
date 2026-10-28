@@ -23,6 +23,7 @@
  *    没人知道该去跑 OCR 还是该去转格式。
  */
 import { computed, onMounted, ref } from 'vue'
+import { message } from 'ant-design-vue'
 import Async from '../components/Async.vue'
 import { pro } from '../data/prose'
 import FolderPicker from '../components/FolderPicker.vue'
@@ -142,11 +143,16 @@ const loadUploads = () =>
   })
 
 /** 上传完刷新三处：根（文件数变了）、清单、台账。只刷一处会让另外两处显示旧数字。
- *  2026-10-26：上传的扫描件（需OCR 的 pdf）自动走视觉转文字。 */
+ *  2026-10-26：上传的扫描件（需OCR 的 pdf）自动走视觉转文字。
+ *  顶部 message（跨页签可见）：人此时多半还停在「文件来源」页签，
+ *  只有页签内 alert 的话，切去别的页签就看不到落点。 */
 const afterUpload = (r: DlUploadResult) =>
   run('after-upload', async () => {
     msg.value = `上传完成：进库 ${r.ok_count} 份`
       + (r.rejected.length ? `，未入库 ${r.rejected.length} 份（见「上传台账」）` : '')
+    message.success(r.rejected.length
+      ? `进库 ${r.ok_count} 份，未入库 ${r.rejected.length} 份（见上传台账）`
+      : `进库 ${r.ok_count} 份`)
     await loadRoots()
     await loadFiles()
     if (tab.value === 'uploads') await loadUploads()
@@ -159,14 +165,14 @@ const afterUpload = (r: DlUploadResult) =>
 /** 视觉转文字：页间并行、计费播报。上传后自动触发，也可单独补跑。 */
 const visionOcr = (fileIds: string[]) =>
   run('voc', async () => {
-    msg.value = `对 ${fileIds.length} 份扫描件调视觉模型逐页转写（真出网、真计费，页间并行）…`
+    msg.value = `对 ${fileIds.length} 份扫描件调视觉模型逐页转写（真出网、真计费）…`
     const r = await api.dlVisionOcr({ file_ids: fileIds })
     const ok = r.items.filter((i) => i.ok)
     const bad = r.items.filter((i) => !i.ok)
     msg.value = `视觉转写：${ok.length} 份完成`
       + (ok.length ? `（${ok.reduce((s, i) => s + (i.chars || 0), 0)} 字 · ${r.elapsed_s}s · ${r.engine}）` : '')
       + (bad.length ? `，${bad.length} 份失败（见「上传台账」原因）` : '')
-      + '。转写文本可信度比原生低一档，数字需人工复核——已可进入规则抽取。'
+    message.success(`视觉转写完成 ${ok.length} 份` + (bad.length ? `，失败 ${bad.length} 份` : ''))
     await loadRoots()
     await loadFiles()
   })
@@ -184,9 +190,9 @@ const delFile = (f: DlFile) =>
       if (detail.status === 409) {
         // 传错文件的出路：确认后连产出一起作废删除（后端一个事务级联清）
         const ok = window.confirm(detail.detail
-          + '\n\n若是传错的文件，可选择「连产出一并作废删除」——'
-          + '上面列出的条款/草稿/明细/读图会随文件一起清掉（它们出自误传文件，本就不该存在）。\n确认连产出一起删除？')
-        if (!ok) { msg.value = '已取消。要按正规流程处理，去「抽取与审定」页签把产出作废后再删。'; return }
+          + '\n\n若为误传文件，可选择「连产出一并作废删除」：'
+          + '上述条款/草稿/明细/读图将随文件一并清除。\n确认连产出一起删除？')
+        if (!ok) { msg.value = '已取消。正规流程：先在「抽取与审定」页签作废产出，再删除文件。'; return }
         d = await api.dlDeleteFile(f.file_id, 'ui', true)
       } else {
         throw e
@@ -199,6 +205,7 @@ const delFile = (f: DlFile) =>
     msg.value = `已删除「${d.file_name}」。`
       + (d.removed_from_disk ? '磁盘文件已删，' : '磁盘上本来就没有这个文件，')
       + '登记行按「消失」保留。' + purgedTxt
+    message.success(`已删除「${d.file_name}」` + (purgedTxt ? '，' + purgedTxt : ''))
     await loadRoots()
     await loadFiles()
   })
@@ -216,6 +223,7 @@ const addRoots = (paths: string[]) =>
     picking.value = false
     msg.value = `加入 ${r.ok_count} 个文件夹`
       + (r.failed.length ? `，${r.failed.length} 个未加入：${r.failed[0].reason}` : '')
+    message.success(`已纳入 ${r.ok_count} 个服务器目录` + (r.failed.length ? `，${r.failed.length} 个未加入` : ''))
     await loadRoots()
     if (r.ok_count) await scan(false)
   })
@@ -231,6 +239,7 @@ const removeRoot = (r: DlRoot) =>
     const d = await api.dlRemoveRoot(r.root_id)
     pendingRemove.value = ''
     msg.value = `已移出文件库（删登记 ${d.files_unregistered} 条，磁盘文件未做任何改动）`
+    message.success(`已移出文件库（登记 ${d.files_unregistered} 条）`)
     await loadRoots()
     await loadFiles()
   })
@@ -240,6 +249,7 @@ const scan = (force: boolean) =>
     const r = await api.dlScan({ force })
     lastScan.value = r
     msg.value = `扫描完成：新增 ${r.added}、修改 ${r.updated}、未变 ${r.unchanged}、消失 ${r.missing}`
+    message.success(`扫描完成：新增 ${r.added}、修改 ${r.updated}、消失 ${r.missing}`)
     await loadRoots()
     await loadFiles()
     await loadChanges()
@@ -411,7 +421,7 @@ const rowKeyOf = (r: unknown): string => {
         <Uploader :storage="storage" @done="afterUpload" />
 
         <template v-if="managedRoots.length">
-          <h3 class="sec">托管目录（上传落在这里，可写可删）</h3>
+          <h3 class="sec">托管目录</h3>
           <a-table :columns="rootCols" :data-source="managedRoots" row-key="root_id"
             size="small" :pagination="false">
             <template #bodyCell="{ column, record: r }">
@@ -424,7 +434,7 @@ const rowKeyOf = (r: unknown): string => {
               </template>
               <template v-else-if="column.key === 'path'">
                 <code class="pathcode">{{ r.abs_path }}</code>
-                <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在（下一次上传会自动重建）</a-tag></div>
+                <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在，上传时自动重建</a-tag></div>
               </template>
               <template v-else-if="column.key === 'size'">
                 {{ (storage?.dirs || []).find(d => d.root_id === r.root_id)?.size_text || '—' }}
@@ -435,19 +445,14 @@ const rowKeyOf = (r: unknown): string => {
             </template>
           </a-table>
           <div class="blk-note">
-            托管目录是<b>本系统自己的工作区</b>，所以允许写入与删除；
-            而下面的引用目录是<b>客户的资料目录</b>，本系统对它只读，一个字节都不写。
-            托管目录由系统按当前实例自动创建，<b>不提供整体移出</b>——
-            整体移出会把条款、OCR、读图结果、规则明细一起级联删掉，
-            而磁盘上的文件会留下来变成没人认领的孤儿。要清空请在「文件清单」里逐份删。
+            托管目录可写可删；引用目录对客户资料只读。托管目录不提供整体移出——
+            要清空请在「文件清单」里逐份删。
           </div>
         </template>
 
         <h3 class="sec">纳入服务器上已有的目录（引用，原地只读扫描）· 已纳入 {{ refRoots.length }} 个</h3>
         <div class="blk-note">
-          <b>这不是上传。</b>它要求路径在<b>服务器</b>上存在，适合「资料已经在服务器上了」
-          的情况。如果浏览器和服务不在同一台机器上，这里选不到你本机的文件，请用上面的上传。
-          纳入只登记路径，<b>不复制、不移动、不修改磁盘上的任何文件</b>。
+          路径须在<b>服务器</b>上存在，只登记路径、不复制、不移动、不修改磁盘文件。
         </div>
         <FolderPicker v-if="picking" @add="addRoots" @close="picking = false" />
         <a-table v-if="refRoots.length" :columns="rootCols.filter(c => c.key !== 'size')"
@@ -478,14 +483,14 @@ const rowKeyOf = (r: unknown): string => {
         </div>
 
         <h3 class="sec">扫描</h3>
-        <div class="blk-note">
-          上传之后会<b>自动扫描一次</b>，不用手点。这里的按钮给两种情况：
-          引用目录里的文件被客户改过了；或者改过解析器要全量重跑（强制重扫）。
-          不指定范围时<b>只扫当前实例的根</b>。
-        </div>
         <div class="row">
-          <a-button :loading="busy === 'scan'" :disabled="!!busy || !roots.length" @click="scan(false)">扫描</a-button>
-          <a-button :loading="busy === 'rescan'" :disabled="!!busy || !roots.length" @click="scan(true)">强制重扫</a-button>
+          <a-tooltip title="上传后自动扫描；此处用于引用目录文件有变更时增量重扫">
+            <a-button :loading="busy === 'scan'" :disabled="!!busy || !roots.length" @click="scan(false)">扫描</a-button>
+          </a-tooltip>
+          <a-tooltip title="改过解析器后全量重跑，忽略已有解析结果">
+            <a-button :loading="busy === 'rescan'" :disabled="!!busy || !roots.length" @click="scan(true)">强制重扫</a-button>
+          </a-tooltip>
+          <span class="dim">范围为当前实例的根</span>
         </div>
 
         <div v-if="lastScan" class="blk-note">
@@ -554,7 +559,7 @@ const rowKeyOf = (r: unknown): string => {
                    上传后已自动跑过一次；这里是补跑/手动入口（预置扫描件用）。 -->
               <a-button v-if="f.parse_state === '需OCR' && f.ext === '.pdf'" size="small"
                         style="margin-bottom: 4px"
-                        title="把每一页发给多模态模型逐页转写（真出网、真计费，页间并行）"
+                        title="逐页发多模态模型转写（真出网、真计费）"
                         @click="visionOcr([f.file_id])">视觉转文字</a-button>
               <!-- 删除只对托管文件开放。引用目录里的文件是客户的资料，
                    本系统对它只读——按钮直接不给，而不是点了再报错。 -->
@@ -585,11 +590,8 @@ const rowKeyOf = (r: unknown): string => {
         <a-empty v-else :image-style="{ height: '40px' }" description="没有符合条件的文件" />
 
         <div class="blk-note">
-          <b>删除</b>只对托管目录里的文件开放，而且<b>已产出条款、规则明细或已签字读图的会被拒</b>——
-          删掉原文之后那些条款会指向一份不存在的文件，而页面上它们看着仍然有出处，
-          这种断链基本查不出来。删除成功时<b>磁盘文件删掉、登记行按「消失」保留</b>：
-          删登记行会连带级联清空 OCR、读图、条款、规则明细，
-          而「这份资料曾经在库里」是溯源的一部分，只能作废不能蒸发。
+          <b>删除</b>仅对托管文件开放；已产出条款、规则明细或已签字读图的会被拒。
+          删除后磁盘文件删掉、登记行按「消失」保留（溯源口径，只能作废不能蒸发）。
         </div>
 
         <template v-if="opened">
@@ -607,8 +609,8 @@ const rowKeyOf = (r: unknown): string => {
                需OCR 的扫描件没有正文，如实说明，不装作有。 -->
           <pre v-if="opened.preview" class="doc-preview">{{ opened.preview }}</pre>
           <div v-else class="dim" style="margin-top: 8px; font-size: 12.5px">
-            这份文件没有可预览的正文：{{ opened.parse_reason || '解析状态为 ' + opened.parse_state }}
-            <template v-if="opened.parse_state === '需OCR'">——扫描件可在清单里点「视觉转文字」（真出网、真计费）</template>
+            无可预览正文：{{ opened.parse_reason || '解析状态为 ' + opened.parse_state }}
+            <template v-if="opened.parse_state === '需OCR'">——扫描件可在清单里点「视觉转文字」</template>
           </div>
         </template>
       </a-tab-pane>
@@ -656,7 +658,7 @@ const rowKeyOf = (r: unknown): string => {
           </a-table>
           <!-- 暂存区本该是空的。非空说明有一次上传崩在中途，必须报出来。 -->
           <a-alert v-if="storage.staging_stale.length" type="error" show-icon style="margin-top: 12px"
-            :message="`暂存区有 ${storage.staging_stale.length} 个残留文件（${storage.staging_dir}）：每份上传要么移入托管目录、要么当场删掉，残留说明有一次上传崩在中途。这些文件没有任何登记指向它们，可以直接删。`" />
+            :message="`暂存区残留 ${storage.staging_stale.length} 个文件（${storage.staging_dir}）：有一次上传中断，残留文件无登记指向，可直接删除。`" />
           <div v-else class="blk-note"><MarkText :text="storage.note" /></div>
         </template>
 
@@ -692,12 +694,9 @@ const rowKeyOf = (r: unknown): string => {
             </template>
           </template>
         </a-table>
-        <a-empty v-else :image-style="{ height: '40px' }" description="还没有上传过文件" />
+        <a-empty v-else :image-style="{ height: '40px' }" description="暂无上传记录" />
         <div class="blk-note">
-          <b>「同名另存」和「同内容已存在」是相反的两件事。</b>
-          前者=文件名一样但内容不同，已按新版本落盘（制度换了一版，旧的没被覆盖）；
-          后者=字节完全相同，什么都没落盘（重复点了上传）。
-          合成一个「重复」，使用者就不知道自己刚传的新版本到底进没进库。
+          <b>同名另存</b>=同名不同内容，按新版本落盘；<b>同内容已存在</b>=字节相同，未落盘。
         </div>
       </a-tab-pane>
 
@@ -803,7 +802,7 @@ const rowKeyOf = (r: unknown): string => {
               </div>
               <pre class="vtext">{{ r.content }}</pre>
             </div>
-            <div v-if="!vreads.length" class="dim">还没读过这一页。</div>
+            <div v-if="!vreads.length" class="dim">本页尚未读图</div>
           </template>
           <template #emptyText>
             <a-empty :image-style="{ height: '40px' }" description="暂无待读图页面" />
@@ -812,7 +811,7 @@ const rowKeyOf = (r: unknown): string => {
 
         <Async :load="() => api.visionStorage()">
           <template #default="{ data }">
-            <h3 class="sec">读图 → 印证 → <b>人工签字</b> → 才谈得上录入</h3>
+            <h3 class="sec">读图台账（读图 → 印证 → 人工签字）</h3>
             <a-table :data-source="(data as any).items" row-key="table_name" size="small"
               :pagination="false"
               :columns="[
@@ -820,7 +819,7 @@ const rowKeyOf = (r: unknown): string => {
                 { title: '存的是什么', key: 'what', width: 240 },
                 { title: '谁写的', key: 'by', width: 170 },
                 { title: '重算时', dataIndex: 'on_recalc', width: 120 },
-                { title: '为什么这么存', key: 'why' },
+                { title: '存储原因', key: 'why' },
               ]">
               <template #bodyCell="{ column, record: x }">
                 <template v-if="column.key === 'what'"><span class="dim">{{ pro(x.what) }}</span></template>

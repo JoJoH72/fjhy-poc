@@ -180,7 +180,7 @@ const resolveConflict = (c: ExConflict) =>
       await api.ontoResolveConflict(c.conflict_id, '已裁决', who.value,
         JSON.stringify({ decision: confDecision.value[c.conflict_id] || 'left',
                          text: confText.value[c.conflict_id] || '' }))
-      message.success('冲突已裁决（该归并组解锁采纳，操作日志留痕）')
+      message.success('冲突已裁决，该归并组解锁采纳（操作日志留痕）')
       await loadConflicts()
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e))
@@ -194,7 +194,7 @@ const ignoreConflict = (c: ExConflict) =>
     confResolving.value = c.conflict_id
     try {
       await api.ontoResolveConflict(c.conflict_id, '已忽略', who.value, '不再提示该分歧')
-      message.success('已忽略（下次抽取不复活）')
+      message.success('已忽略（下次抽取不再检出）')
       await loadConflicts()
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e))
@@ -251,20 +251,20 @@ const KIND_COLOR: Record<string, string> = {
     </div>
 
     <a-empty v-if="!drafts.length" :image-style="{ height: '40px' }"
-      :description="dState === '待审' ? '没有待审草稿——跑一次增量抽取，或全部审定完了' : '该状态下没有草稿'" />
+      :description="dState === '待审' ? '暂无待审草稿（可跑增量抽取）' : '该状态下无草稿'" />
 
     <div v-for="d in drafts" :key="d.draft_id" class="dcard">
       <div class="dcard-head">
         <code class="fname">{{ d.file_name }}</code>
         <b>{{ d.clause_no }}</b>
         <a-tag :color="d.rulable === false ? 'default' : 'processing'">
-          {{ d.rulable === false ? '模型判：不可规则化' : 'AI 草稿' }}
+          {{ d.rulable === false ? '不可规则化' : 'AI 草稿' }}
         </a-tag>
         <a-tag :color="d.review_state === '采纳' ? 'success' : d.review_state === '驳回' ? 'error' : 'default'">
           {{ d.review_state }}
         </a-tag>
         <span v-if="d.reviewer" class="dim">{{ d.reviewer }} 审</span>
-        <span v-if="d.truncated" class="dim" title="长条款发给模型时被截断，草稿可能只覆盖前半段">已截断</span>
+        <span v-if="d.truncated" class="dim" title="长条款发送模型时截断，草稿可能仅覆盖前半段">已截断</span>
       </div>
       <div class="dcard-body">
         <div class="dpane">
@@ -280,7 +280,7 @@ const KIND_COLOR: Record<string, string> = {
               <b>{{ f.label }}</b>
               <span :class="{ sus: fieldSuspect(d, f.key).length }"
                 :title="fieldSuspect(d, f.key).length
-                  ? `数值 ${fieldSuspect(d, f.key).join('、')} 在原文找不到——疑似模型编的，必须人工核对` : ''">
+                  ? `数值 ${fieldSuspect(d, f.key).join('、')} 在原文未找到，疑似模型幻觉，须人工核对` : ''">
                 {{ (d.draft as any)[f.key] || '—' }}
                 <a-tag v-if="fieldSuspect(d, f.key).length" color="error">数值待核</a-tag>
               </span>
@@ -289,8 +289,8 @@ const KIND_COLOR: Record<string, string> = {
             <span class="dim">{{ (d.draft as any)['缺口'] || '—' }}</span>
           </div>
           <div v-if="(d.number_check?.suspect || []).length" class="susbar">
-            数值幻觉核对：{{ d.number_check.suspect.map(s => `${s.field}=${s.value}`).join('、') }}
-            在条款原文中找不到——采纳前必须核对制度原文
+            数值待核：{{ d.number_check.suspect.map(s => `${s.field}=${s.value}`).join('、') }}
+            在条款原文中未找到，采纳前须核对制度原文
           </div>
         </div>
       </div>
@@ -301,12 +301,12 @@ const KIND_COLOR: Record<string, string> = {
           @click="startReject(d)">驳 回</a-button>
         <template v-else>
           <a-input v-model:value="rejectReason" size="small" style="width: 320px"
-            placeholder="驳回原因（必填）：不写原因的驳回，下次抽取还会抽出同一条" />
+            placeholder="驳回原因（必填）：无原因的驳回在下次抽取会再次出现" />
           <a-button danger size="small" :disabled="!!busy || !rejectReason.trim()"
             @click="review(d, '驳回')">确认驳回</a-button>
           <a-button size="small" @click="rejectId = ''">取消</a-button>
         </template>
-        <span class="dim" style="margin-left: auto">采纳只标记草稿，进规则库还需采纳入本体（规则库页）</span>
+        <span class="dim" style="margin-left: auto">采纳仅标记草稿；进入规则库需在规则库页采纳入本体</span>
       </div>
       <div v-else-if="d.reject_reason" class="dcard-foot dim">
         驳回原因：{{ d.reject_reason }}
