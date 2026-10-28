@@ -23,6 +23,12 @@ const RelationGraph = defineAsyncComponent(() =>
 const FeedbackInbox = defineAsyncComponent(() =>
   import('../components/FeedbackInbox.vue'))
 
+// 对话式起草（B-P1-A，2026-10-28）：自然语言 → 八要素草稿 → 转待审进
+// 既有审定链（制度文件 → 抽取与审定）。入口两处同开一个抽屉，产物同一条链。
+const ChatDraft = defineAsyncComponent(() =>
+  import('../components/ChatDraft.vue'))
+const chatOpen = ref(false)
+
 const tab = ref('rules')
 const kw = ref('')
 
@@ -150,6 +156,7 @@ function valueText(rowValue: Record<string, unknown>): string {
             <a-tab-pane key="rules" :tab="`规则清单 (${(data.items || []).length})`">
               <div class="toolbar">
                 <a-input-search v-model:value="kw" placeholder="规则编号 / 名称" allow-clear style="width: 240px" />
+                <a-button @click="chatOpen = true">对话起草</a-button>
               </div>
               <a-table
                 :data-source="(data.items || []).filter((x: any) =>
@@ -371,6 +378,9 @@ function valueText(rowValue: Record<string, unknown>): string {
         </a-card>
       </template>
     </Async>
+
+    <!-- 对话式起草抽屉（B-P1-A）：转待审后产物在「制度文件 → 抽取与审定」页签 -->
+    <ChatDraft :open="chatOpen" @update:open="(v: boolean) => (chatOpen = v)" />
   </div>
 </template>
 

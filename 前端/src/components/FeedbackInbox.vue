@@ -20,9 +20,12 @@
  */
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { useRouter } from 'vue-router'
 import { api } from '../api'
 import type { FeedbackAgg, FeedbackDetail } from '../api'
 import Async from './Async.vue'
+
+const router = useRouter()
 
 const props = defineProps<{ open: boolean }>()
 
@@ -106,9 +109,19 @@ async function resolve(item: { id: number; bill_no?: string | null }, decision: 
   resolvingId.value = item.id
   try {
     const r = await api.feedbackResolve(item.id, { decision, note: note || undefined })
-    message.success(decision === 'keep'
-      ? '已维持规则，处置留痕见操作日志（规则类）'
-      : `已确认为规则问题。修订理由预填：${r.prefill || '（无文字意见）'}`)
+    if (decision === 'keep') {
+      message.success('已维持规则，处置留痕见操作日志（规则类）')
+    } else {
+      // B-P0-1 落点（B-P1-E）：确认为规则问题 → 跳规则详情页的修订表单，
+      // 理由预填后端给的异议摘要，人工可改。修订表单在 RuleDetail。
+      const rid = (detail.value?.rule_id) || ''
+      message.success('已确认为规则问题，正在打开修订表单（理由已预填）')
+      if (rid) {
+        drawerRule.value = null
+        router.push({ path: `/asset/rules/${encodeURIComponent(rid)}`,
+          query: { revise: '1', reason: r.prefill || '' } })
+      }
+    }
     // 明细就地更新 + 聚合重取（页签计数同步变）
     if (detail.value) {
       const it = detail.value.items.find((x) => x.id === item.id)

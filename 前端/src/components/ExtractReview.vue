@@ -105,6 +105,24 @@ function fieldSuspect(d: ExDraft, key: string): string[] {
     .map((s) => s.value)
 }
 
+// ── 重复检测（B-P1-D）：草稿 vs 库内规则的疑似标注 ─────────────────────────
+// 后端 run_ai 出口确定性比对（存量草稿 list_drafts 现算回写），dup_of 是
+// JSON 字符串。只标「疑似 + 相似点」，采不采纳是审定人的判断——驳回原因
+// 里写明即可（与驳回留痕同一条链），不另做裁决动作。
+import type { DraftDup } from '../api'
+
+function dupOf(d: ExDraft): DraftDup | null {
+  if (!d.dup_of) return null
+  // dup_of 两种形态都要收：HTTP 出来 FastAPI 已把 JSONB 解成对象；
+  // 类型上仍是 string（db 列形态），运行时按对象处理
+  const v = typeof d.dup_of === 'string' ? JSON.parse(d.dup_of) : d.dup_of
+  try {
+    return v && Array.isArray(v.matches) && v.matches.length ? v : null
+  } catch {
+    return null
+  }
+}
+
 const review = (d: ExDraft, state: string) =>
   (async () => {
     busy.value = d.draft_id
@@ -266,6 +284,36 @@ const KIND_COLOR: Record<string, string> = {
         <span v-if="d.reviewer" class="dim">{{ d.reviewer }} 审</span>
         <span v-if="d.truncated" class="dim" title="长条款发送模型时截断，草稿可能仅覆盖前半段">已截断</span>
       </div>
+      <!-- 重复检测（B-P1-D）：疑似与库内规则重复——标注可下钻，点开看相似点 -->
+      <div v-if="dupOf(d)" class="dupbar">
+        <a-tag color="orange">疑似重复</a-tag>
+        <span class="dup-who">
+          与库内
+          <template v-for="(m, i) in dupOf(d)!.matches" :key="m.rule_id">
+            <template v-if="i">、</template>
+            <router-link :to="`/asset/rules/${encodeURIComponent(m.rule_id)}`"
+              :title="`${m.rule_name}（${m.dimension || '—'}）· 把握${m.strength}：${m.signals_desc}`">
+              {{ m.rule_id }}</router-link>
+          </template>
+          疑似重复
+        </span>
+        <a-tooltip placement="topLeft" :overlay-style="{ maxWidth: 460 }">
+          <template #title>
+            <div style="font-size: 12px; line-height: 1.8">
+              <div v-for="m in dupOf(d)!.matches" :key="m.rule_id" style="margin-bottom: 6px">
+                <b>{{ m.rule_id }} {{ m.rule_name }}</b>（把握{{ m.strength }}）<br />
+                {{ m.signals_desc }}<template v-if="m.shared_numbers.length">
+                  ；共有阈值：{{ m.shared_numbers.join('、') }}</template>
+              </div>
+              <div style="opacity: .75">
+                检测是确定性比对（来源条款 / 名称相似 / 阈值要素），只标疑似不写死结论。
+                重复则驳回并写明原因；确属不同口径则照常采纳。
+              </div>
+            </div>
+          </template>
+          <span class="dim dup-more">{{ dupOf(d)!.matches[0].signals_desc }} · 详情</span>
+        </a-tooltip>
+      </div>
       <div class="dcard-body">
         <div class="dpane">
           <div class="dp-title">条款原文</div>
@@ -403,6 +451,13 @@ const KIND_COLOR: Record<string, string> = {
   border-radius: 4px; padding: 6px 8px; line-height: 1.6; }
 .dcard-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   border-top: 1px solid #f0f0f0; flex-wrap: wrap; }
+
+/* 重复检测条（B-P1-D）：疑似标注 + 相似点 tooltip + 规则号直达 */
+.dupbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  background: #fff7e6; border-bottom: 1px solid #ffe7ba; font-size: 12.5px;
+  flex-wrap: wrap; }
+.dup-who { color: rgba(0, 0, 0, .65); }
+.dup-more { cursor: help; border-bottom: 1px dashed rgba(0, 0, 0, .25); }
 
 .ccard { border: 1px solid #f0f0f0; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
 .ccard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }

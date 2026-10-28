@@ -971,10 +971,18 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
                     suspect += 1
             else:
                 failed += 1
+            # C 场景重复检测（B-P1-D）：草稿 vs 库内规则确定性比对。
+            # **纯比对不动判定**——检出只标疑似，采纳与否是审定人的判断。
+            dup = dup_check(draft, c) if ok and draft.get("可规则化") else None
+            if dup:
+                db.execute("UPDATE doclib_draft SET dup_of=%s, dup_signals=%s "
+                           "WHERE draft_id=%s",
+                           (json.dumps(dup, ensure_ascii=False),
+                            json.dumps(dup["signals_desc"], ensure_ascii=False), did))
             items.append({"draft_id": did, "clause_id": c["clause_id"],
                           "clause_no": c["clause_no"], "file_name": c["file_name"],
                           "ok": ok, "rulable": draft.get("可规则化"),
-                          "draft": draft, "number_check": chk})
+                          "draft": draft, "number_check": chk, "dup": dup})
         db.execute("""UPDATE doclib_extract_task SET status='done', finished_at=now(),
                              clause_cnt=%s, draft_cnt=%s, note=%s WHERE task_id=%s""",
                    (len(rows), made,
@@ -992,6 +1000,98 @@ def run_ai(clause_ids=None, limit=AI_BATCH_DEFAULT, only_candidates=True, file_i
                     "是草稿里出现了条款原文中没有的数字——必须人工回查原文。"}
 
 
+# ── C 场景重复检测（B-P1-D，2026-10-28）────────────────────────────────────
+# 新抽出的草稿 vs 库内 82 条规则：确定性比对，不调模型不出网。
+# 三个信号（v0.1 §2.1-3）：
+#   name_sim    名称相似（difflib 序列比 ≥ 0.6——实测「市内交通补助标准」vs
+#               「市内交通费标准」0.8 命中；0.5~0.6 只算弱信号不单独触发）
+#   nums_overlap 阈值要素重合 ≥ 2 个（带单位的数，两位以上才算——列表序号
+#               和档位号不算阈值）
+#   same_clause  来源条款号相同（同一份文件同一条款抽出的草稿与规则，
+#               最强信号——增量重抽同一文件时它兜底）
+# 信号组合成「把握度」：same_clause 或（name_sim 且 nums_overlap）=「高」；
+# 单一信号 =「低」。**不写死结论**——只标「疑似与 TR-xx 重复」+ 相似点，
+# 草稿作废/仍采纳/替换库内，是审定人的裁决，不是检测器的。
+def _dup_numbers(*texts) -> set:
+    """阈值要素集合：带单位或三位以上的数（与 check_numbers 同口径的收紧版）。"""
+    out = set()
+    for t in texts:
+        if not t:
+            continue
+        for m in NUM.finditer(str(t)):
+            v = m.group(0)
+            digits = re.sub(r"[^\d.]", "", v)
+            if digits.count(".") > 1:
+                continue
+            if len(digits.replace(".", "")) >= 2 and not digits.startswith("0."):
+                out.add(v.replace(" ", ""))
+    return out
+
+
+def dup_check(draft, clause_row):
+    """一条草稿 vs 库内 version=1 全部规则。返回疑似清单（按把握度降序），
+    无命中返回 None。检测纯只读；结果随草稿行存 dup_of（供审定页直接渲染，
+    存量草稿由 list_drafts 出口现算兜底）。"""
+    import difflib
+    dname = str(draft.get("规则名称") or "")
+    if not dname:
+        return None
+    d_logic = str(draft.get("判定逻辑") or "")
+    d_nums = _dup_numbers(d_logic, draft.get("适用范围"), draft.get("例外情形"),
+                          (clause_row.get("body") or "")[:800])
+    d_topic = _topic_of(dname + d_logic)
+    d_file = str(clause_row.get("file_name") or "")
+    rules = db.query("""SELECT rule_id, name, dimension, source_clause, logic, exception
+                        FROM rule WHERE version=1""")
+    hits = []
+    for r in rules:
+        r_logic = str((r["logic"] or {}).get("expr") or "")
+        r_nums = _dup_numbers(r_logic, json.dumps((r["logic"] or {}).get("rates"),
+                                                  ensure_ascii=False),
+                              r["exception"],
+                              (r["source_clause"] or {}).get("text"))
+        name_ratio = difflib.SequenceMatcher(None, dname, r["name"] or "").ratio()
+        # 来源条款相同 = **同一份文件**的同一条款号。82 条里 41 条的 source_clause.file
+        # 是类别代号（制度/要点/规则表…，与 asset.SRC_CODES 同口径），跟任何真实
+        # 文件都对不上——只比条款号会把两份不同文件的「第七条」判成最强信号
+        # （实测误报 4 条）。类别代号按子串判断还会误过（「制度」是
+        # 「xx制度文件.docx」的子串），所以显式排除整个代号集。
+        _SRC_CODES = ("规则表", "要点", "制度", "场景表", "配置器", "解答")
+        r_file = str((r["source_clause"] or {}).get("file") or "")
+        r_file_real = bool(r_file) and r_file not in _SRC_CODES
+        same_clause = bool(
+            r_file_real and d_file and r_file in d_file
+            and (r["source_clause"] or {}).get("clause") == clause_row.get("clause_no"))
+        shared = sorted(d_nums & r_nums)[:6]
+        topic_match = bool(d_topic and _topic_of((r["name"] or "") + r_logic) == d_topic)
+        signals = []
+        if same_clause:
+            signals.append("来源条款相同（%s）" % clause_row.get("clause_no"))
+        if name_ratio >= 0.6:
+            signals.append("名称相似 %.0f%%" % (name_ratio * 100))
+        if len(shared) >= 2:
+            signals.append("阈值要素重合（%s）" % "、".join(shared))
+        elif len(shared) == 1 and (name_ratio >= 0.5 or same_clause):
+            signals.append("阈值要素部分重合（%s）" % "、".join(shared))
+        if not signals:
+            continue
+        strength = ("高" if (same_clause or (name_ratio >= 0.6 and len(shared) >= 2)
+                             or (name_ratio >= 0.6 and topic_match and len(shared) >= 1))
+                    else "低")
+        hits.append({
+            "rule_id": r["rule_id"], "rule_name": r["name"],
+            "dimension": r["dimension"], "strength": strength,
+            "name_ratio": round(name_ratio, 2),
+            "shared_numbers": shared, "signals_desc": "；".join(signals),
+        })
+    if not hits:
+        return None
+    hits.sort(key=lambda x: (0 if x["strength"] == "高" else 1,
+                             -x["name_ratio"], x["rule_id"]))
+    return {"matches": hits[:3], "signals_desc":
+            "；".join(h["signals_desc"] for h in hits[:1])}
+
+
 def list_drafts(task_id=None, state=None, limit=200):
     sql = ["""SELECT d.*, c.clause_no, c.title, c.body AS clause_body, f.file_name
                 FROM doclib_draft d
@@ -1005,7 +1105,21 @@ def list_drafts(task_id=None, state=None, limit=200):
         sql.append("AND d.review_state=%s"); args.append(state)
     sql.append("ORDER BY d.created_at DESC LIMIT %s")
     args.append(max(1, min(1000, int(limit))))
-    return db.query(" ".join(sql), tuple(args))
+    rows = db.query(" ".join(sql), tuple(args))
+    # 重复检测（B-P1-D）：run_ai 出口已落 dup_of；存量草稿（检测上线前抽的）
+    # 没有该列值——出口现算兜底并**回写**（下次不用重算），不改 review_state。
+    for r in rows:
+        if r.get("dup_of") is not None or r.get("rulable") is False:
+            continue
+        try:
+            d = r["draft"] if isinstance(r["draft"], dict) else json.loads(r["draft"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        dup = dup_check(d, r) if d.get("可规则化") else None
+        r["dup_of"] = json.dumps(dup, ensure_ascii=False) if dup else None
+        db.execute("UPDATE doclib_draft SET dup_of=%s WHERE draft_id=%s AND dup_of IS NULL",
+                   (r["dup_of"], r["draft_id"]))
+    return rows
 
 
 def review_draft(draft_id, state, reviewer, reason=None):

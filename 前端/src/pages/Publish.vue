@@ -20,7 +20,7 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
-import type { PubIndex, RelAccess, RelDetail, RelRow, RelWorkspace, StorageRow } from '../api'
+import type { ImpactPreview, PubIndex, RelAccess, RelDetail, RelRow, RelWorkspace, StorageRow } from '../api'
 
 type Tab = 'ws' | 'rel' | 'consume' | 'store'
 const tab = ref<Tab>('ws')
@@ -91,6 +91,36 @@ function pickTab(t: Tab) {
 
 const canFreeze = computed(() => !!ws.value && ws.value.gates.every((g) => g.ok))
 const published = computed(() => rows.value.filter((r) => r.status === 'published'))
+
+// ── 试算差异（B-P1-F，2026-10-28）：改完规则未发布前，对历史单据只读回放 ──
+// 「这版规则比现版会多命中/少命中哪些单」。发布前必看——没有试算的规则
+// 修改等于盲签。结果抽屉：汇总条 + 按规则 ±命中 + 逐单差异（可跳报告页）。
+const ipOpen = ref(false)
+const ipBusy = ref(false)
+const ipErr = ref('')
+const ipScope = ref<'all' | 'real' | 'demo'>('all')
+const ipData = ref<ImpactPreview | null>(null)
+
+async function runImpact() {
+  ipOpen.value = true
+  ipBusy.value = true
+  ipErr.value = ''
+  ipData.value = null
+  try {
+    ipData.value = await api.relImpactPreview({ scope: ipScope.value })
+  } catch (e) {
+    ipErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    ipBusy.value = false
+  }
+}
+
+const IP_DIR: Record<string, { text: string; color: string }> = {
+  stricter: { text: '变严', color: 'error' },
+  looser: { text: '变宽', color: 'success' },
+  flat: { text: '命中变化', color: 'warning' },
+}
+const CONCL_CN: Record<string, string> = { pass: '通过', review: '待复核', reject: '不通过' }
 
 const doFreeze = () =>
   run('freeze', async () => {
@@ -260,6 +290,17 @@ onMounted(() => loadWs())
           </div>
 
           <h3 class="sec">冻结为新版本</h3>
+          <!-- 试算差异（B-P1-F）：发布前对历史单据只读回放——盲签的对面 -->
+          <div class="row" style="margin-bottom: 10px">
+            <a-select v-model:value="ipScope" size="small" style="width: 130px"
+              :options="[
+                { value: 'all', label: '全部单据' },
+                { value: 'real', label: '仅真实单' },
+                { value: 'demo', label: '仅演示单' },
+              ]" />
+            <a-button size="small" :loading="ipBusy" @click="runImpact">试算差异</a-button>
+            <span class="dim">发布前对历史单据回放两个版本的判定差异（只读，不落库不出网）</span>
+          </div>
           <a-table :data-source="ws.gates" row-key="gate" size="small" :pagination="false"
             :columns="[
               { title: '闸门', dataIndex: 'gate', width: 150 },
@@ -528,6 +569,98 @@ onMounted(() => loadWs())
       </a-tab-pane>
     </a-tabs>
   </a-card>
+
+  <!-- 试算结果抽屉（B-P1-F）：汇总 + 按规则 ±命中 + 逐单差异（可跳报告页） -->
+  <a-drawer v-model:open="ipOpen" width="880" title="试算差异（历史回放）"
+    :body-style="{ padding: '0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
+    <div v-if="ipBusy" style="padding: 48px; text-align: center; color: rgba(0,0,0,.45)">
+      正在回放历史单据（两个版本各跑一遍，通常 1~3 秒）…
+    </div>
+    <div v-else-if="ipErr" style="padding: 24px">
+      <a-alert type="error" show-icon message="试算失败" :description="ipErr" />
+    </div>
+    <template v-else-if="ipData">
+      <div class="ip-head">
+        <a-alert v-if="ipData.same_set" type="info" show-icon
+          message="工作区规则集与生效版口径一致，回放零差异"
+          :description="ipData.note" />
+        <template v-else>
+          <div class="ip-sum">
+            <div class="ip-cell"><b>{{ ipData.bills }}</b><span class="dim">回放单据</span></div>
+            <div class="ip-cell"><b class="ip-changed">{{ ipData.summary.changed }}</b><span class="dim">结论变化</span></div>
+            <div class="ip-cell"><b class="ip-stricter">{{ ipData.summary.stricter }}</b><span class="dim">变严</span></div>
+            <div class="ip-cell"><b class="ip-looser">{{ ipData.summary.looser }}</b><span class="dim">变宽</span></div>
+            <div class="ip-cell"><b>{{ ipData.summary.unchanged }}</b><span class="dim">不变</span></div>
+            <div class="ip-cell"><span class="dim">耗时 {{ ipData.elapsed_ms }}ms</span></div>
+          </div>
+          <div class="dim ip-note">{{ ipData.note }}</div>
+        </template>
+      </div>
+      <div class="ip-body">
+        <template v-if="!ipData.same_set">
+          <h3 class="sec">按规则命中变化</h3>
+          <a-table v-if="ipData.by_rule.length" :data-source="ipData.by_rule" row-key="rule_id"
+            size="small" :pagination="false"
+            :columns="[
+              { title: '规则', dataIndex: 'rule_id', width: 130 },
+              { title: '规则名', dataIndex: 'rule_name', ellipsis: true },
+              { title: '这版新增命中', key: 'nb', width: 110, align: 'center' },
+              { title: '这版不再命中', key: 'na', width: 110, align: 'center' },
+            ]">
+            <template #bodyCell="{ column, record: r }">
+              <template v-if="column.key === 'nb'">
+                <b v-if="r.only_b" class="ip-stricter">+{{ r.only_b }}</b>
+                <span v-else class="dim">—</span>
+              </template>
+              <template v-else-if="column.key === 'na'">
+                <b v-if="r.only_a" class="ip-looser">−{{ r.only_a }}</b>
+                <span v-else class="dim">—</span>
+              </template>
+              <template v-else-if="column.dataIndex === 'rule_id'">
+                <router-link :to="`/asset/rules/${encodeURIComponent(r.rule_id)}`">{{ r.rule_id }}</router-link>
+              </template>
+            </template>
+          </a-table>
+          <div v-else class="dim">没有规则级命中变化</div>
+
+          <h3 class="sec">逐单差异（{{ ipData.flips.length }} 张，可跳报告页看现结论依据）</h3>
+          <a-table v-if="ipData.flips.length" :data-source="ipData.flips" row-key="bill_no"
+            size="small" :pagination="ipData.flips.length > 20 ? { pageSize: 20 } : false"
+            :columns="[
+              { title: '单据', key: 'bill', width: 200 },
+              { title: '现结论', key: 'old', width: 90, align: 'center' },
+              { title: '这版结论', key: 'new', width: 90, align: 'center' },
+              { title: '方向', key: 'dir', width: 90, align: 'center' },
+              { title: '命中变化', key: 'hits' },
+            ]">
+            <template #bodyCell="{ column, record: f }">
+              <template v-if="column.key === 'bill'">
+                <router-link v-if="f.run_id" :to="`/review/report/${f.run_id}`"
+                  title="看这份报告的现行结论与证据">{{ f.bill_no }}</router-link>
+                <span v-else>{{ f.bill_no }}</span>
+              </template>
+              <template v-else-if="column.key === 'old'">{{ CONCL_CN[f.old_conclusion] || f.old_conclusion }}</template>
+              <template v-else-if="column.key === 'new'">
+                <b>{{ CONCL_CN[f.new_conclusion] || f.new_conclusion }}</b>
+              </template>
+              <template v-else-if="column.key === 'dir'">
+                <a-tag :color="IP_DIR[f.direction]?.color">{{ IP_DIR[f.direction]?.text }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'hits'">
+                <div v-for="d in f.detail.slice(0, 3)" :key="d.rule_id + d.change" class="ip-hit-row">
+                  <a-tag :color="d.change === 'new_hit' ? 'error' : 'default'"
+                    :title="d.message">{{ d.change === 'new_hit' ? '新增命中' : '不再命中' }}</a-tag>
+                  <router-link :to="`/asset/rules/${encodeURIComponent(d.rule_id)}`">{{ d.rule_id }}</router-link>
+                </div>
+                <div v-if="f.detail.length > 3" class="dim">…共 {{ f.detail.length }} 条</div>
+              </template>
+            </template>
+          </a-table>
+          <div v-else class="dim">逐单结论无变化（命中集也无变化）</div>
+        </template>
+      </div>
+    </template>
+  </a-drawer>
   </div>
 </template>
 
@@ -548,4 +681,16 @@ onMounted(() => loadWs())
 }
 :deep(.row-tri) td { background: #f6ffed; }
 :deep(.row-cur) td { background: #fffbe6; }
+
+/* 试算抽屉（B-P1-F） */
+.ip-head { padding: 14px 20px 10px; border-bottom: 1px solid #f0f0f0; }
+.ip-sum { display: flex; gap: 24px; align-items: baseline; flex-wrap: wrap; }
+.ip-cell { display: flex; flex-direction: column; gap: 2px; font-size: 20px; }
+.ip-cell .dim { font-size: 11px; }
+.ip-changed { color: #d46b08; }
+.ip-stricter { color: #cf1322; }
+.ip-looser { color: #389e0d; }
+.ip-note { margin-top: 8px; max-width: 780px; }
+.ip-body { padding: 12px 20px; overflow-y: auto; flex: 1; }
+.ip-hit-row { display: flex; gap: 6px; align-items: center; margin-bottom: 2px; }
 </style>

@@ -25,6 +25,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import Async from '../components/Async.vue'
+import ImageViewer from '../components/ImageViewer.vue'
 import * as session from '../data/session'
 import { api, type Finding, type ReviewReport, type Bill, type ManualReview } from '../api'
 
@@ -463,60 +464,20 @@ function evidenceRows(f: Finding): [string, string][] {
     .map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)])
 }
 
-/* ── 附件大图（P1-3：滚轮缩放 + 拖拽平移 + 旋转 + ←/→ 翻本单附件）──
+/* ── 附件大图（P1-3 → A-P1-2 抽成共享组件 ImageViewer）──
  * 审「发票抬头」要读 14px 的票面字，静态 img 拖不动放大镜是硬伤。
- * CSS transform 实现，不引库。大图层激活时 ←/→ 归附件翻张（Esc 关层归还
- * 队列键盘）——与队列翻张不冲突：层开着才劫持。 */
-const lb = ref<{ name: string; url: string; idx: number } | null>(null)
-const lbList = ref<Record<string, any>[]>([])
-const lbScale = ref(1)
-const lbRot = ref(0)
-const lbPos = ref({ x: 0, y: 0 })
-let lbDrag: { x: number; y: number; ox: number; oy: number } | null = null
+ * 2026-10-28 起缩放/拖拽/旋转/翻张/键盘劫持全部在 components/ImageViewer.vue
+ * ——BillDetail 同款挂载（同一动作同一模式），本页只保留开层入口。 */
+const lbOpen = ref(false)
+const lbStart = ref<number | null>(null)
 function openAtt(a: Record<string, any>) {
-  const list = ((bill.value?.attachments || []) as Record<string, any>[]).filter((x) => x.has_file)
-  lbList.value = list
-  const idx = Math.max(0, list.findIndex((x) => x.id === a.id))
-  showLb(idx)
+  lbStart.value = a.id
+  lbOpen.value = true
 }
-function showLb(idx: number) {
-  const a = lbList.value[idx]
-  if (!a) return
-  lb.value = { name: a.file_name, url: `/api/attachments/${a.id}/file`, idx }
-  lbScale.value = 1; lbRot.value = 0; lbPos.value = { x: 0, y: 0 }
-}
-function lbNav(d: number) {
-  if (!lb.value) return
-  const n = lbList.value.length
-  if (n > 1) showLb((lb.value.idx + d + n) % n)
-}
-function lbZoom(d: number) {
-  lbScale.value = Math.min(4, Math.max(0.5, lbScale.value * d))
-}
-function lbWheel(e: WheelEvent) {
-  e.preventDefault()
-  lbZoom(e.deltaY < 0 ? 1.2 : 1 / 1.2)
-}
-function lbDown(e: MouseEvent) {
-  lbDrag = { x: e.clientX, y: e.clientY, ox: lbPos.value.x, oy: lbPos.value.y }
-  e.preventDefault()
-}
-function lbMove(e: MouseEvent) {
-  if (!lbDrag) return
-  lbPos.value = { x: lbDrag.ox + e.clientX - lbDrag.x, y: lbDrag.oy + e.clientY - lbDrag.y }
-}
-function lbUp() { lbDrag = null }
-function closeLb() { lb.value = null }
-watch(lb, (v) => {
-  const onKey = (e: KeyboardEvent) => {
-    if (!lb.value) return
-    if (e.key === 'Escape') closeLb()
-    else if (e.key === 'ArrowLeft') lbNav(-1)  // 大图层内 ←/→ 翻附件（优先于队列翻张）
-    else if (e.key === 'ArrowRight') lbNav(1)
-  }
-  if (v) document.addEventListener('keydown', onKey, true) // capture：先于队列 onKey
-  else document.removeEventListener('keydown', onKey, true)
-})
+/** 本单可看大图的附件清单（has_file 的），传给 ImageViewer */
+const lbItems = computed(() =>
+  ((bill.value?.attachments || []) as Record<string, any>[]).filter((x) => x.has_file)
+    .map((x) => ({ id: x.id as number, file_name: String(x.file_name || '') })))
 
 /* ── 历次审核：人工留痕（manual_review）+ AI 轮次 ── */
 const reviews = ref<Record<string, any>[]>([])
@@ -1049,27 +1010,8 @@ const rowKeyOf = (r: unknown): string => {
       <div class="dim" style="margin-top: 10px">输入框内快捷键不生效</div>
     </a-modal>
 
-    <!-- 附件大图查看器（P1-3）：缩放 / 拖拽 / 旋转 / 翻张 / 切换条 -->
-    <div class="lb" :class="{ show: lb }" @click.self="closeLb">
-      <div class="lb-card" v-if="lb">
-        <div class="lb-img" @wheel="lbWheel" @mousedown="lbDown" @mousemove="lbMove" @mouseup="lbUp" @mouseleave="lbUp">
-          <img :src="lb.url" :alt="lb.name" draggable="false"
-            :style="{ transform: `translate(${lbPos.x}px, ${lbPos.y}px) scale(${lbScale}) rotate(${lbRot}deg)`, cursor: lbDrag ? 'grabbing' : 'grab' }">
-        </div>
-        <div class="lb-bar">
-          <span class="n">{{ lb.name }}<span class="dim">（{{ lb.idx + 1 }}/{{ lbList.length }}）</span></span>
-          <div class="lb-ops">
-            <a-button size="small" @click="lbNav(-1)" :disabled="lbList.length <= 1">← 上一张</a-button>
-            <a-button size="small" @click="lbNav(1)" :disabled="lbList.length <= 1">下一张 →</a-button>
-            <a-button size="small" @click="lbZoom(1 / 1.2)">−</a-button>
-            <span class="lb-zoom">{{ Math.round(lbScale * 100) }}%</span>
-            <a-button size="small" @click="lbZoom(1.2)">＋</a-button>
-            <a-button size="small" @click="lbRot = (lbRot + 90) % 360">旋转</a-button>
-            <a-button size="small" @click="closeLb">关闭 (Esc)</a-button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 附件大图查看器（P1-3 / A-P1-2 共享组件）：缩放 / 拖拽 / 旋转 / 翻张 -->
+    <ImageViewer v-if="lbOpen" :items="lbItems" :start-id="lbStart" @close="lbOpen = false" />
   </div>
 </template>
 
@@ -1200,18 +1142,7 @@ const rowKeyOf = (r: unknown): string => {
 .meta .t { font-size: 11px; color: rgba(0, 0, 0, .45); }
 .atts-empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: rgba(0, 0, 0, .45); font-size: 13px; }
 
-/* 附件大图查看器（P1-3） */
-.lb { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, .55);
-  display: none; align-items: center; justify-content: center; }
-.lb.show { display: flex; }
-.lb-card { background: #fff; border-radius: 10px; padding: 16px; max-width: min(1100px, 92vw); }
-.lb-img { max-height: 72vh; overflow: hidden; display: grid; place-items: center;
-  user-select: none; touch-action: none; background: #fafafa; }
-.lb-img img { max-width: 100%; max-height: 72vh; object-fit: contain; transition: transform .05s linear; }
-.lb-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 12px; flex-wrap: wrap; }
-.lb-bar .n { font-size: 13px; color: rgba(0, 0, 0, .65); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.lb-ops { display: flex; align-items: center; gap: 6px; }
-.lb-zoom { font-size: 12px; color: rgba(0, 0, 0, .55); min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+/* 附件大图查看器样式随组件迁至 ImageViewer.vue（A-P1-2 共享） */
 
 @media (max-width: 1100px) {
   .qwrap { grid-template-columns: 260px minmax(0, 1fr); }

@@ -46,6 +46,155 @@ def workspace():
     return _err(rp.workspace)
 
 
+# ── 规则试算（B-P1-F，2026-10-28）：改完规则未发布前，对历史单据只读回放 ──
+# 「这版规则比现版会多命中/少命中哪些单」。SAP simulation run / 用友规则
+# 试算的 POC 形态：双规则集对同一批单据各跑一遍 engine.evaluate（纯内存
+# 判定，不调模型不出网不落任何业务表），输出逐单差异 + 按规则 ±命中表。
+#
+# 红线核查：evaluate 是纯函数（D 阶段不碰库），只读回放属薄 API 范畴；
+# snapshot_fact / standards / tier_map 同为只读取数。写 op_log 一条
+# （谁在发布前看了试算——签字发布的配套证据），不写业务表。
+@router.post("/impact-preview")
+def impact_preview(request: Request, body: dict = Body(None),
+                   _g=Depends(require_engineer)):
+    """发布前试算：当前生效规则集 vs 工作区规则集，对历史单据只读回放。
+
+    body={scope: 'all' | 'real' | 'demo'（默认 all）， limit: 默认全量}
+    输出：汇总条（结论翻转 N 张、变严 M 张、变宽 K 张、命中不变）/ 按规则
+    ±命中表 / 逐单差异清单（单号可跳报告页、旧结论、新结论、差异规则）。
+    """
+    import time as _time
+    from ..perception import reader
+    from ..rules import engine
+
+    b = body or {}
+    scope = b.get("scope") or "all"
+    if scope not in ("all", "real", "demo"):
+        raise HTTPException(400, "scope 只能是 all / real / demo")
+    limit = int(b.get("limit") or 0)
+
+    where, params = "", []
+    if scope == "real":
+        where = " WHERE is_demo = FALSE"
+    elif scope == "demo":
+        where = " WHERE is_demo = TRUE"
+    bill_nos = [r["bill_no"] for r in db.query(
+        "SELECT bill_no FROM expense_bill%s ORDER BY bill_no" % where, tuple(params))]
+    if limit > 0:
+        bill_nos = bill_nos[:limit]
+    if not bill_nos:
+        raise HTTPException(400, "没有可回放的单据（scope=%s）" % scope)
+
+    # 两套规则集：生效版走 engine.load_ruleset（effective_release 阶梯）；
+    # 工作区版 = 生效版执行集（v1 行，demo_executable 口径与引擎一致）叠加
+    # **未发布的修订**（B-P1-E 产生的 v2+ 行改判定口径，改的可编译性不影响
+    # v1 已在执行集这个事实——修订行的 demo_executable=False 只是「未发布」
+    # 标记，试算回答的正是「发布这版修订会怎样」）。没有修订时两版同集，
+    # 提前返回零差异。
+    t0 = _time.time()
+    eff_ruleset = engine.load_ruleset()
+    std, tm = reader.standards(), reader.tier_map()
+
+    ws_exec = [dict(r) for r in eff_ruleset.rules]
+    by_id = {r["rule_id"]: r for r in ws_exec}
+    revised = db.query("""SELECT rule_id, version, name, control_type, priority, scope,
+                                 logic, exception
+                          FROM rule WHERE version > 1 AND revised_by IS NOT NULL
+                          ORDER BY rule_id, version""")
+    _JUDGE_COLS = ("name", "control_type", "priority", "scope", "logic", "exception")
+    n_applied = 0
+    for rv in revised:
+        tgt = by_id.get(rv["rule_id"])
+        if not tgt:
+            continue                      # 修订的规则不在执行集（本就不跑），跳过
+        for k in _JUDGE_COLS:
+            if rv[k] is not None:
+                tgt[k] = rv[k]
+        n_applied += 1
+    if not n_applied:
+        return {"scope": scope, "bills": len(bill_nos), "same_set": True,
+                "flips": [], "by_rule": [], "summary": {
+                    "changed": 0, "stricter": 0, "looser": 0, "unchanged": len(bill_nos)},
+                "elapsed_ms": int((_time.time() - t0) * 1000),
+                "note": "工作区规则集与生效版口径一致（没有未发布的修订），"
+                        "回放必然零差异。先修订一条规则，或装载新规则后再试算。"}
+    ws_ruleset = engine.RuleSet(ws_exec, "工作区(试算)", eff_ruleset.ontology_version,
+                                eff_ruleset.lookups, eff_ruleset.excluded,
+                                release_id=None, effective_why="试算：工作区当前规则")
+
+    CONCL_RANK = {"pass": 0, "review": 1, "reject": 2}
+    by_rule: dict = {}
+    flips = []
+    n_changed = n_strict = n_loose = 0
+    for no in bill_nos:
+        fact, _meta = reader.snapshot_fact(no)
+        if fact is None:
+            continue
+        f_a, _s = engine.evaluate(eff_ruleset, fact, std, tm)
+        f_b, _s2 = engine.evaluate(ws_ruleset, fact, std, tm)
+        hit_a = {x.rule_id for x in f_a if x.outcome == "hit"}
+        hit_b = {x.rule_id for x in f_b if x.outcome == "hit"}
+        c_a, c_b = engine.conclude(f_a, eff_ruleset), engine.conclude(f_b, ws_ruleset)
+        delta = hit_b - hit_a
+        gone = hit_a - hit_b
+        if not delta and not gone and c_a == c_b:
+            continue
+        n_changed += 1
+        direction = ("stricter" if CONCL_RANK[c_b] > CONCL_RANK[c_a]
+                     else "looser" if CONCL_RANK[c_b] < CONCL_RANK[c_a] else "flat")
+        if direction == "stricter":
+            n_strict += 1
+        elif direction == "looser":
+            n_loose += 1
+        for rid in delta:
+            by_rule.setdefault(rid, {"rule_id": rid, "only_a": 0, "only_b": 0})
+            by_rule[rid]["only_b"] += 1
+        for rid in gone:
+            by_rule.setdefault(rid, {"rule_id": rid, "only_a": 0, "only_b": 0})
+            by_rule[rid]["only_a"] += 1
+        # 逐单差异行的规则明细：新增命中（含 message）/ 消失命中
+        detail = []
+        rule_names = {rid: (r.get("name") or "") for rid, r in by_id.items()}
+        for x in f_b:
+            if x.rule_id in delta:
+                detail.append({"rule_id": x.rule_id, "rule_name": rule_names.get(x.rule_id),
+                               "change": "new_hit", "message": x.message})
+        for x in f_a:
+            if x.rule_id in gone:
+                detail.append({"rule_id": x.rule_id, "rule_name": rule_names.get(x.rule_id),
+                               "change": "gone_hit", "message": x.message})
+        run = db.query_one(
+            "SELECT run_id FROM review_run WHERE bill_no=%s ORDER BY started_at DESC LIMIT 1",
+            (no,))
+        flips.append({"bill_no": no, "run_id": run["run_id"] if run else None,
+                      "old_conclusion": c_a, "new_conclusion": c_b,
+                      "direction": direction,
+                      "new_hits": sorted(delta), "gone_hits": sorted(gone),
+                      "detail": detail})
+    flips.sort(key=lambda x: ({"stricter": 0, "looser": 1, "flat": 2}[x["direction"]],
+                              x["bill_no"]))
+    by_rule_out = sorted(by_rule.values(),
+                         key=lambda x: (-abs(x["only_b"] - x["only_a"]), x["rule_id"]))
+    for x in by_rule_out:
+        x["rule_name"] = by_id.get(x["rule_id"], {}).get("name")
+    op_log.log_by_request(
+        request, "publish", "试算差异", target="impact-preview",
+        detail="回放 %d 张（%s）：结论翻转 %d（变严 %d / 变宽 %d）· 涉及规则 %d 条 · 耗时 %dms"
+               % (len(bill_nos), {"all": "全部", "real": "仅真实单", "demo": "仅演示单"}[scope],
+                  n_changed, n_strict, n_loose, len(by_rule_out),
+                  int((_time.time() - t0) * 1000)))
+    return {"scope": scope, "bills": len(bill_nos), "same_set": False,
+            "eff_version": eff_ruleset.rule_set_version,
+            "ws_rules": len(ws_exec), "eff_rules": len(eff_ruleset.rules),
+            "flips": flips, "by_rule": by_rule_out,
+            "summary": {"changed": n_changed, "stricter": n_strict,
+                        "looser": n_loose, "unchanged": len(bill_nos) - n_changed},
+            "elapsed_ms": int((_time.time() - t0) * 1000),
+            "note": "基于历史单据回放，不代表未来单据分布；回放只读不落库、"
+                    "不覆盖任何现有结论。变严=结论向不通过方向翻转，"
+                    "变宽=向通过方向翻转，flat=命中集变化但结论档不变。"}
+
+
 # ── ② 版本 ──────────────────────────────────────────────────────────────────
 @router.get("/releases")
 def releases():

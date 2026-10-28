@@ -28,6 +28,7 @@ import {
 } from '../data/llmState'
 import Outcome from '../components/Outcome.vue'
 import Async from '../components/Async.vue'
+import ChatDraft from '../components/ChatDraft.vue'
 
 describe('导航树', () => {
   // 2026-10-26 IA 重排后的新契约：平铺、按角色组织、本体退出业务界面。
@@ -367,3 +368,59 @@ describe('Key 存储格式', () => {
 // 原先钉在它们身上的两个 describe（规则本体·统一口径、本体工场·装载两步的闸）
 // 同步移除——被测文件已不存在。规则管理员的新落点是 RulesLib / DocLib，
 // 后续若在那些页面重立口径契约，应按新页面重新钉。
+// ── 对话式起草（B-P1-A，2026-10-28）─────────────────────────────────────────
+// 守三件坏了不会报错的事：
+//   1. 草稿卡在必填字段空着时「转待审」必须是灰的（防半截草稿进审定队列）
+//   2. 「模型生成需核对」黄条必须在（对话起草没有制度原文佐证——丢了黄条，
+//      数值就以为有人核对过）
+//   3. 完成态必须引导到审定页签（对话产物与制度抽取走同一条审定链，
+//      落点不见了人就去找「直接生效」的入口）
+describe('对话式起草', () => {
+  const mountChat = async (draft: Record<string, unknown> | null = null) => {
+    const chat = mount(ChatDraft, {
+      props: { open: true },
+      global: { plugins: [Antd] },
+      attachTo: document.body,          // a-drawer teleport 到 body，不挂真 DOM 取不到文本
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    if (draft) {
+      // 直接注入组件内部状态（绕过模型调用）：ref 值替换即可触发响应
+      ;(chat.vm as unknown as { draft: Record<string, unknown> }).draft = draft
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    return chat
+  }
+  const bodyText = () =>
+    (document.body.textContent || '').replace(/\s+/g, '')
+
+  it('打开即有欢迎语与输入框，无草稿时无「转待审」', async () => {
+    const w = await mountChat()
+    expect(bodyText()).toContain('描述要起草的规则')
+    expect(bodyText()).not.toContain('转待审')
+    w.unmount()
+  })
+
+  it('草稿必填缺失时转待审禁用，齐了才可点', async () => {
+    const w = await mountChat({ 规则名称: '', 判定逻辑: '' })
+    const dis = [...document.body.querySelectorAll('button')]
+      .find((b) => (b.textContent || '').replace(/\s/g, '') === '转待审')
+    expect(dis, '转待审按钮应在场').toBeTruthy()
+    expect(dis!.hasAttribute('disabled')).toBe(true)
+    w.unmount()
+
+    const w2 = await mountChat({ 规则名称: '住宿费超标拦截', 判定逻辑: '超标准200元以上拦截' })
+    const ok = [...document.body.querySelectorAll('button')]
+      .find((b) => (b.textContent || '').replace(/\s/g, '') === '转待审')
+    expect(ok, '齐了转待审应在场').toBeTruthy()
+    expect(ok!.hasAttribute('disabled')).toBe(false)
+    w2.unmount()
+  })
+
+  it('草稿卡必须带「数值需核对」黄条与审定链去向说明', async () => {
+    const w = await mountChat({ 规则名称: 'x', 判定逻辑: 'y' })
+    expect(bodyText()).toContain('数值需核对')
+    expect(bodyText()).toContain('没有制度原文佐证')
+    expect(bodyText()).toContain('同一条审定链')
+    w.unmount()
+  })
+})

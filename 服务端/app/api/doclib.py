@@ -700,3 +700,53 @@ def agents_meta():
 # 「统一口径是本体要做的事，规则抽取只负责抽取」（2026-10-19 用户口径），
 # 接口路径跟着归属走——留在这里会让下一个人在抽取那一栏找这些数，
 # 而两处都挂着同一组接口更糟：改了一处忘另一处，两个页面显示的冲突数会不一样。
+
+
+# ── 对话式起草（B-P1-A，2026-10-28）─────────────────────────────────────────
+# 对话是草稿的第五来源：chat 一轮追问/起草（真调模型、逐次落 llm_call_log），
+# draft-from-chat 把确认后的八要素落进 doclib_draft（待审）——与制度抽取
+# 草稿同一条审定链，没有绕过审定的入库通道。
+from .. import chat_draft as cd   # noqa: E402
+
+
+@ex_router.post("/chat")
+def chat(_g=Depends(require_engineer), body: dict = Body(...)):
+    """一轮对话起草。**真调模型、真计费**，逐次落 llm_call_log（chat_draft）。
+
+    多轮上下文由前端随请求带回（服务端无状态）：{messages, session_hint?}。
+    角色闸与上传/抽取同款——对话起草是规则管理员的动作。
+    """
+    b = body or {}
+    try:
+        return cd.chat_turn(b.get("messages"), b.get("session_hint") or "")
+    except RuntimeError as e:
+        # 没配 rule_judge 用途的默认模型：配置问题回 400，不变成 500
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@ex_router.post("/draft-from-chat")
+def draft_from_chat(request: Request, _g=Depends(require_engineer),
+                    body: dict = Body(...)):
+    """对话草稿转待审。落 doclib_draft（review_state='待审'），**不写规则表**。
+
+    审定链零改动：转待审后去「制度文件 → 抽取与审定」页签，与制度抽取
+    产物走同样的采纳/驳回/发布闸门。op_log 留痕（category=rule）。
+    """
+    b = body or {}
+    u = current_user(request)
+    try:
+        out = cd.draft_from_chat(b.get("draft") or {}, b.get("messages") or [],
+                                 by=u.get("account"),
+                                 session_hint=b.get("session_hint") or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    d = b.get("draft") or {}
+    op_log.log_by_request(
+        request, "rule", "对话起草", target=out["draft_id"],
+        detail="规则=%s · 起草人=%s · 数值待核=%d（对用户原话核对）"
+               % ((d.get("规则名称") or "")[:60], u.get("account"),
+                  len((out.get("number_check") or {}).get("suspect") or [])))
+    return out
+

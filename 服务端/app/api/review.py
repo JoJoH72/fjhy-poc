@@ -63,6 +63,41 @@ def _humanize_finding(f: dict) -> dict:
     return f
 
 
+# 规则 logic 的 compare 声明（A-P1-1）：finding→rule logic 一次批量取，
+# 不做 N+1。模块级缓存按 (rule_id) 存 logic dict；规则修订产生新版本时
+# 声明跟着新行走——缓存 TTL 短（10s），发布切换后最多滞后一个请求周期。
+_COMPARE_LOGIC_CACHE: dict = {"at": 0.0, "map": {}}
+
+
+def _compare_logic_map(rule_ids: set) -> dict:
+    import time as _t
+    now = _t.time()
+    want = {r for r in rule_ids if r}
+    cache = _COMPARE_LOGIC_CACHE
+    if now - cache["at"] > 10:
+        cache["map"] = {}
+        cache["at"] = now
+    missing = want - set(cache["map"])
+    if missing:
+        for r in db.query("SELECT rule_id, logic FROM rule WHERE version=1 "
+                          "AND rule_id = ANY(%s)", (sorted(missing),)):
+            cache["map"][r["rule_id"]] = r["logic"] if isinstance(r["logic"], dict) else {}
+    return {r: cache["map"].get(r) for r in want}
+
+
+def _humanize_findings(findings: list) -> list:
+    """批量版：先取 compare 声明再逐条转换（声明塞 _rule_logic 临时键）。"""
+    lm = _compare_logic_map({f.get("rule_id") for f in findings})
+    for f in findings:
+        lg = lm.get(f.get("rule_id"))
+        if lg:
+            f["_rule_logic"] = lg
+    out = [_humanize_finding(f) for f in findings]
+    for f in out:
+        f.pop("_rule_logic", None)
+    return out
+
+
 # ── 人工核点提示（P1-6，2026-10-27）───────────────────────────────────────────
 # Concur 三段式：什么被违反 → 检测到什么 → **建议你核什么**。第三段是给
 # 审核员的：35 张真实单平均 3.4 个待人工项，看到「判不了的原因」之后，
@@ -103,22 +138,65 @@ _COMPARE_PAIRS = [
     (None, "交通费", "交通上限", "交通费", "元"),
 ]
 
+# 出口层 compare 种子声明（A-P1-1，2026-10-28）：两条高频规则按其**真实
+# evidence 键**给出声明式映射（推断兜底对不上这两条的键名——住宿费那条
+# 的键是 日均/区间上界，不是 住宿费/住宿上限）。规则管理员在修订表单里
+# 声明 logic.compare 后，库内声明接管这层种子。
+_COMPARE_SEEDS = {
+    "TR-D4-02": [{"label": "住宿费日均", "actual_key": "日均",
+                  "limit_key": "区间上界", "unit": "元"}],
+    "TR-D10-06": [{"label": "大额校验", "actual_key": "本单金额",
+                   "limit_key": "阈值", "unit": "元"}],
+}
+
 
 def _attach_compare(f: dict) -> None:
     """evidence 键对 → compare 数组。只在该 finding 的 evidence 里同时
     存在成对键且两个值都能当数字读时输出——读不出就不给 compare，
-    没有把握的对比比没有对比更糟。"""
+    没有把握的对比比没有对比更糟。
+
+    键对来源三级（A-P1-1 契约，2026-10-28）：
+      ① 规则资产声明优先——rule.logic.compare = [{label, actual_key,
+         limit_key, unit}]，规则管理员在修订表单（B-P1-E）维护，单实体
+         单入口，出口只消费。命中 evidence 里有声明键才输出（声明了但
+         取不到值 ≠ 渲染，与推断兜底同一纪律）。
+      ② ②没声明 → 出口种子声明（两条高频规则的 A-P1-1 种子，落在出口层
+         而不是 logic 里：装载器重装 rule 表会清掉库内种子，出口层的
+         种子每轮都在；规则管理员一旦在 logic 里声明，声明立即接管）。
+      ③ 都没有 → _COMPARE_PAIRS 键对推断兜底（现状行为不变）。"""
     ev = f.get("evidence") or {}
     out = []
-    for rid, ak, lk, label, unit in _COMPARE_PAIRS:
-        if rid and f.get("rule_id") != rid:
+    logic = f.get("_rule_logic") or {}
+    for c in logic.get("compare") or []:
+        if not isinstance(c, dict):
             continue
+        ak, lk = c.get("actual_key"), c.get("limit_key")
         if ak in ev and lk in ev:
             try:
-                actual, limit = float(ev[ak]), float(ev[lk])
+                out.append({"label": c.get("label") or ak,
+                            "actual": float(ev[ak]), "limit": float(ev[lk]),
+                            "unit": c.get("unit") or ""})
             except (TypeError, ValueError):
                 continue
-            out.append({"label": label, "actual": actual, "limit": limit, "unit": unit})
+    if not out:
+        for c in _COMPARE_SEEDS.get(f.get("rule_id") or "") or []:
+            ak, lk = c["actual_key"], c["limit_key"]
+            if ak in ev and lk in ev:
+                try:
+                    out.append({"label": c["label"], "actual": float(ev[ak]),
+                                "limit": float(ev[lk]), "unit": c.get("unit") or ""})
+                except (TypeError, ValueError):
+                    continue
+    if not out:
+        for rid, ak, lk, label, unit in _COMPARE_PAIRS:
+            if rid and f.get("rule_id") != rid:
+                continue
+            if ak in ev and lk in ev:
+                try:
+                    actual, limit = float(ev[ak]), float(ev[lk])
+                except (TypeError, ValueError):
+                    continue
+                out.append({"label": label, "actual": actual, "limit": limit, "unit": unit})
     if out:
         f["compare"] = out
 
@@ -247,13 +325,22 @@ def get_bill(bill_no: str):
     b["attachments"] = db.query(
         """SELECT id, attach_type, file_name, pages, seq, byte_size, content_type,
                   source_kind, source_ref, type_code, type_source, type_conf,
+                  fields_override,
                   -- 有没有图可取。**前端要按这个判，不要按 source_kind 判**：
                   -- 原来缩略图写的是 `source_kind === 'xlsx内嵌'`，于是演示单配了
                   -- 合成示意图之后，页面照旧显示「无原图」——条件写死在来源上，
                   -- 就跟不上数据的变化。stored_path 本身不回（那是服务器绝对路径）。
-                  (stored_path IS NOT NULL) AS has_file
-             FROM attachment WHERE bill_no=%s
-            ORDER BY (source_kind <> 'xlsx内嵌'), seq NULLS LAST, id""", (bill_no,))
+                  (stored_path IS NOT NULL) AS has_file,
+                  -- 人工订正信息（B-P0-2）：type_source='人工指定' 时 tooltip 要说清
+                  -- 谁改的、何时、原判什么。最新一条 attach_type 台账行就在这。
+                  j.judged_label, j.judged_at, j.old_value AS judged_old
+             FROM attachment a0
+             LEFT JOIN LATERAL (SELECT judged_label, judged_at, old_value
+                                FROM attachment_judge_log
+                                WHERE attachment_id = a0.id AND field = 'attach_type'
+                                ORDER BY id DESC LIMIT 1) j ON TRUE
+             WHERE a0.bill_no=%s
+            ORDER BY (a0.source_kind <> 'xlsx内嵌'), a0.seq NULLS LAST, a0.id""", (bill_no,))
     # 附件数**两个口径并列**，页面分两行显示，谁也不覆盖谁。
     #   attach_count      真实原图数（xlsx 内嵌，点得开）。**语义不变**——
     #                     _attach_metrics_note 与「申报张数」的对比都指它。
@@ -324,24 +411,24 @@ def get_bill(bill_no: str):
     """, (bill_no,))
     if latest_run:
         if (latest_run.get("hit_count") or 0) > 0:
-            latest_run["hits"] = [_humanize_finding(f) for f in db.query("""
+            latest_run["hits"] = _humanize_findings(db.query("""
                 SELECT rf.rule_id, rl.name AS rule_name,
                        rf.control_type, rf.message, rf.needs_human
                 FROM review_finding rf
                 LEFT JOIN rule rl ON rl.rule_id = rf.rule_id AND rl.version = rf.rule_version
                 WHERE rf.run_id = %s AND rf.outcome = 'hit'
                 ORDER BY rf.rule_id
-            """, (latest_run["run_id"],))]
+            """, (latest_run["run_id"],)))
         else:
             latest_run["hits"] = []
         if (latest_run.get("pending_count") or 0) > 0:
-            latest_run["pending"] = [_humanize_finding(f) for f in db.query("""
+            latest_run["pending"] = _humanize_findings(db.query("""
                 SELECT rf.rule_id, rl.name AS rule_name, rf.message, rf.pending_reason
                 FROM review_finding rf
                 LEFT JOIN rule rl ON rl.rule_id = rf.rule_id AND rl.version = rf.rule_version
                 WHERE rf.run_id = %s AND rf.outcome = 'pending'
                 ORDER BY rf.rule_id
-            """, (latest_run["run_id"],))]
+            """, (latest_run["run_id"],)))
         else:
             latest_run["pending"] = []
     b["latest_review"] = latest_run
@@ -371,7 +458,7 @@ def get_review(run_id: str):
                                                  ELSE 2 END, rule_id""", (run_id,))
     # 出口白话化（P0-7）：G-04 等内部缺口编号与规则号互引只给规则管理员看，
     # 审核报告上翻成人话。脱敏映射与 _plain_for_auditor 的注释见文件头。
-    findings = [_humanize_finding(f) for f in findings]
+    findings = _humanize_findings(findings)
     hit = [f for f in findings if f["outcome"] == "hit"]
     pending = [f for f in findings if f["outcome"] == "pending"]
     passed = [f for f in findings if f["outcome"] == "pass"
@@ -929,6 +1016,233 @@ def attachment_perception(failures: int = Query(50, ge=0, le=500)):
             "**失败的调用也花钱**，所以成本要算在一起看；"
             "但失败次数不等于待办，见各步的失败说明。"),
     }
+
+
+# ── 附件识别结果人工订正（B-P0-2，2026-10-28，客户排期 #3）──────────────────
+# 客户原文：「新增人工修改与补录（改附件类型、改识别字段），修改留痕，
+# 避免 AI 识别错误影响审核」。AI 判错（类型认错/字段读错/没判出来）此前
+# 只能干看着——现在审核岗可以人工订正，AI 原值与人工值**并列显示不覆盖**。
+#
+# 三件事一次动作里完成（同一事务）：
+#   1. attachment 本表更新（type_source='人工指定'走既有枚举；字段进
+#      fields_override 只叠加改过的键，AI 台账 attachment_extract 一行不动）
+#   2. attachment_judge_log 逐键 INSERT（谁/何时/哪个字段/原值→新值）
+#   3. sys_op_log 留痕（review 类别）
+#
+# **scope 红线**：改判只修数据与留痕，不自动重跑审核、不触发引擎——
+# 改完类型后是否重新判定是另一个动作（重跑审核在既有链路），本接口不联动。
+# **权限双闸**：auditor + admin（附件属审核域），engineer/leader 后端 403。
+def _judge_target(att_id: int) -> dict:
+    row = db.query_one(
+        "SELECT id, bill_no, file_name, attach_type, type_code, type_source, "
+        "type_conf, source_kind, fields_override FROM attachment WHERE id=%s",
+        (att_id,))
+    if not row:
+        raise HTTPException(404, "附件 %d 不存在" % att_id)
+    return row
+
+
+def _require_judge_role(request: Request) -> dict:
+    u = current_user(request)
+    if u["role_key"] not in ("auditor", "admin"):
+        raise HTTPException(403, "附件订正是审核岗的动作（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    return u
+
+
+def _log_judge(att: dict, field: str, old: str | None, new: str | None, u: dict):
+    db.execute("""INSERT INTO attachment_judge_log
+                  (attachment_id, field, old_value, new_value, judged_by, judged_label)
+                  VALUES (%s,%s,%s,%s,%s,%s)""",
+               (att["id"], field, old, new, u["account"], u.get("user_name") or ""))
+
+
+# EN17 的 12 个值 + 细类编码 A01..A15 都收：界面给的是决策表细类
+#（attachment_classify.TYPES 的唯一真相来源），API 按同一张表换算，不另抄映射。
+@router.post("/attachments/{att_id}/reclassify")
+def attachment_reclassify(att_id: int, request: Request, body: dict = Body(...)):
+    """人工改判附件类型（B-P0-2 三入口之一；未判类型的人工定类也走这里）。
+
+    body={type_code: 'A04'}——传决策表细类编码，按 attachment_classify.TYPES
+    换算 EN17 值写库。同一张表是读图判类型唯一的真相来源，这里不抄第二份。
+    并发防呆：提交时库里值已变成提交值 → 200 幂等返回；变成别的值 → 409。
+    """
+    u = _require_judge_role(request)
+    from ..perception.attachment_classify import TYPES
+    code = str((body or {}).get("type_code") or "").strip()
+    if code not in TYPES:
+        raise HTTPException(400, "type_code 只能是附件决策表的细类编码（%s），"
+                                 "收到「%s」" % ("/".join(list(TYPES)[:4]) + "…", code or "空"))
+    att = _judge_target(att_id)
+    if att["source_kind"] == "演示合成":
+        raise HTTPException(400, "演示单的附件类型是生成器给定的合成数据，不进人工订正——"
+                                 "订正只对真实附件（xlsx 内嵌/上传）有意义")
+    en17 = TYPES[code][1]
+    if att["attach_type"] == en17 and att["type_source"] == "人工指定":
+        return {"ok": True, "attachment_id": att_id, "unchanged": True,
+                "note": "该附件已是人工指定的这个类型，无需再改"}
+    old_type, old_source = att["attach_type"], att["type_source"]
+    n = db.execute("""UPDATE attachment
+                      SET attach_type=%s, type_code=%s, type_source='人工指定',
+                          type_conf=NULL, typed_at=now(), typed_by=NULL
+                      WHERE id=%s AND (attach_type IS DISTINCT FROM %s
+                                       OR type_source IS DISTINCT FROM '人工指定')""",
+                   (en17, code, att_id, en17))
+    if not n:
+        # 行没动 = 提交前后值一致（上面那个幂等分支没接住 type_source 不同的边角）
+        return {"ok": True, "attachment_id": att_id, "unchanged": True,
+                "note": "该附件已是人工指定的这个类型，无需再改"}
+    _log_judge(att, "attach_type", old_type, en17, u)
+    op_log.log_by_request(
+        request, "review", "订正附件类型", target="attachment:%d" % att_id,
+        detail="单据 %s · %s：%s → %s（%s）· 原 AI 判定：%s%s" % (
+            att["bill_no"], att["file_name"], old_type or "未判定", en17,
+            TYPES[code][0], old_source or "无",
+            " · 订正人 " + (u.get("user_name") or u["account"])))
+    return {"ok": True, "attachment_id": att_id, "attach_type": en17,
+            "type_code": code, "type_label": TYPES[code][0],
+            "old_value": old_type,
+            "note": "已订正并留痕（attachment_judge_log + 操作日志）。"
+                    "不自动重跑审核——需重新判定请在既有链路发起。"}
+
+
+@router.get("/attachments/{att_id}/fields")
+def attachment_fields(att_id: int):
+    """一张附件的已抽字段 + 人工值并列（订正抽屉数据源）。
+
+    AI 原值取 attachment_extract 该附件最近一次成功调用（ok 且 fields 非空），
+    人工值取 attachment.fields_override。两个都给，**谁也不覆盖谁**；
+    前端按「AI 原值灰字 + 人工值正常色」并列渲染。
+    """
+    att = _judge_target(att_id)
+    ai_row = db.query_one("""SELECT fields, confidence, model_name, created_at
+                             FROM attachment_extract
+                             WHERE attachment_id=%s AND ok AND fields IS NOT NULL
+                             ORDER BY id DESC LIMIT 1""", (att_id,))
+    ai_fields = {}
+    if ai_row and isinstance(ai_row["fields"], dict):
+        ai_fields = ai_row["fields"]
+    elif ai_row and isinstance(ai_row["fields"], str):
+        import json as _json
+        try:
+            ai_fields = _json.loads(ai_row["fields"])
+        except ValueError:
+            ai_fields = {}
+    overlay = att["fields_override"] if isinstance(att["fields_override"], dict) else {}
+    if isinstance(overlay, str):
+        import json as _json
+        try:
+            overlay = _json.loads(overlay)
+        except ValueError:
+            overlay = {}
+    history = db.query("""SELECT field, old_value, new_value, judged_label, judged_at
+                          FROM attachment_judge_log WHERE attachment_id=%s
+                          ORDER BY id DESC LIMIT 50""", (att_id,))
+    # 字段名 → 中文名（attachment_extract_fields._FIELD_LABELS 的反向映射，
+    # 就地构建不抄表）
+    from ..perception import attachment_extract_fields as aef
+    cn = {v: k for k, v in aef._FIELD_LABELS.items()}
+    # 该附件类型可补录的字段集（FIELD_SPECS 唯一真相来源）。AI 还没抽过的
+    # 附件（attachment_extract 空表）也要能人工补录——补录入口给的就是
+    # 这份清单，不是只有 AI 抽过的才能补。
+    spec_fields = []
+    if att["type_code"] in aef.FIELD_SPECS:
+        spec_fields = [{"field": k, "label": cn.get(k, k)}
+                       for k in aef.FIELD_SPECS[att["type_code"]]["keys"]]
+    fields = []
+    for key in sorted(set(ai_fields) | set(overlay)
+                      | ({s["field"] for s in spec_fields} if spec_fields else set())):
+        if not key:
+            continue
+        manual = overlay.get(key)
+        manual = None if manual in ("", None) else str(manual)
+        fields.append({
+            "field": key, "label": cn.get(key, key),
+            "ai_value": ai_fields.get(key) if key in ai_fields else None,
+            "manual_value": manual,
+            "judged": key in overlay and manual is not None,
+        })
+    return {"attachment_id": att_id, "bill_no": att["bill_no"],
+            "file_name": att["file_name"], "attach_type": att["attach_type"],
+            "type_code": att["type_code"],
+            "ai_call": ({"model": ai_row["model_name"],
+                         "confidence": ai_row["confidence"],
+                         "at": ai_row["created_at"].strftime("%Y-%m-%d %H:%M")
+                         if ai_row and ai_row.get("created_at") else None}
+                        if ai_row else None),
+            "fields": fields, "history": [
+                {"field": h["field"], "label": cn.get(h["field"], h["field"]),
+                 "old_value": h["old_value"], "new_value": h["new_value"],
+                 "judged_label": h["judged_label"],
+                 "at": h["judged_at"].strftime("%Y-%m-%d %H:%M")
+                 if h["judged_at"] else None}
+                for h in history],
+            "note": "AI 原值与人工值并列显示，人工值不覆盖 AI 台账；"
+                    "每次订正逐键留痕（attachment_judge_log）。"}
+
+
+@router.post("/attachments/{att_id}/fields")
+def attachment_fields_update(att_id: int, request: Request,
+                             body: dict = Body(...)):
+    """人工订正/补录识别字段（B-P0-2 三入口之二）。
+
+    body={updates:[{field, value}]}——只传要改的键。value=null 表示清除
+    人工值（还原以 AI 值为准），也留一行台账（new_value=NULL）。
+    字段名必须是抽取键集合内的（start_date/title/…，attachment_extract_fields
+    ._FIELD_LABELS 的值域），不收自由键——补录不是新造字段。
+    """
+    u = _require_judge_role(request)
+    from ..perception import attachment_extract_fields as aef
+    known = set(aef._FIELD_LABELS.values())
+    ups = (body or {}).get("updates")
+    if not isinstance(ups, list) or not ups:
+        raise HTTPException(400, "updates 必须是非空数组 [{field, value}]")
+    seen = set()
+    for it in ups:
+        f = (it or {}).get("field")
+        if f not in known:
+            raise HTTPException(400, "field 只能是抽取字段（%s），收到「%s」——"
+                                     "补录不是新造字段" % (
+                                         "、".join(sorted(known)[:6]) + "…", f))
+        if f in seen:
+            raise HTTPException(400, "字段 %s 重复提交" % f)
+        seen.add(f)
+    att = _judge_target(att_id)
+    import json as _json
+    overlay = att["fields_override"]
+    if isinstance(overlay, str):
+        try:
+            overlay = _json.loads(overlay)
+        except ValueError:
+            overlay = {}
+    overlay = dict(overlay or {})
+    changed = []
+    for it in ups:
+        f, v = it["field"], it.get("value")
+        v = None if v in ("", None) else str(v).strip() or None
+        old_manual = overlay.get(f)
+        if v is None:
+            overlay.pop(f, None)          # 清除人工值：还原 AI 值
+        else:
+            overlay[f] = v
+        changed.append((f, old_manual, v))
+    db.execute("UPDATE attachment SET fields_override=%s WHERE id=%s",
+               (_json.dumps(overlay, ensure_ascii=False), att_id))
+    for f, old_manual, new_v in changed:
+        # 台账记「人工值的变化」：old/new 都是人工值口径；AI 原值在
+        # attachment_extract 里，本来就动不了。
+        _log_judge(att, f, old_manual, new_v, u)
+    op_log.log_by_request(
+        request, "review", "订正附件字段", target="attachment:%d" % att_id,
+        detail="单据 %s · %s · %d 个字段：%s · 订正人 %s" % (
+            att["bill_no"], att["file_name"], len(changed),
+            "、".join("%s%s" % (f, "=清除人工值" if v is None else "")
+                      for f, _o, v in changed),
+            u.get("user_name") or u["account"]))
+    return {"ok": True, "attachment_id": att_id, "updated": len(changed),
+            "fields_override": overlay,
+            "note": "已订正并留痕。人工值与 AI 原值在界面上并列显示；"
+                    "AI 台账（attachment_extract）一行未动。"}
 
 
 @router.get("/deviation")

@@ -318,7 +318,11 @@ const roleCols = [
 
     <!-- 重置密码 -->
     <a-modal v-model:open="pwdOpen" title="重置密码" ok-text="重置" :confirm-loading="pwdBusy" cancel-text="取消" @ok="submitPwd">
-      <a-input-password v-model:value="pwd1" placeholder="至少 6 位（重置后该账号旧会话全部失效）" />
+      <!-- 后果写正文不写 placeholder：输入开始后 placeholder 会消失，
+           「旧会话全部失效」是必须让管理员看到的事（V3-1 微修） -->
+      <a-alert type="warning" show-icon style="margin-bottom: 12px"
+        message="重置后该账号的旧会话全部下线，需用新密码重新登录。" />
+      <a-input-password v-model:value="pwd1" placeholder="新密码，至少 6 位" />
     </a-modal>
 
     <!-- 新建角色 -->

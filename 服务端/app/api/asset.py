@@ -8,7 +8,7 @@
 """
 import json
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from .. import db
@@ -658,6 +658,200 @@ def feedback_resolve(fid: int, request: Request, body: dict = None):
             "note": "处置已留痕（操作日志·规则类）。%s" % (
                 "修订理由预填已生成，转规则修订流程发起修订。" if decision == "revise"
                 else "维持说明对提出异议的审核员可见。")}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 规则版本历史 + 修订动作（B-P1-E，2026-10-28）
+#
+# rule 表主键就是 (rule_id, version)，多版本基础设施一直在；缺的是
+# 「修订 → INSERT version+1 新行（旧行不动，天然留痕）」这个动作，
+# 以及 RuleDetail 的版本历史卡。修订产生的 v2 行 status='draft'，不进
+# 执行集（引擎按 version=1 装载不变）；发布工作区冻结时快照含全版本行，
+# workspace diff 的 modified 从此才有内容可讲。
+#
+# compare 声明（A-P1-1 契约）挂在修订表单里编辑、存进 logic.compare：
+# rule.logic.compare = [{label, actual_key, limit_key, unit}]——出口层
+#（review.py _attach_compare）声明优先 → 键对推断兜底 → 都没有不渲染。
+# 单实体单入口：全站改 logic.compare 只许走本表单。
+# ─────────────────────────────────────────────────────────────────────────────
+_REVISE_TEXT_FIELDS = ("name", "exception", "owner", "note")   # 文本直改
+_REVISE_JSON_FIELDS = ("scope", "logic")                        # JSON：前端给对象
+
+
+def _rule_out(r: dict) -> dict:
+    """规则行出口整形：name→rule_name（脱敏打星豁免）、日期转字符串。"""
+    if r is None:
+        return r
+    r = dict(r)
+    if "name" in r:
+        r["rule_name"] = r.pop("name")
+    for k in ("effective_from", "effective_to", "created_at"):
+        if r.get(k):
+            r[k] = str(r[k])
+    return r
+
+
+@router.get("/rules/{rule_id}/versions")
+def rule_versions(rule_id: str):
+    """版本历史卡数据源：全版本行 + 各版本随哪个 release 发布。
+
+    空态如实给：只有 v1 且 revised_by 为空 → 「装载基线，无人工修订」。
+    release_item 关联回答「v2 随 rs-xxx 发布」（change=modified/added）。
+    """
+    must_exist(db.query_one("SELECT rule_id FROM rule WHERE rule_id=%s AND version=1",
+                            (rule_id,)), "规则 " + rule_id)
+    rows = db.query("""SELECT rule_id, version, name, dimension, risk_class, rule_class,
+                              control_type, exception, owner, priority, status,
+                              compiled, demo_executable, effective_from, effective_to,
+                              revised_by, revised_label, revised_reason, revised_from,
+                              created_by, created_at
+                       FROM rule WHERE rule_id=%s ORDER BY version DESC""",
+                    (rule_id,))
+    items = []
+    for r in rows:
+        it = _rule_out(r)
+        # 这个版本随哪个 release 走过（release_item.version 钉的是冻结时的版本号）
+        rel = db.query_one("""SELECT rl.rule_set_version, rl.status AS rel_status,
+                                     i.change, rl.published_at
+                              FROM release_item i
+                              JOIN release rl ON rl.release_id = i.release_id
+                              WHERE i.rule_id=%s AND i.version=%s
+                                AND rl.status IN ('published', 'reviewing')
+                              ORDER BY rl.published_at DESC NULLS LAST LIMIT 1""",
+                           (rule_id, r["version"]))
+        it["released_in"] = (
+            {"rule_set_version": rel["rule_set_version"],
+             "change": rel["change"],
+             "published_at": str(rel["published_at"])[:10] if rel["published_at"] else None}
+            if rel else None)
+        items.append(it)
+    n_revised = sum(1 for x in rows if x["revised_by"])
+    return {"rule_id": rule_id, "items": items, "total": len(items),
+            "revised_count": n_revised,
+            "note": ("该规则已人工修订 %d 次；旧行原样保留，可回看任意版本口径。"
+                     % n_revised if n_revised else
+                     "仅 v1（装载基线）。发起修订会产生 v2 行，旧行不动。")}
+
+
+# 修订表单可改的八要素子集。dimension/risk_class/rule_class/control_type 走
+# 闭集合校验（onto/options 的口径，不在这里再抄一份取值域——校验只挡空值
+# 与非法 jump，取值域由表单下拉从 options 接口拿）。
+@router.post("/rules/{rule_id}/revise")
+def rule_revise(rule_id: str, request: Request, body: dict = Body(...)):
+    """发起一次修订：INSERT version+1 新行（旧行原样不动）+ op_log 留痕。
+
+    body={reason（必填）, fields:{name/dimension/risk_class/rule_class/
+    control_type/exception/owner/priority/scope/logic 可选子集},
+    compare:[{label,actual_key,limit_key,unit}]（存进新行 logic.compare，
+    A-P1-1 契约的维护面）}
+    未提交的字段沿用当前 version=1 的值——修订是增量变更，不是整表重填。
+    理由必填与驳回/裁决同一条纪律；并发防呆：已有更新版本 → 409（先看历史）。
+    """
+    from ..iam_auth import current_user
+    u = current_user(request)
+    if u["role_key"] not in ("engineer", "admin"):
+        raise HTTPException(403, "修订是规则管理员的动作（当前角色：%s）"
+                            % u.get("role_name", u["role_key"]))
+    reason = str((body or {}).get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "修订必须写理由——三个月后看这条规则的人只看得到这段话")
+    if len(reason) > 500:
+        raise HTTPException(400, "修订理由不超过 500 字")
+    cur = db.query_one("SELECT * FROM rule WHERE rule_id=%s ORDER BY version DESC LIMIT 1",
+                       (rule_id,))
+    if not cur:
+        raise HTTPException(404, "规则不存在：" + rule_id)
+    if cur["revised_by"]:
+        raise HTTPException(409, "该规则已有修订版 v%d（%s，%s）待处理——"
+                                 "请先发布或回退它，再发起新修订"
+                                % (cur["version"], cur["revised_label"],
+                                   str(cur["created_at"])[:10]))
+    fields = (body or {}).get("fields") or {}
+    if not isinstance(fields, dict):
+        raise HTTPException(400, "fields 必须是对象")
+    bad = set(fields) - set(_REVISE_TEXT_FIELDS) - set(_REVISE_JSON_FIELDS) \
+        - {"dimension", "risk_class", "rule_class", "control_type", "priority"}
+    if bad:
+        raise HTTPException(400, "fields 不支持的键：%s（可改：%s）"
+                            % ("、".join(sorted(bad)),
+                               "、".join(sorted(set(_REVISE_TEXT_FIELDS)
+                                                | set(_REVISE_JSON_FIELDS)
+                                                | {"dimension", "risk_class",
+                                                   "rule_class", "control_type",
+                                                   "priority"}))))
+    # compare 声明（A-P1-1）：四字段闭形状校验后并入 logic
+    compare = (body or {}).get("compare")
+    if compare is not None:
+        if not isinstance(compare, list) or not compare:
+            raise HTTPException(400, "compare 要么不传（沿用现值），要么是非空数组")
+        seen_labels = set()
+        for c in compare:
+            if (not isinstance(c, dict)
+                    or not all(c.get(k) for k in ("label", "actual_key", "limit_key"))):
+                raise HTTPException(400, "compare 每项须含 label / actual_key / "
+                                         "limit_key（unit 可空），收到：%s" % json.dumps(c, ensure_ascii=False)[:80])
+            if c["label"] in seen_labels:
+                raise HTTPException(400, "compare 标签重复：%s" % c["label"])
+            seen_labels.add(c["label"])
+
+    # 新行 = 旧行全列拷贝 + 提交字段覆盖 + 修订元数据 + version+1
+    new = dict(cur)
+    new["version"] = cur["version"] + 1
+    for k, v in fields.items():
+        if k in ("scope", "logic"):
+            if not isinstance(v, dict):
+                raise HTTPException(400, "%s 必须是对象（JSON），收到 %s"
+                                    % (k, type(v).__name__))
+            base = dict(cur[k] or {})
+            base.update(v)
+            new[k] = base
+        elif k == "priority":
+            try:
+                new[k] = int(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "priority 必须是整数")
+        else:
+            if not isinstance(v, str) or not v.strip():
+                raise HTTPException(400, "%s 必须是非空文本" % k)
+            new[k] = v.strip()
+    if compare is not None:
+        lg = dict(new["logic"] or {})
+        lg["compare"] = compare
+        new["logic"] = lg
+    # 修订产生的行是工作区草稿：不进执行集（demo_executable=False），
+    # compiled 沿用原值但 compiled_reason 写明「修订待发布」——装载器认
+    # created_by='asset_loader' 的地盘，修订行 created_by 用 revise:<账号>，
+    # 重跑装载不会被删。
+    new["status"] = "draft"
+    new["demo_executable"] = False
+    new["demo_blocker"] = "修订版待随发布生效（v%s → v%s）" % (cur["version"], new["version"])
+    new["created_by"] = "revise:%s" % u["account"]
+    new["revised_by"] = u["account"]
+    new["revised_label"] = u.get("user_name") or u["account"]
+    new["revised_reason"] = reason
+    new["revised_from"] = cur["version"]
+    cols = ("rule_id version name dimension risk_class rule_class source_clause "
+            "also_source scope logic exception priority owner effective_from "
+            "effective_to algo_code algo_type control_type configurator_status "
+            "compiled compiled_reason demo_executable demo_blocker demo_scope "
+            "binding_node impl_path feasibility external_table note status "
+            "created_by revised_by revised_label revised_reason revised_from").split()
+    vals = [json.dumps(new[c], ensure_ascii=False)
+            if c in ("source_clause", "also_source", "scope", "logic") and isinstance(new[c], (dict, list))
+            else new[c] for c in cols]
+    db.execute("INSERT INTO rule (%s) VALUES (%s)"
+               % (",".join(cols), ",".join(["%s"] * len(cols))), tuple(vals))
+    changed = [k for k in fields] + (["logic.compare"] if compare is not None else [])
+    op_log.log_by_request(
+        request, "rule", "修订规则", target=rule_id,
+        detail="v%s → v%s · 变更：%s · 理由：%s · 修订人 %s" % (
+            cur["version"], new["version"], "、".join(changed) or "（无字段变更）",
+            reason[:120], u.get("user_name") or u["account"]))
+    return {"ok": True, "rule_id": rule_id, "version": new["version"],
+            "changed": changed,
+            "note": "修订已落 v%s 新行（旧行不动，可回看）。发布工作区的差异"
+                    "（modified）从这次修订起才有内容——去发布管理冻结并发布后生效，"
+                    "发布前可用「试算差异」预判影响面。" % new["version"]}
 
 
 @router.get("/lookup-tables")

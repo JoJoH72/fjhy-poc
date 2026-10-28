@@ -1,43 +1,52 @@
 <script setup lang="ts">
 /**
- * 单据与附件（2026-10-27 AntD 换装版）。
+ * 单据与附件（2026-10-28 Wave 3 版：B-P0-2 附件人工订正 + A-P1-2 大图层复用）。
  *
- * 2026-10-21 附件这一块改了：原来它只显示「附件类型 / 文件名 / 页数」三列，
- * 而 40 张真实单一条附件记录都没有，于是整块永远只显示一条红色的
- * 「附件清单 100% 为空（G-29）」。
+ * 附件这一块的来历（2026-10-21）：内嵌在 xlsx 里的 PNG（219 张，覆盖全部
+ * 40 张真实单）抽出来了，页面要能看到原图——审核岗复核「这张发票对不对」
+ * 靠的是看票面，不是看文件名。两条口径写在页面上：
  *
- * 实际上附件一直在交付物里——**内嵌在 xlsx 里的 PNG**（219 张，覆盖全部 40 张单），
- * 只是我们的 xlsx 轻解析只读 XML 文本，看不见 xl/media/ 下的图片。
- * 现在它们抽出来了，所以这一块要能**看到原图**：审核岗复核「这张发票对不对」
- * 靠的是看票面，不是看文件名。
- *
- * 两条口径必须写在页面上：
- *
- * 1. **附件类型是空的，而空表示「还没判」，不是「没有类型」。**
- *    从一张 PNG 判它是出差审批单还是住宿费发票必须读图（必要附件决策表 11 种
- *    类型里 5 种标着 ocr_needed）。所以 TR-D6-01（必要附件完整性）**仍然开不了**。
- *    不写清楚的话，「有附件了」会被当成「附件规则能跑了」。
- *
+ * 1. **附件类型为空表示「还没判」，不是「没有类型」。**
  * 2. **「申报张数」与「实际附件数」是两个指标，并列显示，谁也不覆盖谁。**
- *    实测 40 张真实单里 34 张两者不等（申报多 32、申报少 2）。
- *    那**不等于「申报不实」**：「张数」可能按纸质页数算、一张图可能是两页合并、
- *    申报数也可能含未扫描的原件。所以没有做成规则——在口径搞清楚之前，
- *    那会是一条 32/40 命中的误报机。
+ *
+ * 2026-10-28 B-P0-2（客户排期 #3「人工修改与补录，修改留痕」）三入口：
+ *   ① 改附件类型：附件表 attach_type 单元格就地「订正」→ a-select（决策表
+ *      细类，数据源 /attachments/classify/status 的 type_menu，不写死）→
+ *      POST /attachments/{id}/reclassify。订正后显示「人工订正」蓝标 +
+ *      tooltip（谁/何时/原判什么）；AI 原值不覆盖。
+ *   ② 改识别字段：操作列「订正字段」开抽屉（560px）——AI 值灰字、人工值
+ *      正常色并列；逐字段改、value 置空=还原 AI 值；POST /attachments/{id}/fields。
+ *   ③ 补录：未判类型行的「人工定类」（与批量 AI 补判并排、视觉区分）。
+ *   scope 红线：改判不自动重跑审核——改完是否重新判定是另一个动作。
+ *   权限：auditor + admin（后端双闸，engineer 403）。
+ *
+ * 2026-10-28 A-P1-2：大图查看器换成共享 ImageViewer（缩放/拖拽/旋转/翻张），
+ * 与 ReviewReport 同款交互——同一动作同一模式。缩略图/文件名点击进入。
  */
 import { computed, createVNode, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import Async from '../components/Async.vue'
-import { api, type Attachment, type AttachmentClassifyItem } from '../api'
+import ImageViewer from '../components/ImageViewer.vue'
+import { api, type Attachment, type AttachmentClassifyItem, type AttFields } from '../api'
+import * as session from '../data/session'
 
 const route = useRoute()
 const no = computed(() => String(route.params.no))
 
-/** 展开看大图的那一张。附件是扫描件，缩略图上根本看不清票面。 */
-const openAtt = ref<number | null>(null)
-function toggle(id: number) {
-  openAtt.value = openAtt.value === id ? null : id
+/** 展开看大图的那一张（A-P1-2：ImageViewer 共享组件）。 */
+const lbOpen = ref(false)
+const lbStart = ref<number | null>(null)
+/** 大图层清单：openLarge 时从本单附件装配（有图的那些） */
+const lbItems = ref<{ id: number; file_name: string }[]>([])
+function openLarge(a: Attachment, atts?: Attachment[]) {
+  if (atts && atts.length) {
+    lbItems.value = atts.filter((x) => x.has_file)
+      .map((x) => ({ id: x.id, file_name: String(x.file_name || '') }))
+  }
+  lbStart.value = a.id
+  lbOpen.value = true
 }
 const fileUrl = (id: number) => `/api/attachments/${id}/file`
 
@@ -48,9 +57,9 @@ function kb(n: number | null | undefined) {
       : `${(n / 1048576).toFixed(1)} MB`
 }
 
-// ── 读图判类型 ────────────────────────────────────────────────────────────
-// **真出网、真计费**，发出去的是真实发票与出差申请单。所以这里走
-// 两段确认——第一下只是「上膛」，把要调几次模型摆出来；第二下才真跑。
+// ── 读图判类型（既有，AI 批量补判）─────────────────────────────────────────
+// **真出网、真计费**，发出去的是真实发票与出差申请单。两段确认——第一下只是
+// 「上膛」，把要调几次模型摆出来；第二下才真跑。
 const classifyBusy = ref(false)
 const classifyErr = ref('')
 const classifyMsg = ref('')
@@ -111,6 +120,105 @@ async function classifyBatch(atts: Attachment[], reload: () => Promise<void>) {
   }
 }
 
+// ── B-P0-2 ①③ 人工订正类型 / 未判人工定类 ────────────────────────────────
+// 与 AI 批量补判并存不合并：AI 是花钱的推断，人工是免费的拍板，两个入口两个形态。
+/** 订正权限：auditor + admin（后端同款双闸，前端只收敛入口） */
+const canJudge = computed(() => {
+  const r = session.current()?.role
+  return r === 'auditor' || r === 'admin'
+})
+/** 决策表细类菜单（type_menu 实时取，不写死 15 类） */
+const typeMenu = ref<{ code: string; label: string; en17: string; ocr_needed: boolean }[]>([])
+api.attClassifyStatus().then((s) => { typeMenu.value = s.type_menu || [] })
+  .catch(() => { /* 菜单取不到：订正按钮点了会报错，不静默造空菜单 */ })
+
+/** 正在就地订正的附件 id */
+const judgingId = ref<number | null>(null)
+const judgePick = ref<string>('')
+const judgeBusy = ref(false)
+const judgeErr = ref('')
+
+function startJudge(a: Attachment) {
+  judgingId.value = a.id
+  judgePick.value = a.type_code || ''
+  judgeErr.value = ''
+}
+
+async function submitJudge(a: Attachment, reload: () => Promise<void>) {
+  if (!judgePick.value) return
+  judgeBusy.value = true
+  judgeErr.value = ''
+  try {
+    const r = await api.attReclassify(a.id, judgePick.value)
+    classifyMsg.value = r.unchanged
+      ? `「${a.file_name}」已是人工指定的该类型，无需再改`
+      : `已订正为「${r.type_label}」（原判定：${r.old_value || '未判定'}），留痕可查`
+    judgingId.value = null
+    await reload()
+  } catch (e) {
+    judgeErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    judgeBusy.value = false
+  }
+}
+
+// ── B-P0-2 ② 订正字段抽屉 ──────────────────────────────────────────────────
+const fldOpen = ref(false)
+const fldAtt = ref<Attachment | null>(null)
+const fldData = ref<AttFields | null>(null)
+const fldErr = ref('')
+const fldBusy = ref(false)
+/** 编辑中的值：field → string | null（null=清除人工值还原 AI 值） */
+const fldEdits = ref<Record<string, string>>({})
+
+async function openFields(a: Attachment, reload?: () => Promise<void>) {
+  fldAtt.value = a
+  fldOpen.value = true
+  fldErr.value = ''
+  fldEdits.value = {}
+  fldData.value = null
+  try {
+    const d = await api.attFields(a.id)
+    fldData.value = d
+    // 预填：有人工值的带出人工值，没有的填 AI 值（改完 diff 出真正动过的键）
+    for (const f of d.fields) {
+      fldEdits.value[f.field] = f.manual_value ?? (f.ai_value != null ? String(f.ai_value) : '')
+    }
+  } catch (e) {
+    fldErr.value = e instanceof Error ? e.message : String(e)
+  }
+  void reload
+}
+
+/** 提交字段订正：只提交「值真的变了」的键 */
+async function submitFields(reload: () => Promise<void>) {
+  if (!fldAtt.value || !fldData.value) return
+  const updates: { field: string; value: string | null }[] = []
+  for (const f of fldData.value.fields) {
+    const orig = f.manual_value ?? (f.ai_value != null ? String(f.ai_value) : '')
+    const now = fldEdits.value[f.field] ?? ''
+    if (String(now).trim() !== String(orig).trim()) {
+      updates.push({ field: f.field, value: String(now).trim() || null })
+    }
+  }
+  if (!updates.length) {
+    message.info('没有改动要提交——改过的字段会与 AI 原值并列保存')
+    return
+  }
+  fldBusy.value = true
+  fldErr.value = ''
+  try {
+    const r = await api.attFieldsUpdate(fldAtt.value.id, updates)
+    message.success(`已订正 ${r.updated} 个字段并留痕（AI 原值不覆盖）`)
+    fldOpen.value = false
+    await reload()
+  } catch (e) {
+    fldErr.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    fldBusy.value = false
+  }
+}
+
 const CONCL: Record<string, { text: string; color: string }> = {
   pass: { text: '通过', color: 'success' },
   review: { text: '待复核', color: 'warning' },
@@ -143,10 +251,10 @@ const attCols = [
   { title: '序', dataIndex: 'seq', width: 44, align: 'center' as const },
   { title: '预览', key: 'thumb', width: 112, align: 'center' as const },
   { title: '文件名', dataIndex: 'file_name', ellipsis: true },
-  { title: '附件类型', key: 'type', width: 150 },
+  { title: '附件类型', key: 'type', width: 170 },
   { title: '大小', key: 'size', width: 90, align: 'right' as const },
   { title: '来源', dataIndex: 'source_kind', width: 90 },
-  { title: '操作', key: 'op', width: 170 },
+  { title: '操作', key: 'op', width: 250 },
 ]
 const apprCols = [
   { title: '序', dataIndex: 'seq', width: 50, align: 'center' as const },
@@ -316,9 +424,6 @@ function histDiff(items: Record<string, any>[], i: number): string {
         <a-row :gutter="16" class="att-stats">
           <a-col :span="8"><a-statistic title="申报张数（审批意见 PDF）" :value="(data as any).attach_pages ?? '—'" /></a-col>
           <a-col :span="8"><a-statistic title="真实原图（xlsx 内嵌）" :value="(data as any).attach_count ?? 0" /></a-col>
-          <!-- 演示合成单独一格，只在有的时候出现。
-               原来只摆一个「实际附件数」，演示单于是头部写「附件（2 个）」、
-               指标卡写「0」，同一个页面两个数对不上。 -->
           <a-col v-if="(data as any).attach_demo_count" :span="8">
             <a-statistic title="演示合成（示意图）" :value="(data as any).attach_demo_count" />
           </a-col>
@@ -327,15 +432,12 @@ function histDiff(items: Record<string, any>[], i: number): string {
           <MarkText :text="(data as any)._attach_metrics_note" />
         </div>
 
-        <!-- 没有附件时这条是红的（要去查）；有附件时它说的是「类型还没判」，
-             那是说明不是故障，用 note 不用 err。 -->
         <a-alert v-if="(data as any)._attachment_note"
           :type="(data as any).attachments.length ? 'info' : 'warning'" show-icon style="margin: 8px 0">
           <template #message><MarkText :text="(data as any)._attachment_note" /></template>
         </a-alert>
 
-        <!-- 读图判类型。**真出网、真计费**——两段确认，第一下只是把要调几次
-             模型摆出来。批量按钮只对**这一单**的未判附件生效，不是全库 219 张。 -->
+        <!-- 读图判类型（AI 批量）+ 人工订正口径条（B-P0-2） -->
         <div v-if="untypedOf((data as any).attachments as Attachment[]).length"
              class="cls-bar">
           <span class="dim">
@@ -347,6 +449,10 @@ function histDiff(items: Record<string, any>[], i: number): string {
               ? `确认：对这 ${untypedOf((data as any).attachments as Attachment[]).length} 张调模型（出网计费）`
               : '批量判类型' }}
           </a-button>
+        </div>
+        <div v-if="canJudge" class="note">
+          类型与识别字段支持人工订正（留痕）：表格行内「订正类型」，操作列「订正字段」。
+          订正后 AI 原值仍并列保留，不覆盖历史；订正不自动重跑审核。
         </div>
         <a-alert v-if="classifyErr" type="error" show-icon :message="classifyErr" style="margin: 8px 0" />
         <div v-if="classifyMsg" class="note">{{ classifyMsg }}</div>
@@ -360,36 +466,81 @@ function histDiff(items: Record<string, any>[], i: number): string {
             <template v-else-if="column.key === 'thumb'">
               <img v-if="a.id && a.has_file" class="thumb"
                    :src="fileUrl(a.id)" :alt="a.file_name"
-                   @click="toggle(a.id)" />
+                   title="点开放大（缩放/旋转/翻张）"
+                   @click="openLarge(a, (data as any).attachments as Attachment[])" />
               <span v-else class="dim">无原图</span>
             </template>
             <template v-else-if="column.dataIndex === 'file_name'">
-              <a v-if="a.id && a.has_file" @click.prevent="toggle(a.id)" style="cursor: pointer">{{ a.file_name }}</a>
+              <a v-if="a.id && a.has_file" @click.prevent="openLarge(a, (data as any).attachments as Attachment[])" style="cursor: pointer"
+                 title="点开放大">{{ a.file_name }}</a>
               <span v-else>{{ a.file_name }}</span>
             </template>
             <template v-else-if="column.key === 'type'">
-              <!-- 空 = 还没判，**不是「没有类型」**。显示「未判定」而不是「—」：
-                   「—」会被读成「这份附件没有类型」。 -->
-              <a-tag v-if="a.attach_type" color="success">{{ a.attach_type }}</a-tag>
-              <a-tag v-else color="warning" title="需要读图才能判，见上方说明">未判定</a-tag>
-              <div v-if="a.type_source" class="dim" style="font-size: 11px">
-                {{ a.type_source }}{{ a.type_conf ? ` · 把握${a.type_conf}` : '' }}
-              </div>
+              <!-- 空 = 还没判，**不是「没有类型」**；人工订正的值并列显示，
+                   AI 原值不覆盖（B-P0-2） -->
+              <template v-if="judgingId === a.id && canJudge">
+                <a-select v-model:value="judgePick" size="small" style="width: 150px"
+                  :options="typeMenu.map((t) => ({ value: t.code, label: `${t.code} ${t.label}` }))"
+                  placeholder="选择类型" />
+                <a-button size="small" type="primary" style="margin-left: 4px"
+                  :loading="judgeBusy" :disabled="!judgePick"
+                  @click="submitJudge(a, reload)">确认</a-button>
+                <a-button size="small" style="margin-left: 2px"
+                  @click="judgingId = null">取消</a-button>
+                <div v-if="judgeErr" class="err-tip">{{ judgeErr }}</div>
+              </template>
+              <template v-else>
+                <a-tag v-if="a.attach_type" :color="a.type_source === '人工指定' ? 'processing' : 'success'">
+                  {{ a.attach_type }}
+                </a-tag>
+                <a-tag v-if="a.type_source === '人工指定'" color="blue">人工订正</a-tag>
+                <a-tag v-if="!a.attach_type" color="warning" title="需要读图才能判，见上方说明">未判定</a-tag>
+                <a v-if="canJudge && a.source_kind === 'xlsx内嵌' && judgingId !== a.id"
+                   class="judge-link" title="人工订正附件类型（留痕，AI 原值保留）"
+                   @click="startJudge(a)">订正</a>
+                <div v-if="a.type_source && a.type_source !== '人工指定'" class="dim" style="font-size: 11px">
+                  {{ a.type_source }}{{ a.type_conf ? ` · 把握${a.type_conf}` : '' }}
+                </div>
+                <div v-if="a.type_source === '人工指定'" class="dim" style="font-size: 11px">
+                  <a-tooltip :overlay-style="{ maxWidth: 380 }">
+                    <template #title>
+                      <span style="font-size: 12px; line-height: 1.7">
+                        {{ a.judged_label || '—' }} 于 {{ dt(a.judged_at) || '—' }} 订正；
+                        原判定：{{ a.judged_old || '未判定' }}。台账逐次留痕，订正不自动重跑审核。
+                      </span>
+                    </template>
+                    {{ a.judged_label }} 订正 · 原判{{ a.judged_old || '未判定' }}
+                  </a-tooltip>
+                </div>
+              </template>
             </template>
             <template v-else-if="column.key === 'size'">{{ kb(a.byte_size) }}</template>
             <template v-else-if="column.dataIndex === 'source_kind'">
               <a-tag :color="a.source_kind === 'xlsx内嵌' ? 'blue' : 'default'">{{ a.source_kind }}</a-tag>
             </template>
             <template v-else-if="column.key === 'op'">
-              <a-button v-if="a.source_kind === 'xlsx内嵌' && !a.attach_type"
-                        size="small" :loading="classifyBusy"
-                        @click="classifyOne(a.id, reload)">
-                {{ armed === a.id ? '确认调模型（计费）' : '判类型' }}
-              </a-button>
-              <span v-else class="dim">—</span>
+              <template v-if="a.source_kind === 'xlsx内嵌' && !a.attach_type">
+                <!-- 未判类型：AI 单条读图（计费）与人工定类（B-P0-2 ③）并排 -->
+                <a-button size="small" :loading="classifyBusy"
+                          :title="'真出网真计费：读一张图判类型'"
+                          @click="classifyOne(a.id, reload)">
+                  {{ armed === a.id ? '确认调模型（计费）' : '判类型' }}
+                </a-button>
+                <a-button v-if="canJudge && judgingId !== a.id" size="small" ghost type="primary"
+                          style="margin-left: 4px"
+                          title="人工直接定类型（不出网不计费，留痕）"
+                          @click="startJudge(a)">人工定类</a-button>
+              </template>
+              <a-button v-else-if="canJudge && a.source_kind === 'xlsx内嵌' && a.type_code"
+                        size="small" style="margin-right: 4px"
+                        title="订正/补录识别字段：AI 值与人工值并列保存"
+                        @click="openFields(a, reload)">订正字段</a-button>
+              <a v-if="canJudge && a.source_kind === 'xlsx内嵌' && a.type_code && judgingId !== a.id"
+                 class="judge-link" @click="startJudge(a)">订正类型</a>
+              <span v-if="!canJudge || a.source_kind !== 'xlsx内嵌'" class="dim">—</span>
             </template>
           </template>
-          <!-- 展开行：读图依据 + 大图。附件是扫描件，缩略图上看不清票面 -->
+          <!-- 展开行：读图依据 + 大图（A-P1-2：点缩略图/文件名进大图层，此处保留直开） -->
           <template #expandedRowRender="{ record: a }">
             <div v-if="lastResult[a.id]" class="dim" style="font-size: 12px; margin-bottom: 8px">
               模型 {{ lastResult[a.id].model }} ·
@@ -402,7 +553,8 @@ function histDiff(items: Record<string, any>[], i: number): string {
                 · 备注：{{ lastResult[a.id].note }}
               </span>
             </div>
-            <img v-if="a.id && a.has_file" :src="fileUrl(a.id)" :alt="a.file_name" class="full" />
+            <img v-if="a.id && a.has_file" :src="fileUrl(a.id)" :alt="a.file_name" class="full"
+                 style="cursor: zoom-in" title="点开放大" @click="openLarge(a, (data as any).attachments as Attachment[])" />
             <div class="dim" style="font-size: 12px; margin-top: 6px">
               {{ a.file_name }}（{{ kb(a.byte_size) }}）·
               <a :href="fileUrl(a.id)" target="_blank" rel="noopener">在新标签页打开</a>
@@ -413,6 +565,65 @@ function histDiff(items: Record<string, any>[], i: number): string {
           </template>
         </a-table>
       </a-card>
+
+      <!-- B-P0-2 ② 订正字段抽屉：AI 值灰字 + 人工值正常色并列 -->
+      <a-drawer v-model:open="fldOpen" width="560" title="订正识别字段"
+        :body-style="{ padding: '16px 20px' }">
+        <template v-if="fldAtt">
+          <div class="dim" style="margin-bottom: 10px">
+            {{ fldAtt.file_name }} ·
+            <a-tag v-if="fldAtt.attach_type" color="success">{{ fldAtt.attach_type }}</a-tag>
+            <a-tag v-else color="warning">未判定</a-tag>
+          </div>
+          <a-alert v-if="fldErr" type="error" show-icon :message="fldErr" style="margin-bottom: 10px" />
+          <a-skeleton v-if="!fldData && !fldErr" active :paragraph="{ rows: 5 }" />
+          <template v-if="fldData">
+            <div v-if="!fldData.fields.length" class="note">
+              该附件类型暂无可抽取字段（{{ fldData.type_code || '未判定' }}）。
+              先订正类型为可抽取类（A01/A03/A04/A05）再补录字段。
+            </div>
+            <div class="dim" style="margin-bottom: 10px">
+              <template v-if="fldData.ai_call">
+                AI 抽取：{{ fldData.ai_call.model }} · 把握{{ fldData.ai_call.confidence || '—' }}
+                · {{ fldData.ai_call.at || '—' }}。
+              </template>
+              <template v-else>这张附件还没跑过 AI 字段抽取（或抽取失败）——以下为人工补录。</template>
+              人工值与 AI 值并列保存，AI 台账不动。
+            </div>
+            <div v-for="f in fldData.fields" :key="f.field" class="fld-row">
+              <div class="fld-key">
+                <span v-if="f.judged" class="dot-manual" title="该字段有人工订正值"></span>
+                <b>{{ f.label }}</b>
+                <span class="dim fld-code">{{ f.field }}</span>
+              </div>
+              <a-input v-model:value="fldEdits[f.field]" size="small"
+                :placeholder="f.ai_value != null ? `留空=还原 AI 值` : '补录'"
+                allow-clear />
+              <div v-if="f.ai_value != null || f.judged" class="fld-vals">
+                <span v-if="f.ai_value != null" class="dim">AI 原值：{{ f.ai_value }}</span>
+                <span v-if="f.judged" class="manual-mark">人工值生效</span>
+              </div>
+            </div>
+            <!-- 订正历史（留痕可见：谁/何时/哪个字段/前后值） -->
+            <div v-if="fldData.history.length" class="fld-hist">
+              <div class="dim" style="margin-bottom: 4px">订正历史（只增不改）</div>
+              <div v-for="(h, i) in fldData.history.slice(0, 6)" :key="i" class="hist-row">
+                <span class="dim">{{ h.at }}</span>
+                <span>{{ h.label }}</span>
+                <span class="dim">{{ h.old_value ?? '（空）' }} → {{ h.new_value ?? '（还原AI值）' }}</span>
+                <span>{{ h.judged_label }}</span>
+              </div>
+            </div>
+          </template>
+        </template>
+        <template #footer>
+          <div style="display: flex; gap: 8px; justify-content: flex-end">
+            <a-button :disabled="fldBusy" @click="fldOpen = false">取消</a-button>
+            <a-button type="primary" :loading="fldBusy" :disabled="!fldData"
+              @click="submitFields(reload)">提交订正</a-button>
+          </div>
+        </template>
+      </a-drawer>
 
       <a-card size="small" class="blk" :title="`审批记录（${(data as any).approvals.length} 条）`">
         <a-table :columns="apprCols" :data-source="(data as any).approvals"
@@ -448,7 +659,6 @@ function histDiff(items: Record<string, any>[], i: number): string {
                 </template>
                 <template v-else-if="column.key === 'rules'">{{ r.rule_executed }} / {{ r.rule_candidates }}</template>
                 <template v-else-if="column.key === 'diff'">
-                  <!-- 与上一轮对照（P1-10）：重报单改了什么一眼可见 -->
                   <span v-if="histDiff((rv as any).items, index)" class="diff-ch">{{ histDiff((rv as any).items, index) }}</span>
                   <span v-else class="dim">—</span>
                 </template>
@@ -463,10 +673,15 @@ function histDiff(items: Record<string, any>[], i: number): string {
           </a-card>
         </template>
       </Async>
+
+      <!-- A-P1-2 大图层（共享组件）：items 在挂载时按本单附件装配 -->
+      <ImageViewer v-if="lbOpen && lbItems.length" :items="lbItems"
+        :start-id="lbStart" @close="lbOpen = false" />
     </template>
   </Async>
   </div>
 </template>
+
 
 <style scoped>
 .bd-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
@@ -492,10 +707,26 @@ function histDiff(items: Record<string, any>[], i: number): string {
 .att-stats :deep(.ant-statistic-content) { font-size: 22px; }
 .cls-bar { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
 
+/* 人工订正入口（B-P0-2）：文字链样式，与按钮型动作区分 */
+.judge-link { font-size: 12px; margin-left: 6px; cursor: pointer; color: #1677ff; }
+.judge-link:hover { text-decoration: underline; }
+.err-tip { font-size: 12px; color: #cf1322; margin-top: 4px; }
+
+/* 订正字段抽屉（B-P0-2 ②）：AI 值灰字、人工值正常色并列 */
+.fld-row { margin-bottom: 12px; }
+.fld-key { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 13px; }
+.fld-code { font-size: 11px; background: #f5f5f5; padding: 0 4px; border-radius: 3px; }
+.dot-manual { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #1677ff; flex: none; }
+.fld-vals { display: flex; gap: 10px; margin-top: 3px; font-size: 12px; }
+.manual-mark { color: #1677ff; }
+.fld-hist { margin-top: 14px; border-top: 1px dashed #f0f0f0; padding-top: 8px; }
+.hist-row { display: flex; gap: 10px; font-size: 12px; padding: 2px 0; flex-wrap: wrap; }
+
 /* 附件缩略图。扫描件在 72px 上只能看出「是张票还是张表」，
    看票面必须点开——所以缩略图给个明显的可点样式。 */
 .thumb {
-  width: 88px; height: 88px; object-fit: cover; cursor: pointer;
+  width: 88px; height: 88px; object-fit: cover; cursor: zoom-in;
   border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa;
 }
 .thumb:hover { border-color: #4096ff; }

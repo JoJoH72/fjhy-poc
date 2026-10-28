@@ -846,6 +846,10 @@ export interface ExDraft {
   review_state: string; reviewer: string | null; reviewed_at: string | null
   reject_reason: string | null
   clause_no: string; title: string | null; clause_body: string; file_name: string
+  /** 重复检测（B-P1-D）。HTTP 出来已是对象（FastAPI 解 JSONB）；类型上兼容
+   *  字符串形态（db 列原样）。null=无命中 */
+  dup_of?: string | DraftDup | null
+  dup_signals?: string | null
 }
 /**
  * 规则明细 —— 这一栏真正的产物：**一行一条规则**，不是条款文本。
@@ -1051,6 +1055,134 @@ export interface FeedbackDetail {
   note: string
 }
 
+/** 对话式起草（B-P1-A）：一轮对话的返回。ready=true 时 draft 带八要素。 */
+export interface ChatTurn {
+  reply: string
+  ready: boolean
+  draft: Record<string, unknown> | null
+  model: string | null
+  latency_ms: number | null
+  ok: boolean
+  err_kind?: string
+  note: string
+}
+export interface ChatDraftOut {
+  draft_id: string
+  task_id: string
+  clause_id: string
+  number_check: { ok: boolean | null; suspect: { field: string; value: string }[]; note: string }
+  note: string
+}
+
+// ── 附件人工订正（B-P0-2）+ 草稿重复检测（B-P1-D）────────────────────────────
+/** 一张附件的字段并列视图：AI 原值 / 人工值 / 订正历史，谁也不覆盖谁 */
+export interface AttFields {
+  attachment_id: number
+  bill_no: string
+  file_name: string | null
+  attach_type: string | null
+  type_code: string | null
+  ai_call: { model: string | null; confidence: string | null; at: string | null } | null
+  fields: {
+    field: string
+    /** 中文名（后端从 _FIELD_LABELS 反查，不抄表） */
+    label: string
+    ai_value: string | number | boolean | null
+    manual_value: string | null
+    /** true=该键有人工值（AI 原值旁灰字并列） */
+    judged: boolean
+  }[]
+  history: {
+    field: string; label: string; old_value: string | null; new_value: string | null
+    judged_label: string; at: string | null
+  }[]
+  note: string
+}
+
+/** 草稿重复检测（B-P1-D）：确定性比对结果。只标疑似不写死结论 */
+export interface DraftDupMatch {
+  rule_id: string
+  rule_name: string
+  dimension: string | null
+  /** 高=强信号组合 / 低=单一信号。把握度，不是结论 */
+  strength: '高' | '低'
+  name_ratio: number
+  shared_numbers: string[]
+  /** 相似点人话摘要（徽标 tooltip） */
+  signals_desc: string
+}
+export interface DraftDup {
+  matches: DraftDupMatch[]
+  signals_desc: string
+}
+
+// ── 规则版本历史（B-P1-E）+ 试算（B-P1-F）────────────────────────────────────
+export interface RuleVersionRow {
+  version: number
+  rule_name: string
+  dimension: string
+  control_type: string
+  exception: string | null
+  owner: string | null
+  priority: number
+  status: string
+  compiled: boolean
+  demo_executable: boolean
+  effective_from: string | null
+  effective_to: string | null
+  revised_by: string | null
+  /** 修订人真名（*_label 署名口径，不打星） */
+  revised_label: string | null
+  revised_reason: string | null
+  revised_from: number | null
+  created_by: string | null
+  created_at: string
+  /** 该版本随哪个 release 发布（null=尚未随版发布） */
+  released_in: { rule_set_version: string; change: string; published_at: string | null } | null
+}
+export interface RuleVersions {
+  rule_id: string
+  items: RuleVersionRow[]
+  total: number
+  revised_count: number
+  note: string
+}
+
+export interface ImpactFlipDetail {
+  rule_id: string
+  rule_name: string | null
+  /** new_hit=这版会新增命中 / gone_hit=这版会漏掉 */
+  change: 'new_hit' | 'gone_hit'
+  message: string
+}
+export interface ImpactFlip {
+  bill_no: string
+  run_id: string | null
+  old_conclusion: string
+  new_conclusion: string
+  /** stricter=变严 / looser=变宽 / flat=命中变但结论档不变 */
+  direction: 'stricter' | 'looser' | 'flat'
+  new_hits: string[]
+  gone_hits: string[]
+  detail: ImpactFlipDetail[]
+}
+export interface ImpactPreview {
+  scope: string
+  bills: number
+  /** true=工作区与生效版一致，回放零差异（提前返回） */
+  same_set: boolean
+  eff_version?: string
+  ws_rules?: number
+  eff_rules?: number
+  flips: ImpactFlip[]
+  by_rule: { rule_id: string; rule_name: string | null
+             /** only_a=仅生效版命中（这版会漏掉） / only_b=仅工作区命中（这版会新增） */
+             only_a: number; only_b: number }[]
+  summary: { changed: number; stricter: number; looser: number; unchanged: number }
+  elapsed_ms: number
+  note: string
+}
+
 export interface Bill {
   bill_no: string
   doc_type: string
@@ -1142,6 +1274,12 @@ export interface Attachment {
    * 之后页面照旧显示「无原图」——条件写死在来源上就跟不上数据变化。
    */
   has_file: boolean
+  /** 字段人工订正值（B-P0-2，只存改过的键；AI 台账不动） */
+  fields_override?: Record<string, string> | null
+  /** type_source='人工指定' 时的订正信息（谁改的/何时/原判什么） */
+  judged_label?: string | null
+  judged_at?: string | null
+  judged_old?: string | null
 }
 /** 一次读图判类型的结果。可能是台账留痕但没有采信（applied=false）。 */
 export interface AttachmentClassifyItem {
@@ -1877,6 +2015,18 @@ export const api = {
     request<Record<string, unknown>>(
       `/api/extract/drafts/${encodeURIComponent(draftId)}/review`,
       { method: 'POST', body: JSON.stringify({ state, reviewer, reason }) }),
+  /** 对话式起草（B-P1-A）：一轮对话。真调模型、真计费（llm_call_log 逐次留痕）。
+   *  多轮上下文由前端持有随请求带回，服务端无状态。 */
+  exChat: (body: { messages: { role: 'user' | 'assistant'; content: string }[]
+                    session_hint?: string }) =>
+    request<ChatTurn>('/api/extract/chat',
+      { method: 'POST', body: JSON.stringify(body) }),
+  /** 对话草稿转待审：落 doclib_draft（review_state=待审），进既有审定链。 */
+  exDraftFromChat: (body: { draft: Record<string, unknown>
+                            messages: { role: string; content: string }[]
+                            session_hint?: string }) =>
+    request<ChatDraftOut>('/api/extract/draft-from-chat',
+      { method: 'POST', body: JSON.stringify(body) }),
   /** 审定人清单（系统账号）。署名从这里选，不再手工输入。 */
   exReviewers: () => request<{ items: ExReviewer[]; note: string }>(
     '/api/extract/reviewers'),
@@ -2097,6 +2247,46 @@ export const api = {
     request<{ id: number; verified_by: string; note: string }>(
       '/api/doclib/vision/verify',
       { method: 'POST', body: JSON.stringify({ id, by, note }) }),
+
+  // ── 附件识别结果人工订正（B-P0-2，客户排期 #3）────────────────────────────
+  // 审核岗可订正 AI 判错的附件类型/字段，AI 原值与人工值并列显示不覆盖，
+  // 改判逐键留痕（attachment_judge_log，只 INSERT）。改判不触发引擎重跑。
+  /** 人工改判类型。type_code 传附件决策表细类编码（A01..A15），后端按唯一
+   *  真相来源 TYPES 表换算 EN17 值；审核岗/管理员可调，其余 403。 */
+  attReclassify: (attId: number, typeCode: string) =>
+    request<{ ok: boolean; attachment_id: number; attach_type?: string
+              type_code?: string; type_label?: string; old_value?: string
+              unchanged?: boolean; note: string }>(
+      `/api/attachments/${attId}/reclassify`,
+      { method: 'POST', body: JSON.stringify({ type_code: typeCode }) }),
+  /** 已抽字段 + 人工值并列 + 订正历史（订正抽屉数据源）。 */
+  attFields: (attId: number) =>
+    request<AttFields>(`/api/attachments/${attId}/fields`),
+  /** 订正/补录字段（只传要改的键；value=null 清除人工值还原 AI 值）。 */
+  attFieldsUpdate: (attId: number, updates: { field: string; value: string | null }[]) =>
+    request<{ ok: boolean; attachment_id: number; updated: number
+              fields_override: Record<string, string>; note: string }>(
+      `/api/attachments/${attId}/fields`,
+      { method: 'POST', body: JSON.stringify({ updates }) }),
+
+  // ── 规则版本历史 + 修订（B-P1-E）+ 试算（B-P1-F）──────────────────────────
+  /** 版本历史卡：全版本行 + 各版随哪个 release 发布。 */
+  ruleVersions: (ruleId: string) =>
+    request<RuleVersions>(`/api/asset/rules/${encodeURIComponent(ruleId)}/versions`),
+  /** 发起修订：INSERT version+1 新行（旧行不动）。reason 必填；
+   *  fields 为可选增量；compare 为 logic.compare 声明（A-P1-1 契约维护面）。 */
+  ruleRevise: (ruleId: string, body: {
+    reason: string
+    fields?: Record<string, unknown>
+    compare?: { label: string; actual_key: string; limit_key: string; unit?: string }[]
+  }) =>
+    request<{ ok: boolean; rule_id: string; version: number; changed: string[]; note: string }>(
+      `/api/asset/rules/${encodeURIComponent(ruleId)}/revise`,
+      { method: 'POST', body: JSON.stringify(body) }),
+  /** 发布前试算：生效规则集 vs 工作区（含未发布修订），对历史单据只读回放。 */
+  relImpactPreview: (body: { scope?: 'all' | 'real' | 'demo'; limit?: number } = {}) =>
+    request<ImpactPreview>('/api/publish/impact-preview',
+      { method: 'POST', body: JSON.stringify(body) }),
 
   // ── 领域与实例 ────────────────────────────────────────────────────────────
   // 当前领域/实例是**全局单例**：库里一行，所有人共用，不存浏览器。
