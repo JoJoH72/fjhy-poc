@@ -1141,6 +1141,9 @@ const rowKeyOf = (r: unknown): string => {
 .act { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
 .act .rev { width: 120px; flex: none; }
 .act .note { flex: 1; min-width: 160px; }
+/* 复核操作区等高（P1-7）：意见输入框与同排按钮 32px 对齐——
+   class="note" 直接落在原生 input 上，实测被撑到 44px；钉死 32px。 */
+.act :deep(input.note) { height: 32px; padding: 0 11px; }
 .done-row { gap: 10px; }
 .ret-cat { display: flex; align-items: center; gap: 10px; }
 

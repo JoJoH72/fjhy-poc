@@ -314,13 +314,18 @@ def test_office锁文件不进库(lib):
     assert n == 0
 
 
-def test_非文档扩展名不进库(lib):
+def test_非文档扩展名不进库_图片进库(lib):
+    """2026-10-28（B-P0-3，客户 #5）口径更新：图片是制度文件的常见形态
+    （手机拍照的制度页），.jpg/.jpeg/.png 进库并走「需OCR」；exe/dll 仍拒——
+    文件库不许被稀释成文件管理器，这条没变。"""
     root, rid = lib
-    (root / "制度" / "工具.exe").write_bytes(b"MZ" + b"\x00" * 100)
-    (root / "制度" / "照片.jpg").write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
+    (root / "制度" / "工具.exe").write_bytes(b"MZ" + bytes(100))
+    (root / "制度" / "照片.jpg").write_bytes(bytes.fromhex("ffd8ff") + bytes(100))
     doclib.scan([rid])
     exts = {r["ext"] for r in doclib.list_files(root_id=rid)}
-    assert ".exe" not in exts and ".jpg" not in exts, exts
+    assert ".exe" not in exts, exts
+    jpg = [r for r in doclib.list_files(root_id=rid) if r["ext"] == ".jpg"]
+    assert len(jpg) == 1 and jpg[0]["parse_state"] == "需OCR", jpg
 
 
 # ─────────────────────────────────────────────────────────────────────────────

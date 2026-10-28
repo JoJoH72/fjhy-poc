@@ -142,9 +142,10 @@ const rowSelection = computed(() => canReview.value ? {
       <a-col :span="4"><a-card size="small"><a-statistic title="单据总量" :value="kpi.total" />
         <div class="sub">含真实与演示</div>
       </a-card></a-col>
-      <a-col :span="5"><a-card size="small"><a-statistic title="误报/漏报"
-        :value="`${deviation.fp ?? '—'} / ${deviation.fn ?? '—'}`" />
-        <div class="sub">人工复核回流</div>
+      <a-col :span="5"><a-card size="small"><a-statistic title="误报"
+        :value="deviation.fp ?? '—'"
+        :value-style="{ color: deviation.fp ? '#cf1322' : undefined }" />
+        <div class="sub">漏报 {{ deviation.fn ?? '—' }} · 人工复核回流</div>
       </a-card></a-col>
     </a-row>
 

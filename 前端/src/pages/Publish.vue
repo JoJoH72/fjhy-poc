@@ -135,6 +135,15 @@ const CHANGE: Record<string, string> = {
   added: '新增', modified: '修改', retired: '退役', unchanged: '未变',
 }
 
+/** 九层说明（P1-9）：note 是几十字的口径原文，列里压成一句名词短语——
+ *  长解释整段进 tooltip，表列宽度留给层名与别名。 */
+function noteBrief(raw: string | null | undefined): string {
+  const s = String(raw || '').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
+  if (!s) return '—'
+  const cut = s.replace(/[，。；:：].*$/, '')
+  return cut.length >= 6 ? cut : s.slice(0, 18)
+}
+
 const wsCols = [
   { title: '#', dataIndex: 'ord', width: 40, align: 'center' as const },
   { title: '层', key: 'layer', width: 130 },
@@ -445,7 +454,11 @@ onMounted(() => loadWs())
                 <code class="mini-code">{{ l.alias || '—' }}</code>
               </template>
               <template v-else-if="column.key === 'note'">
-                <span class="dim"><MarkText :text="l.note" /></span>
+                <a-tooltip v-if="l.note" placement="topLeft" :overlay-style="{ maxWidth: '420px' }">
+                  <template #title><span class="note-tt">{{ String(l.note).replace(/\*\*/g, '') }}</span></template>
+                  <span class="dim">{{ noteBrief(l.note) }}</span>
+                </a-tooltip>
+                <span v-else class="dim">—</span>
               </template>
             </template>
           </a-table>
@@ -527,6 +540,7 @@ onMounted(() => loadWs())
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
 .kv b { color: rgba(0, 0, 0, .45); font-weight: 500; align-self: baseline; }
 .mini-code { font-size: 11px; background: #fafafa; padding: 1px 5px; border-radius: 4px; }
+.note-tt { font-size: 12px; line-height: 1.7; color: rgba(255, 255, 255, .85); }
 .blk-note { font-size: 12px; color: rgba(0, 0, 0, .55); margin-top: 8px; line-height: 1.7; }
 .snap {
   max-height: 300px; overflow: auto; background: #fafafa; border: 1px solid #f0f0f0;

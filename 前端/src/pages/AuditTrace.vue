@@ -41,8 +41,32 @@ const STAGE_NAME: Record<Stage, string> = {
   S: '感知 · 数据快照', D: '研判 · 判定周期', A: '落库 · 写入与信号',
   F: '比对 · 偏差回流', I: '改进 · 参数调整',
 }
+/* 2026-10-28 视觉评审 P0-5：五段五色收敛为蓝白基准——done 一律蓝系，
+ * 仅 F（偏差）与 I（被拒调参）这两个「要人看」的状态位用状态色。 */
 const STAGE_COLOR: Record<Stage, string> = {
-  S: 'blue', D: 'geekblue', A: 'cyan', F: 'orange', I: 'purple',
+  S: 'blue', D: 'blue', A: 'blue', F: 'blue', I: 'blue',
+}
+
+/** 对象值兜底格式化：后端 decision/expected/actual/bounded_by 是 JSON 对象，
+ *  直接拼模板字符串会渲染成 [object Object]（P0-1）。 */
+function objFmt(v: unknown): string {
+  if (v == null) return '—'
+  if (typeof v !== 'object') return String(v)
+  const o = v as Record<string, unknown>
+  // 常见语义键优先取值（conclusion / human / ai / target…），比裸 JSON 可读
+  const prefer = ['conclusion', 'human', 'ai', 'label', 'name', 'text', 'value', 'target']
+  for (const k of prefer) {
+    if (o[k] != null) return String(o[k])
+  }
+  const kv = Object.entries(o).map(([k, x]) => `${k}=${typeof x === 'object' ? JSON.stringify(x) : String(x)}`)
+  return kv.length ? kv.join(' ') : JSON.stringify(o)
+}
+
+/** ISO 时间戳统一 "MM-DD HH:mm"（P0-4：不再露 "10-24T16:19:47"） */
+function tmFmt(t: unknown): string {
+  const s = String(t || '')
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/)
+  return m ? `${m[2]}-${m[3]} ${m[4]}:${m[5]}` : (s.slice(5, 16).replace('T', ' ') || '—')
 }
 
 /** 把五张表的行摊成时间线节点。空阶段给一个 wait 节点 + 语义说明 */
@@ -52,40 +76,41 @@ function timeline(d: any): { stage: Stage; st: 'done' | 'wait'; title: string; d
   for (const s of d.S_snapshots || []) {
     out.push({ stage: 'S', st: 'done', title: STAGE_NAME.S,
       desc: `输入快照 ${String(s.snapshot_id).slice(0, 18)} · 脱敏${s.masked ? '通过' : '未通过（泄露）'} · 读取 ${Object.keys(s.row_counts || {}).length} 类表`,
-      tags: ['data_pool_snapshot'], tm: String(s.taken_at).slice(5, 19) })
+      tags: ['data_pool_snapshot'], tm: tmFmt(s.taken_at) })
   }
   if (!(d.S_snapshots || []).length) out.push({ stage: 'S', st: 'wait', title: STAGE_NAME.S, desc: '无快照记录', tags: [], tm: '—' })
 
   for (const c of d.D_cycles || []) {
     const pt = c.phase_timings_ms || {}
     out.push({ stage: 'D', st: 'done', title: STAGE_NAME.D,
-      desc: `${c.trigger_kind}触发 · 执行 ${c.rule_executed}/${c.rule_candidates} 条 · 结论 ${c.decision}`,
+      desc: `${objFmt(c.trigger_kind)}触发 · 执行 ${objFmt(c.rule_executed)}/${objFmt(c.rule_candidates)} 条 · 结论 ${objFmt(c.decision)}`,
       tags: ['cycle_log'], ms: `S${ms(pt.S) || '—'} · D${ms(pt.D) || '—'} · A${ms(pt.A) || '—'} · F${ms(pt.F) || '—'}`,
-      tm: String(c.started_at).slice(5, 19) })
+      tm: tmFmt(c.started_at) })
   }
   if (!(d.D_cycles || []).length) out.push({ stage: 'D', st: 'wait', title: STAGE_NAME.D, desc: '无周期记录', tags: [], tm: '—' })
 
   for (const a of d.A_actions || []) {
     const wt = a.written_tables || {}
     out.push({ stage: 'A', st: 'done', title: STAGE_NAME.A,
-      desc: `${a.action} ${a.target} · 写入 ${Object.entries(wt).map(([k, v]) => `${k}×${v}`).join(' ') || '无'}`,
-      tags: ['agent_signal_log'], tm: String(a.emitted_at).slice(5, 19) })
+      desc: `${objFmt(a.action)} ${objFmt(a.target)} · 写入 ${Object.entries(wt).map(([k, v]) => `${k}×${v}`).join(' ') || '无'}`,
+      tags: ['agent_signal_log'], tm: tmFmt(a.emitted_at) })
   }
   if (!(d.A_actions || []).length) out.push({ stage: 'A', st: 'wait', title: STAGE_NAME.A, desc: '无动作记录', tags: [], tm: '—' })
 
   for (const f of d.F_feedback || []) {
     out.push({ stage: 'F', st: 'done', title: STAGE_NAME.F,
-      desc: `${f.metric}：预期 ${f.expected} / 实际 ${f.actual} → ${f.deviation_kind || '无偏差'}`,
-      tags: ['feedback_log'], tm: String(f.observed_at).slice(5, 19) })
+      desc: `${objFmt(f.metric)}：预期 ${objFmt(f.expected)} / 实际 ${objFmt(f.actual)} → ${f.deviation_kind ? objFmt(f.deviation_kind) : '无偏差'}`,
+      tags: ['feedback_log'], tm: tmFmt(f.observed_at) })
   }
   if (!(d.F_feedback || []).length) out.push({ stage: 'F', st: 'wait', title: STAGE_NAME.F,
     desc: '尚无人工结论可比对（复核后回写）', tags: ['feedback_log'], tm: '待复核后' })
 
   for (const i of d.I_improvements || []) {
     out.push({ stage: 'I', st: i.rejected ? 'wait' : 'done', title: STAGE_NAME.I,
-      desc: i.rejected ? `越界调参被拒绝：${i.param} → ${i.new_value}（${i.rejected_why}）`
-                       : `调整 ${i.param}：${i.old_value} → ${i.new_value}`,
-      tags: ['improve_log'], tm: String(i.applied_at).slice(5, 19) })
+      desc: i.rejected
+        ? `越界调参被拒绝：${objFmt(i.param)} → ${objFmt(i.new_value)}（${objFmt(i.rejected_why)}）`
+        : `调整 ${objFmt(i.param)}：${objFmt(i.old_value)} → ${objFmt(i.new_value)}`,
+      tags: ['improve_log'], tm: tmFmt(i.applied_at) })
   }
   if (!(d.I_improvements || []).length) out.push({ stage: 'I', st: 'wait', title: STAGE_NAME.I,
     desc: '本批次无调参动作（I 按批次调参，不按单）', tags: ['improve_log'], tm: '按批次' })
@@ -123,10 +148,15 @@ function timeline(d: any): { stage: Stage; st: 'done' | 'wait'; title: string; d
             </a-timeline-item>
           </a-timeline>
         </a-card>
-        <a-card v-if="(data as any).I_scope_note" size="small" style="margin-top: 16px" title="I 阶段口径">
-          <div class="scope-note">
-            <MarkText :text="(data as any).I_scope_note" />
-          </div>
+        <!-- 2026-10-28 P0-4：整段说明书（含 per_cycle=false 内联代码）收进 tooltip，
+             卡片只留名词短语——实现层标识不上界面 -->
+        <a-card v-if="(data as any).I_scope_note" size="small" style="margin-top: 16px">
+          <a-tooltip placement="topLeft" :overlay-style="{ maxWidth: '460px' }">
+            <template #title>
+              <div class="scope-note">{{ String((data as any).I_scope_note).replace(/\*\*/g, '') }}</div>
+            </template>
+            <span class="scope-line">I 阶段口径：按批次调参，不按单</span>
+          </a-tooltip>
         </a-card>
       </template>
     </Async>
@@ -145,5 +175,7 @@ function timeline(d: any): { stage: Stage; st: 'done' | 'wait'; title: string; d
 .desc { font-size: 13px; color: rgba(0, 0, 0, .75); margin-top: 2px; }
 .desc.empty { color: rgba(0, 0, 0, .4); }
 .dim { font-size: 12px; color: rgba(0, 0, 0, .45); font-variant-numeric: tabular-nums; }
-.scope-note { font-size: 12.5px; color: rgba(0, 0, 0, .65); }
+.scope-line { font-size: 12.5px; color: rgba(0, 0, 0, .65); cursor: help;
+  border-bottom: 1px dashed rgba(0, 0, 0, .25); }
+.scope-note { font-size: 12px; color: rgba(255, 255, 255, .85); line-height: 1.7; }
 </style>

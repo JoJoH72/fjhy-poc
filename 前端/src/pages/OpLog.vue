@@ -12,6 +12,7 @@ import { ref } from 'vue'
 import Async from '../components/Async.vue'
 import { api } from '../api'
 import type { OpLogPage } from '../api'
+import * as iam from '../data/iam'
 
 /** 提交用的查询状态（回车/点查询才变） */
 const category = ref('')
@@ -23,6 +24,13 @@ const PAGE_SIZE = 20
 /** 分类中文（接口 categories 也带 label，这里用于表格列内联显示） */
 const CAT_COLOR: Record<string, string> = {
   login: 'blue', iam: 'purple', publish: 'gold', review: 'cyan', rule: 'volcano',
+}
+
+/** 角色中文（P0-4）：后端落的是 role_key（admin/engineer），界面不许露英文键——
+ *  从 IAM 缓存取角色名；缓存没有的（角色被删）原样显示留排障线索 */
+function roleCn(key: string): string {
+  if (!key) return ''
+  return iam.roleByKey(key)?.name || key
 }
 
 function load(): Promise<OpLogPage> {
@@ -92,7 +100,9 @@ function reset() {
               <div class="dim sub2">{{ r.actor }}</div>
             </template>
             <template v-else-if="column.key === 'role'">
-              <a-tag v-if="r.role" :color="CAT_COLOR[r.category] || 'default'">{{ r.role }}</a-tag>
+              <a-tooltip v-if="r.role" :title="r.role">
+                <a-tag :color="CAT_COLOR[r.category] || 'default'">{{ roleCn(r.role) }}</a-tag>
+              </a-tooltip>
               <span v-else class="dim">—</span>
             </template>
             <template v-else-if="column.key === 'ok'">

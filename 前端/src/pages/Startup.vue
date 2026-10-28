@@ -193,7 +193,7 @@ function paramsRows(a: AgentCfg) {
           <template #header>
             <span class="dt">处理环节配置</span>
             <a-tag color="blue">{{ data.agents.items.length }} 个</a-tag>
-            <span class="dhint">配置检查 {{ data.agents.checks.length }} 项 · 失败 {{ data.agents.errors.length }} · 展开后点一行看参数</span>
+            <span class="dhint">配置检查 {{ data.agents.checks.length }} 项 · 失败 {{ data.agents.errors.length }}</span>
           </template>
           <a-table :data-source="data.agents.items" row-key="agent_id" size="small"
             :pagination="false"

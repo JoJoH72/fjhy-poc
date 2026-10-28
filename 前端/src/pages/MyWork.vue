@@ -119,8 +119,8 @@ const dt = (s: string | null) => (s || '').slice(0, 16).replace('T', ' ')
             <div class="sub">本月 {{ data.stats.month }}</div>
           </a-card></a-col>
           <a-col :span="6"><a-card size="small">
-            <a-statistic title="累计复核" :value="data.stats.total" />
-            <div class="sub">通过 {{ data.stats.agree }} · 退回 {{ data.stats.ret }}</div>
+            <a-statistic title="累计复核" :value="data.stats.total ?? 0" />
+            <div class="sub">通过 {{ data.stats.agree ?? 0 }} · 退回 {{ data.stats.ret ?? 0 }}</div>
           </a-card></a-col>
         </a-row>
 

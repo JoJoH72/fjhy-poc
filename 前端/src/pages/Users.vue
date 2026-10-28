@@ -217,7 +217,11 @@ const roleCols = [
               <div style="flex: 1"></div>
               <a-button type="primary" @click="openUser()"><plus-outlined /> 新增账号</a-button>
             </div>
-            <a-table :columns="roleCols" :data-source="usersOf(curRoleKey)"
+            <!-- P0-2：账号清单拉取失败必须说破，不许静默伪装成「该角色没有账号」 -->
+            <a-alert v-if="iam.usersError()" type="error" show-icon style="margin-bottom: 12px"
+              :message="`账号清单拉取失败：${iam.usersError()}`"
+              description="左侧人数来自角色表；账号表数据未取到。请刷新重试。" />
+            <a-table v-else :columns="roleCols" :data-source="usersOf(curRoleKey)"
               :row-key="(r: any) => r.account" size="small" :pagination="false"
               :scroll="{ x: 860 }">
               <template #bodyCell="{ column, record }">
@@ -244,7 +248,11 @@ const roleCols = [
                   </a-popconfirm>
                 </template>
               </template>
-              <template #emptyText><a-empty description="该角色暂无账号" /></template>
+              <template #emptyText>
+                <a-empty :description="curRole && curRole.members > 0
+                  ? `角色有 ${curRole.members} 名成员但账号表为空——账号清单未取到，请刷新`
+                  : '该角色暂无账号，点右上「新增账号」创建'" />
+              </template>
             </a-table>
           </a-tab-pane>
 

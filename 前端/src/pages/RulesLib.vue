@@ -26,6 +26,23 @@ const FeedbackInbox = defineAsyncComponent(() =>
 const tab = ref('rules')
 const kw = ref('')
 
+/** 维度码 → 维度名（P1-12）：规则清单接口只回 D1..D10 编号，
+ *  维度名在 /api/onto/graph/rich 的 rule_nodes.dimension_name（后端
+ *  onto_coord.DIM_NAMES 的口径）。列里显示「D1 · 主体与账户一致性」，
+ *  裸编号不进界面。取失败退回纯编号（列表不受图谱接口影响）。 */
+const dimName = ref<Record<string, string>>({})
+api.ontoGraphRich().then((g) => {
+  const m: Record<string, string> = {}
+  for (const r of g.rule_nodes || []) {
+    if (r.dimension && r.dimension_name && !m[r.dimension]) m[r.dimension] = r.dimension_name
+  }
+  dimName.value = m
+}).catch(() => { /* 维度名取不到：退回编号显示 */ })
+function dimText(code: string | null | undefined): string {
+  if (!code) return '—'
+  return dimName.value[code] ? `${code} · ${dimName.value[code]}` : code
+}
+
 async function load() {
   const r = await api.rules({ size: 500 })
   return r
@@ -143,12 +160,15 @@ function valueText(rowValue: Record<string, unknown>): string {
                 :columns="[
                   { title: '规则编号', dataIndex: 'rule_id', width: 130 },
                   { title: '规则名称', dataIndex: 'rule_name', ellipsis: true },
-                  { title: '维度', dataIndex: 'dimension', width: 130, ellipsis: true },
+                  { title: '维度', key: 'dim', width: 190, ellipsis: true },
                   { title: '类型', dataIndex: 'rule_class', width: 80 },
                   { title: '控制', dataIndex: 'control_type', width: 80 },
                   { title: '状态', dataIndex: 'compiled', width: 90 },
                 ]">
                 <template #bodyCell="{ column, record }">
+                  <template v-if="column.key === 'dim'">
+                    <span :title="record.dimension">{{ dimText(record.dimension) }}</span>
+                  </template>
                   <template v-if="column.dataIndex === 'rule_class'">
                     <a-tag :color="TYPE[record.rule_class]?.color || 'default'">
                       {{ TYPE[record.rule_class]?.text || record.rule_class }}

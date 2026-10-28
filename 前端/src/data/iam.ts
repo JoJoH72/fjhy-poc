@@ -59,12 +59,15 @@ const store = reactive<{
   users: IamUser[]
   ready: boolean
   error: string
-}>({ roles: [], users: [], ready: false, error: '' })
+  /** 账号清单拉取失败的原因（空=成功；非管理员为空=本来就不拉） */
+  usersError: string
+}>({ roles: [], users: [], ready: false, error: '', usersError: '' })
 
 export const roles = () => store.roles
 export const users = () => store.users
 export const isReady = () => store.ready
 export const loadError = () => store.error
+export const usersError = () => store.usersError
 export const roleByKey = (k: string) => store.roles.find((r) => r.key === k) || null
 export const usersOfRole = (k: string) => store.users.filter((u) => u.roleKey === k)
 
@@ -86,13 +89,21 @@ function adminSession(): boolean {
 /**
  * 启动时拉一次全量。**失败不抛**：把错误挂在 store 上，由页面显示，
  * 而不是让整个应用起不来（后端挂了时至少还能看到登录页）。
+ *
+ * 2026-10-28 P0-2：账号清单拉取失败**不再静默吞成空表**——角色卡写着
+ * 「2 人」而账号表空白（口径分裂）就是这条 catch 造成的。失败原因
+ * 挂到 usersError 上，「用户与角色」页据此显示错误条而不是空表。
  */
 export async function init(): Promise<void> {
+  store.usersError = ''
   try {
     const [r, u] = await Promise.all([
       api.iamRoles(),
       adminSession()
-        ? api.iamUsers().catch(() => ({ items: [] }))
+        ? api.iamUsers().catch((e) => {
+            store.usersError = msgOf(e)
+            return { items: [] }
+          })
         : Promise.resolve({ items: [] }),
     ])
     store.roles = r.items.map((x) => ({ ...x }))

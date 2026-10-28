@@ -252,6 +252,8 @@ def stats(instance_id: str = Query(None)):
 
 @router.get("/files")
 def files(q: str = Query(None), ext: str = Query(None),
+          exts: list = Query(None, description="多值扩展名筛选（如 exts=.jpg&exts=.png，"
+                                               "前端「图片」合并筛用）"),
           root_id: str = Query(None), state: str = Query(None),
           recognize: str = Query(None, description="按「能否识别」筛，如 可识别/待识别"),
           kind: str = Query(None, description="按文件类别筛：制度/范本/单据/其他"),
@@ -260,7 +262,7 @@ def files(q: str = Query(None), ext: str = Query(None),
           limit: int = Query(500, ge=1, le=2000)):
     inst = _scope(instance_id)
     rows = doclib.list_files(q, ext, root_id, state, limit, recognize, kind,
-                             inst["instance_id"], origin)
+                             inst["instance_id"], origin, exts=exts)
     return {"items": rows, "total": len(rows),
             "truncated": len(rows) >= limit,
             "instance_id": inst["instance_id"],

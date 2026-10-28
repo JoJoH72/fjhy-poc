@@ -237,7 +237,7 @@ onMounted(loadStatus)
     <a-card size="small" style="margin-top: 16px">
       <template #title>审核结果明细</template>
       <template #extra>
-        <span class="dim">比率分母为已审 {{ status?.rates?.denominator ?? '—' }} 张</span>
+        <span class="dim">分母：已审 {{ status?.rates?.denominator ?? '—' }} 张</span>
         <router-link to="/review/bills" style="margin-left: 16px">去工作台复核</router-link>
       </template>
       <a-table :columns="cols" :data-source="status?.bills || []" row-key="bill_no"

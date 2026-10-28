@@ -56,6 +56,7 @@ MAX_DEPTH = 12              # 递归层数上限
 MAX_PARSE_BYTES = 8 << 20   # 超过这个大小不尝试解析正文（仍然登记）
 MAX_OOXML_BYTES = 200 << 20 # docx/xlsx 体积主要是内嵌图片，解析只读 XML，单独放宽
 MAX_PDF_BYTES = 120 << 20   # PDF 取文字层是按页读，与扫描图体积关系不大，也放宽
+MAX_IMAGE_BYTES = 60 << 20  # 手机拍照的制度页；不再解析像素，只判文件头与大小
 MAX_TEXT_CHARS = 300_000    # 单份正文入库上限，超出截断并标注
 
 # 与制度资料无关、且往往巨大的目录，扫描时跳过
@@ -66,11 +67,19 @@ SKIP_DIRS = {
     "Program Files (x86)", "ProgramData", "AppData",
 }
 
-# 登记哪些扩展名。其余（exe/dll/图片…）不进库，免得把文件库稀释成文件管理器。
+# 登记哪些扩展名。其余（exe/dll…）不进库，免得把文件库稀释成文件管理器。
+# 2026-10-28（客户 #5，B-P0-3）加 .jpg/.jpeg/.png：现场客户极可能给手机拍照的
+# 制度文件——图片是「没有 PDF 拆页这一步」的扫描件同构场景，恒走
+# 「需OCR → 视觉转写」路径（extract_text / vision_ocr 各自认这个扩展名）。
 DOC_EXT = {
     ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm",
     ".docx", ".doc", ".xlsx", ".xls", ".pdf", ".ofd", ".wps", ".et", ".rtf",
+    ".jpg", ".jpeg", ".png",
 }
+
+# 图片扩展名：与 PDF 扫描件同构——没有文字层，识别的路只有视觉转写
+# （本机 tesseract 对照片质量同样吃力，且客户场景就是拍制度页，走视觉链）。
+IMAGE_EXT = {".jpg", ".jpeg", ".png"}
 
 # Office 打开文档时生成的锁文件（~$xxx.docx）：扩展名合法、内容是几百字节二进制，
 # 收进来只会多出一批「解析失败」。按文件名前缀挡掉。
@@ -669,10 +678,33 @@ def extract_text(path, size=None):
 
     cap = (MAX_OOXML_BYTES if ext in (".docx", ".xlsx")
            else MAX_PDF_BYTES if ext == ".pdf"
+           else MAX_IMAGE_BYTES if ext in IMAGE_EXT
            else MAX_PARSE_BYTES)
     if size > cap:
         return "未解析", "", "未解析：文件 %.1f MB 超过该类型解析上限 %d MB" % (
             size / 1048576, cap >> 20)
+
+    # 图片（B-P0-3，客户 #5）：与 PDF 扫描件同构——没有文字层，轻解析阶段
+    # 不碰像素。判定只有两件事：①内容真是图片吗（魔数——exe 改名成 .png
+    # 该在「解析失败」里说人话，而不是混进「需OCR」让视觉转写白烧一次出网费）；
+    # ②是图片就恒走「需OCR」，下一步视觉转写（拍照制度页给 tesseract 的
+    # 识别质量撑不起「已解析」三个字）。
+    if ext in IMAGE_EXT:
+        try:
+            with open(path, "rb") as fh:
+                head = fh.read(8)
+        except OSError:
+            return "解析失败", "", "解析失败：读不到文件（%s）" % path
+        if not (head.startswith(b"\xff\xd8\xff")        # JPEG
+                or head.startswith(b"\x89PNG\r\n")):    # PNG
+            return "解析失败", "", (
+                "解析失败：这不是图片文件（改了扩展名的 %s 文件）。"
+                "请传真正的手机拍照或扫描图片"
+                % _fmt_size(size))
+        return "需OCR", "", (
+            "需OCR：图片没有文字层（手机拍照/扫描的制度页）。"
+            "视觉转写按图计费（与扫描 PDF 同口径）；"
+            "本机 tesseract 对照片倾斜与光照的识别质量撑不住，直接走视觉链。")
 
     try:
         reason = None
@@ -1059,7 +1091,7 @@ def stats(instance_id=None):
     counts = {}
     for r in q("""SELECT f.parse_state, f.parse_reason, f.ocr_state, f.ocr_pages,
                          f.ocr_table_pages, f.ocr_mean_conf, f.ocr_note,
-                         f.ocr_fingerprint, f.fingerprint
+                         f.ocr_fingerprint, f.fingerprint, f.ext, f.ocr_engine
                     FROM doc_lib_file f WHERE NOT f.missing {SCOPE}"""):
         lab = recognizability(r)["label"]
         counts[lab] = counts.get(lab, 0) + 1
@@ -1106,6 +1138,11 @@ def recognizability(r):
     stale = (os_ == "已OCR"
              and r.get("ocr_fingerprint") is not None
              and r.get("ocr_fingerprint") != r.get("fingerprint"))
+    is_img = (r.get("ext") or "").lower() in IMAGE_EXT
+    # 转写来源看引擎名：vision_ocr 落的 engine 是「{型号} 视觉转写」，
+    # tesseract 落的是版本号。两者同管道不同代价（出网计费 vs 本机免费），
+    # 「已OCR」三个字不该把这笔账糊掉。
+    by_vision = "视觉转写" in (r.get("ocr_engine") or "")
 
     if ps == "已解析":
         return {"label": "可识别", "how": "原生文本", "cls": "pass",
@@ -1116,20 +1153,30 @@ def recognizability(r):
             return {"label": "待重跑", "how": "本机 OCR", "cls": "pend",
                     "note": "文件在 OCR 之后又被改过，现有 OCR 文本是旧版的，请重跑 OCR"}
         if os_ == "已OCR":
-            base = "已用本机 OCR 取到文字（tesseract，不出网、不计费，%d 页" % pages
-            base += ("，平均置信 %.1f）" % float(conf)) if conf is not None else "）"
+            if by_vision:
+                base = ("已用视觉模型转写到文字（%d 页，真出网按图计费）" % pages)
+            else:
+                base = "已用本机 OCR 取到文字（tesseract，不出网、不计费，%d 页" % pages
+                base += ("，平均置信 %.1f）" % float(conf)) if conf is not None else "）"
             if tp:
                 return {"label": "部分可识别", "how": "OCR + 需多模态", "cls": "pend",
                         "note": base + "。**其中 %d 页是表格，这几页需多模态大模型读图"
                                        "或人眼读图**：OCR 丢的不是字是结构，"
                                        "数字可能都在但行列对应关系不可信。"
                                        "其余页的数字也需人工复核，不得直接进硬规则阈值。" % tp}
-            return {"label": "可识别", "how": "本机 OCR", "cls": "pass",
+            return {"label": "可识别", "how": "视觉转写" if by_vision else "本机 OCR",
+                    "cls": "pass",
                     "note": base + "。可信度比原生文本低一档：数字需人工复核，"
                                    "不得直接进硬规则阈值。"}
         if os_ == "OCR失败":
             return {"label": "不可识别", "how": "OCR 失败", "cls": "hit",
                     "note": r.get("ocr_note") or "OCR 执行失败，见日志"}
+        if is_img:
+            # 图片恒走视觉链（B-P0-3）：不提示「跑 OCR」——tesseract 不接图片，
+            # 照着提示点了只会得到空结果，误导性提示比没有提示更糟。
+            return {"label": "待识别", "how": "视觉转写可解决", "cls": "pend",
+                    "note": (r.get("parse_reason") or "图片没有文字层。")
+                            + " 点「视觉转文字」按图计费（与扫描 PDF 同口径）。"}
         return {"label": "待识别", "how": "本机 OCR 可解决", "cls": "pend",
                 "note": (r.get("parse_reason") or "PDF 没有文字层（纯扫描件）。")
                         + " 点「跑 OCR」即可——本机 tesseract，不出网、不计费。"
@@ -1149,13 +1196,14 @@ def recognizability(r):
 
 
 def list_files(q=None, ext=None, root_id=None, state=None, limit=500,
-               recognize=None, kind=None, instance_id=None, origin=None):
+               recognize=None, kind=None, instance_id=None, origin=None, exts=None):
     sql = ["""SELECT f.file_id, f.root_id, f.abs_path, f.rel_path, f.file_name, f.ext,
                      f.file_size, f.mtime, f.parse_state, f.parse_reason, f.text_chars,
                      f.first_seen_at, f.last_seen_at, f.missing, f.fingerprint,
                      f.doc_kind, f.doc_number, f.doc_title, f.issued_year,
                      f.ocr_state, f.ocr_pages, f.ocr_chars, f.ocr_table_pages,
                      f.ocr_mean_conf, f.ocr_fingerprint, f.ocr_note, f.ocr_at,
+                     f.ocr_engine,
                      f.instance_id, f.origin, f.sha256, f.uploaded_by, f.uploaded_at,
                      r.kind AS root_kind, r.label AS root_label,
                      -- 同名另一版本：同一实例里文件名相同、在库的有几份。
@@ -1174,6 +1222,10 @@ def list_files(q=None, ext=None, root_id=None, state=None, limit=500,
         sql.append("AND f.file_name ILIKE %s"); args.append("%%%s%%" % q)
     if ext:
         sql.append("AND f.ext = %s"); args.append(ext)
+    if exts:
+        # 多值筛选（「图片」= jpg/jpeg/png 合并，B-P0-3）。与 ext 单值并列时
+        # 各自生效（AND），不互相覆盖——调用方只该传其一。
+        sql.append("AND f.ext = ANY(%s)"); args.append(list(exts))
     if root_id:
         sql.append("AND f.root_id = %s"); args.append(root_id)
     if state:

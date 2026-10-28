@@ -21,6 +21,20 @@ const id = computed(() => String(route.params.id))
 
 const AVAIL_OK = new Set(['样本可得', '样本可得(审批意见)', '已录入资产', '可推导'])
 
+/** 维度名（P1-12 与规则库同口径）：D 编号旁补中文名，映射取 graph_rich */
+const DIM_NAMES = ref<Record<string, string>>({})
+api.ontoGraphRich().then((g) => {
+  const m: Record<string, string> = {}
+  for (const r of g.rule_nodes || []) {
+    if (r.dimension && r.dimension_name && !m[r.dimension]) m[r.dimension] = r.dimension_name
+  }
+  DIM_NAMES.value = m
+}).catch(() => { /* 取不到：只显示编号 */ })
+function dimNameOf(code: unknown): string {
+  const k = String(code || '')
+  return DIM_NAMES.value[k] ? `· ${DIM_NAMES.value[k]}` : ''
+}
+
 /** 冲突对比抽屉（P0-1） */
 const cmpOpen = ref(false)
 const cmpOther = ref('')
@@ -43,6 +57,21 @@ const rowKeyOf = (r: unknown): string => {
   return String(r)
 }
 
+/**
+ * 维护备注的呈现层整理（P1-9）：后端 note 里有一条核对口径原文
+ * 「…是两回事，不要混」——命令式句子不上界面。已知句式替换成
+ * 名词化口径（「系统已有 ≠ 配置器已配」），原文整段收进 tooltip；
+ * 其余 note 原样显示。
+ */
+function noteShown(raw: unknown): { brief: string; full: string } {
+  const full = String(raw || '').trim()
+  if (!full) return { brief: '', full: '' }
+  if (full.includes('不要混')) {
+    return { brief: '口径：系统已有 ≠ 配置器已配', full }
+  }
+  return { brief: full, full }
+}
+
 /** 裁决完成后重取详情：relations 的 needs_confirm 标签要当场变掉 */
 const detailRef = ref<{ reload: () => void } | null>(null)
 const reloadDetail = () => detailRef.value?.reload()
@@ -60,7 +89,7 @@ const reloadDetail = () => detailRef.value?.reload()
       <a-card size="small" class="blk" title="八要素">
         <div class="kv">
           <b>① 规则名称</b><span>{{ (data as any).rule_name }}</span>
-          <b>② 审核维度</b><span>{{ (data as any).dimension }}</span>
+          <b>② 审核维度</b><span>{{ (data as any).dimension }} {{ dimNameOf((data as any).dimension) }}</span>
           <b>③ 风险类别</b><span>{{ (data as any).risk_class }}</span>
           <b>④ 来源条款</b>
           <span>
@@ -242,7 +271,19 @@ const reloadDetail = () => detailRef.value?.reload()
       </a-card>
 
       <a-card v-if="(data as any).note" size="small" class="blk" title="维护备注">
-        <div style="white-space: pre-wrap">{{ (data as any).note }}</div>
+        <a-tooltip v-if="noteShown((data as any).note).brief !== noteShown((data as any).note).full"
+          placement="topLeft" :overlay-style="{ maxWidth: '460px' }">
+          <template #title>
+            <span style="font-size: 12px; line-height: 1.7; color: rgba(255,255,255,.85)">
+              {{ noteShown((data as any).note).full }}
+            </span>
+          </template>
+          <div style="white-space: pre-wrap; cursor: help; display: inline;
+            border-bottom: 1px dashed rgba(0,0,0,.25)">
+            {{ noteShown((data as any).note).brief }}
+          </div>
+        </a-tooltip>
+        <div v-else style="white-space: pre-wrap">{{ noteShown((data as any).note).brief }}</div>
       </a-card>
     </template>
   </Async>

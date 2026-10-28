@@ -368,6 +368,15 @@ function purposeMain(label: string): string {
   const i = label.indexOf('（')
   return i > 0 ? label.slice(0, i) : label
 }
+
+/** 「当前模型」副行（P0-4）：友好名优先；config_name 退化成裸 ID 时
+ *  不把 llm-994e79c50f 这种实现层标识摆上界面，改显厂商/预置。 */
+function modelSubOf(c: LlmConfig): string {
+  const name = (c.config_name || '').trim()
+  if (name && !name.startsWith('llm-')) return name
+  const preset = presets.value.find((x) => x.preset_id === c.preset_id)
+  return preset ? `${preset.label}（未命名配置）` : '未命名配置'
+}
 </script>
 
 <template>
@@ -425,7 +434,12 @@ function purposeMain(label: string): string {
                     </a-tooltip>
                   </a-tag>
                 </div>
-                <div class="cm-sub">{{ cfgById(p.default)!.config_name }}</div>
+                <!-- P0-4：副行给友好名；配置 ID 是实现层标识，进 tooltip。
+                     自动命名的 config_name 与 ID 相同时显示「未命名配置」也不体面——
+                     显示厂商 + 用途让人认得出这是哪条。 -->
+                <a-tooltip :title="`配置 ID：${cfgById(p.default)!.config_id}`">
+                  <div class="cm-sub">{{ modelSubOf(cfgById(p.default)!) }}</div>
+                </a-tooltip>
               </template>
               <span v-else class="cm-none">未配置</span>
             </div>
@@ -470,7 +484,9 @@ function purposeMain(label: string): string {
               <a-tag v-if="!c.enabled" color="default" style="margin-left: 6px">已停用</a-tag>
             </div>
             <div class="cfg-sub">
-              {{ c.config_name }}
+              <a-tooltip :title="`配置 ID：${c.config_id}`">
+                <span>{{ modelSubOf(c) }}</span>
+              </a-tooltip>
               <span v-if="c.last_test_at"> · {{ fmtTime(c.last_test_at).slice(5, 16) }}
                 {{ c.last_test_ok === true ? '通' : c.last_test_ok === false ? '不通' : '未测' }}</span>
             </div>

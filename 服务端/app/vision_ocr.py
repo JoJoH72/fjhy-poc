@@ -80,12 +80,35 @@ def _render_file(path, file_id, dpi=150, max_pages=60):
 
     native = {页码: 页dict}（原生文字页，零成本零失真）
     jobs   = [(页码, 图路径, 是否表格页)]（需要发视觉模型的页）
+
+    2026-10-28（B-P0-3，客户 #5）：path 是 .jpg/.jpeg/.png 时**整图直发**——
+    跳过 PDF 拆页那一层，图片自己就是「第 1 页」。计费口径不变：一张图片
+    = 一次视觉调用 = 一页。落库（doc_lib_ocr 的 image_path、doc_page_vision
+    的审计行）与 PDF 拆出来的页完全同构，下游切条款/草稿零改动。
     """
-    import fitz
     from PIL import Image
+    from .doclib import IMAGE_EXT
 
     img_dir = os.path.join(out_dir(), file_id)
     os.makedirs(img_dir, exist_ok=True)
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXT:
+        # 图片直发：p001.jpg 是发模型的最终产物（JPEG q85），
+        # 原件是 PNG 时也压一道——大 PNG 在网关侧预填充慢（PDF 链实测）。
+        try:
+            img = Image.open(path).convert("RGB")
+        except Exception:                                      # noqa: BLE001
+            raise
+        img_path = os.path.join(img_dir, "p001.jpg")
+        img.save(img_path, "JPEG", quality=85)
+        try:
+            px_table, _, _ = detect_table_image(img)
+        except Exception:                                      # noqa: BLE001
+            px_table = False
+        return {}, [(1, img_path, px_table)], 1
+
+    import fitz
     doc = fitz.open(path)
     try:
         native, jobs = {}, []
@@ -122,14 +145,22 @@ def run(file_ids=None, limit=3, config_id=None):
     不再串行。演示场景是"一次传几份扫描件"，串行时 3 份×30 秒=90 秒没人
     受得了；全局池按页为粒度调度，墙钟 ≈ 总页数 ÷ 并行度的单页时延。
     落库仍按文件聚合、串行写（psycopg2 连接不跨线程共享）。
+
+    2026-10-28（B-P0-3）：ext 白名单加图片（.jpg/.jpeg/.png）——图片恒走
+    视觉链（与扫描 PDF 同构，只是没有拆页这一步）。注意：仍只收
+    parse_state='需OCR' 的——.exe 改名的假图片在 scan 阶段已判「解析失败」，
+    这里不许再把它们捞进来白烧一次出网费。
     """
     cfg = _cfg(config_id)
-    sql = ["""SELECT file_id, abs_path, file_name, fingerprint, parse_state
+    sql = ["""SELECT file_id, abs_path, file_name, fingerprint, parse_state, ext
                 FROM doc_lib_file
-               WHERE NOT missing AND ext='.pdf'"""]
+               WHERE NOT missing AND (ext='.pdf' OR ext IN ('.jpg','.jpeg','.png'))"""]
     args = []
     if file_ids:
-        sql.append("AND file_id = ANY(%s)"); args.append(list(file_ids))
+        # 显式指定时**仍限定 parse_state='需OCR'**：已转写过的再点一遍按钮
+        # 会白花一整份的出网费（PDF 与图片同口径）。
+        sql.append("AND file_id = ANY(%s) AND parse_state='需OCR'")
+        args.append(list(file_ids))
     else:
         sql.append("AND parse_state='需OCR'")
     sql.append("ORDER BY rel_path LIMIT %s")

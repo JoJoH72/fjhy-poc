@@ -38,6 +38,10 @@ import type {
 type Tab = 'roots' | 'files' | 'uploads' | 'changes' | 'vision' | 'extract'
 const tab = ref<Tab>('roots')
 
+/** 图片扩展名（B-P0-3，客户 #5）：与后端 doclib.IMAGE_EXT 同一集合。
+ *  图片恒走「需OCR → 视觉转写」，没有文本层——判定与扫描 PDF 同构。 */
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png']
+
 const roots = ref<DlRoot[]>([])
 const stats = ref<DlStats | null>(null)
 const files = ref<DlFile[]>([])
@@ -78,6 +82,21 @@ const fext = ref('')
 const fstate = ref('')
 const fkind = ref('')
 const forigin = ref('')
+
+/** ext 筛选选项：图片三扩展名合并成一项「图片」（B-P0-3）——客户视角里
+ *  手机拍照的制度页是一类东西，jpg/jpeg/png 分三行是格式细节不是业务分类。
+ *  选「图片」时用 exts 参数下发集合，与后端 list_files 的多值过滤对齐。 */
+const IMG_OPT = '__image__'
+const extOptions = computed(() => {
+  const by = stats.value?.by_ext || []
+  const imgs = by.filter((e) => IMAGE_EXTS.includes(e.ext))
+  const rest = by.filter((e) => !IMAGE_EXTS.includes(e.ext))
+    .map((e) => ({ value: e.ext, label: `${e.ext}（${e.n}）` }))
+  if (!imgs.length) return [{ value: '', label: '全部类型' }, ...rest]
+  const n = imgs.reduce((s, e) => s + e.n, 0)
+  return [{ value: '', label: '全部类型' },
+    { value: IMG_OPT, label: `图片（${n}）` }, ...rest]
+})
 
 /** 解析状态 → 标签颜色。六态各有各的颜色，合并就等于合并了处置动作。 */
 const STATE_COLOR: Record<string, string> = {
@@ -123,11 +142,14 @@ const loadRoots = () =>
 
 const loadFiles = () =>
   run('files', async () => {
+    // 「图片」= jpg/jpeg/png 合并筛（前端分派：多值传 exts 单值传 ext）
+    const isImg = fext.value === IMG_OPT
     files.value = (await api.dlFiles({
       // 按「能否识别」筛，不按 parse_state：后者是磁盘事实，OCR 跑完也还是「需OCR」，
       // 让人对着一个写着「需OCR」的下拉去找已经 OCR 过的文件，是界面在骗人。
-      q: fq.value, ext: fext.value, recognize: fstate.value, kind: fkind.value,
+      q: fq.value, recognize: fstate.value, kind: fkind.value,
       origin: forigin.value, limit: 1000,
+      ...(isImg ? { exts: IMAGE_EXTS } : { ext: fext.value }),
     })).items
   })
 
@@ -157,7 +179,7 @@ const afterUpload = (r: DlUploadResult) =>
     await loadFiles()
     if (tab.value === 'uploads') await loadUploads()
     const scans = files.value.filter(
-      (f) => f.parse_state === '需OCR' && f.ext === '.pdf'
+      (f) => f.parse_state === '需OCR' && IMAGE_EXTS.includes(f.ext)
         && (r.items || []).some((i) => i.file_id === f.file_id || i.rel_path === f.rel_path))
     if (scans.length) await visionOcr(scans.map((f) => f.file_id))
   })
@@ -330,6 +352,27 @@ function t(s: string | null | undefined) {
   return s ? String(s).replace('T', ' ').slice(0, 19) : '—'
 }
 
+/**
+ * 服务器路径收敛显示（2026-10-28 P0-4）：完整盘符路径
+ * （E:\02 FDE部门\…\doclib\audit\fjhy）是实施细节，列里只露尾部相对段
+ * （…\doclib\audit\fjhy）；全路径进 tooltip，一键复制供排障。
+ */
+function tailPath(p: string | null | undefined): string {
+  const s = String(p || '')
+  if (!s) return '—'
+  const parts = s.replace(/[\\/]+/g, '\\').split('\\')
+  if (parts.length <= 3) return s
+  return '…\\' + parts.slice(-3).join('\\')
+}
+const copiedId = ref('')
+function copyPath(p: string) {
+  navigator.clipboard?.writeText(p).then(() => {
+    message.success('完整路径已复制')
+    copiedId.value = p
+    setTimeout(() => { copiedId.value = '' }, 1500)
+  }).catch(() => message.error('复制失败，请在 tooltip 中手动选择'))
+}
+
 const rootCols = [
   { title: '启用', key: 'on', width: 56, align: 'center' as const },
   { title: '名称', key: 'label', width: 220 },
@@ -433,7 +476,10 @@ const rowKeyOf = (r: unknown): string => {
                 <a-tag :color="KIND_ROOT_COLOR[r.kind]" style="margin-left: 5px">{{ r.kind }}</a-tag>
               </template>
               <template v-else-if="column.key === 'path'">
-                <code class="pathcode">{{ r.abs_path }}</code>
+                <a-tooltip :title="r.abs_path" placement="topLeft">
+                  <code class="pathcode" style="cursor: help">{{ tailPath(r.abs_path) }}</code>
+                </a-tooltip>
+                <a style="margin-left: 6px; font-size: 11px" @click="copyPath(r.abs_path)">复制</a>
                 <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在，上传时自动重建</a-tag></div>
               </template>
               <template v-else-if="column.key === 'size'">
@@ -466,7 +512,10 @@ const rowKeyOf = (r: unknown): string => {
               <a-tag :color="KIND_ROOT_COLOR[r.kind]" style="margin-left: 5px">{{ r.kind }}</a-tag>
             </template>
             <template v-else-if="column.key === 'path'">
-              <code class="pathcode">{{ r.abs_path }}</code>
+              <a-tooltip :title="r.abs_path" placement="topLeft">
+                <code class="pathcode" style="cursor: help">{{ tailPath(r.abs_path) }}</code>
+              </a-tooltip>
+              <a style="margin-left: 6px; font-size: 11px" @click="copyPath(r.abs_path)">复制</a>
               <div v-if="!r.exists"><a-tag color="error" style="margin-top: 3px">文件夹已不存在</a-tag></div>
               <div v-if="r.note" class="dim" style="font-size: 11px"><MarkText :text="r.note" /></div>
             </template>
@@ -508,8 +557,7 @@ const rowKeyOf = (r: unknown): string => {
           <a-input v-model:value="fq" placeholder="按文件名筛选" style="flex: 1; min-width: 160px"
                    @keyup.enter="loadFiles" />
           <a-select v-model:value="fext" style="width: 140px" @change="loadFiles"
-            :options="[{ value: '', label: '全部类型' },
-              ...(stats?.by_ext || []).map((e: any) => ({ value: e.ext, label: `${e.ext}（${e.n}）` }))]" />
+            :options="extOptions" />
           <a-select v-model:value="fstate" style="width: 150px" @change="loadFiles"
             :options="[{ value: '', label: '全部识别状态' },
               ...(stats?.by_recognize || []).map((s: any) => ({ value: s.label, label: `${s.label}（${s.n}）` }))]" />
@@ -555,9 +603,11 @@ const rowKeyOf = (r: unknown): string => {
               <span class="dim"><MarkText :text="f.recognize?.note || f.parse_reason || ''" /></span>
             </template>
             <template v-else-if="column.key === 'op'">
-              <!-- 需OCR 的扫描件：视觉转文字一键进抽取链（真出网计费）。
-                   上传后已自动跑过一次；这里是补跑/手动入口（预置扫描件用）。 -->
-              <a-button v-if="f.parse_state === '需OCR' && f.ext === '.pdf'" size="small"
+              <!-- 需OCR 的扫描件/图片：视觉转文字一键进抽取链（真出网计费）。
+                   上传后已自动跑过一次；这里是补跑/手动入口（预置扫描件用）。
+                   2026-10-28 B-P0-3：图片同权——整图直发视觉模型，按图计费。 -->
+              <a-button v-if="f.parse_state === '需OCR'
+                && (f.ext === '.pdf' || IMAGE_EXTS.includes(f.ext))" size="small"
                         style="margin-bottom: 4px"
                         title="逐页发多模态模型转写（真出网、真计费）"
                         @click="visionOcr([f.file_id])">视觉转文字</a-button>
@@ -636,7 +686,13 @@ const rowKeyOf = (r: unknown): string => {
             <a-col :span="6"><a-statistic title="单次份数上限" :value="storage.limits.max_upload_files" /></a-col>
           </a-row>
           <div class="kv" style="margin-top: 12px">
-            <b>托管区根目录</b><span class="pathcode">{{ storage.root_dir }}</span>
+            <b>托管区根目录</b>
+            <span>
+              <a-tooltip :title="storage.root_dir" placement="topLeft">
+                <code class="pathcode" style="cursor: help">{{ tailPath(storage.root_dir) }}</code>
+              </a-tooltip>
+              <a style="margin-left: 6px; font-size: 11px" @click="copyPath(storage.root_dir)">复制</a>
+            </span>
             <b>允许的扩展名</b><span class="pathcode">{{ storage.limits.allowed_ext.join(' ') }}</span>
           </div>
           <a-table v-if="storage.dirs.length" :data-source="storage.dirs" row-key="root_id"
@@ -650,7 +706,10 @@ const rowKeyOf = (r: unknown): string => {
             <template #bodyCell="{ column, record: d }">
               <template v-if="column.key === 'own'">{{ d.domain_label }} / {{ d.instance_label }}</template>
               <template v-else-if="column.key === 'dir'">
-                <code class="pathcode">{{ d.abs_path }}</code>
+                <a-tooltip :title="d.abs_path" placement="topLeft">
+                  <code class="pathcode" style="cursor: help">{{ tailPath(d.abs_path) }}</code>
+                </a-tooltip>
+                <a style="margin-left: 6px; font-size: 11px" @click="copyPath(d.abs_path)">复制</a>
                 <div v-if="!d.exists"><a-tag color="error" style="margin-top: 3px">目录已不存在</a-tag></div>
               </template>
               <template v-else-if="column.key === 'size'">{{ d.size_text }}</template>

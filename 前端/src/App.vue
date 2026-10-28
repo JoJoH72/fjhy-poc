@@ -9,6 +9,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { FundOutlined } from '@ant-design/icons-vue'
+// AntD 组件内置文案中文化（P1-6）：不配 locale 时分页是 "15 / page"、空表是
+// "No data"。antdv4 的注入点是根组件包 a-config-provider :locale。
+import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import { ITEM_BY_KEY, ROLE_ORDER } from './data/navTree'
 import { api } from './api'
 import { current as curDomain, label as domainLabel, load as loadDomain } from './data/domainState'
@@ -57,7 +60,18 @@ const menuItems = computed(() => {
 
 const pageTitle = computed(() => {
   const hit = menuItems.value.find((it) => route.path.startsWith(it.path))
-  return hit ? hit.label : (sess.value ? `${sess.value.name}工作台` : '')
+  if (hit) return hit.label
+  // 非菜单直达页（详情页）：给页面自己的名字，不兜「××工作台」——
+  // 顶栏写着「规则管理员工作台」的页面实际是单条规则详情（P1-13）。
+  const detail: [RegExp, string][] = [
+    [/^\/asset\/rules\/.+/, '规则详情'],
+    [/^\/review\/bills\/.+/, '单据详情'],
+    [/^\/review\/report\/.+/, '审核报告'],
+    [/^\/review\/trace\/.+/, '审计追溯'],
+  ]
+  const d = detail.find(([re]) => re.test(route.path))
+  if (d) return d[1]
+  return sess.value ? `${sess.value.name}工作台` : ''
 })
 
 /** a-menu 选中键 = 当前命中的菜单 path（平铺后无 openKeys 语义，留空数组） */
@@ -82,9 +96,10 @@ async function logout() {
 </script>
 
 <template>
-  <router-view v-if="route.path === '/login'" />
+  <a-config-provider :locale="zhCN">
+    <router-view v-if="route.path === '/login'" />
 
-  <a-layout v-else class="shell">
+    <a-layout v-else class="shell">
     <!-- 固定侧栏（AntD 标准 fixed-sider 模式）：内容再长菜单也不动，侧栏自己滚 -->
     <a-layout-sider theme="dark" :width="216" class="sider-fixed">
       <div class="brand">
@@ -128,6 +143,7 @@ async function logout() {
       </a-layout-content>
     </a-layout>
   </a-layout>
+  </a-config-provider>
 </template>
 
 <style scoped>

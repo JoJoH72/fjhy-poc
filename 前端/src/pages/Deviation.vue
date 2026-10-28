@@ -190,7 +190,16 @@ function cOf(c: Consistency, k: string): number {
             </a-col>
           </a-row>
 
-          <div v-if="data.note" class="dv-note"><MarkText :text="data.note" /></div>
+          <!-- 2026-10-28 P0-9：146 字口径说明收进 tooltip，面板只留名词短语 -->
+          <a-tooltip v-if="data.note" placement="topLeft" :overlay-style="{ maxWidth: '480px' }">
+            <template #title>
+              <div class="dv-tt">{{ String(data.note).replace(/\*\*/g, '') }}</div>
+            </template>
+            <div class="dv-note">
+              判定口径：误报与漏报单列，不合成准确率
+              <span class="dv-note-more">说明</span>
+            </div>
+          </a-tooltip>
         </a-card>
 
         <a-card v-if="(data.false_positive_by_rule || []).length" size="small" class="dv-panel" title="误报按规则排序">
@@ -372,7 +381,13 @@ function cOf(c: Consistency, k: string): number {
 .dv-note {
   margin-top: 14px; padding: 10px 14px; border-radius: 6px;
   background: #fafafa; color: rgba(0, 0, 0, .55); font-size: 12px; line-height: 1.7;
+  cursor: help; display: flex; align-items: center; gap: 6px;
 }
+.dv-note-more {
+  font-size: 11px; color: rgba(0, 0, 0, .35);
+  border-bottom: 1px dashed rgba(0, 0, 0, .3);
+}
+.dv-tt { font-size: 12px; line-height: 1.8; color: rgba(255, 255, 255, .85); }
 
 .dv-groups { display: flex; flex-direction: column; }
 .dv-group { padding: 14px 0 16px; }

@@ -70,7 +70,13 @@ async function handle<T>(path: string, resp: Response): Promise<T> {
 function qs(params: Record<string, unknown>): string {
   const u = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') u.set(k, String(v))
+    if (v === undefined || v === null || v === '') continue
+    // 数组用重复键（?exts=.jpg&exts=.png）——FastAPI list[Query] 的解析口径
+    if (Array.isArray(v)) {
+      for (const item of v) if (item !== undefined && item !== null && item !== '') u.append(k, String(item))
+    } else {
+      u.set(k, String(v))
+    }
   }
   const s = u.toString()
   return s ? `?${s}` : ''

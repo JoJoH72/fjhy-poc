@@ -169,7 +169,7 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
           <a-col :xs="24" :sm="12" :xl="7" class="stretch"><a-card size="small" title="附件识别" class="fill">
             <template #extra>
               <a-tag v-if="attOf(data)" color="success">
-                {{ attOf(data)!.cls.typed }} / {{ attOf(data)!.cls.total }}
+                已判类型 {{ attOf(data)!.cls.typed }} / {{ attOf(data)!.cls.total }}
               </a-tag>
             </template>
             <div class="att-rows">
@@ -177,13 +177,13 @@ const fmtAmt = (v: number | null) => v != null ? v.toLocaleString('zh-CN', { min
                 <span class="lb">判类型</span>
                 <a-progress :percent="pctOf(attOf(data)?.cls.typed, attOf(data)?.cls.total)"
                   :show-info="false" size="small" stroke-color="#52c41a" />
-                <span class="val">{{ attOf(data)?.cls.typed ?? '—' }}/{{ attOf(data)?.cls.total ?? '—' }}</span>
+                <span class="val">已判 {{ attOf(data)?.cls.typed ?? '—' }}/{{ attOf(data)?.cls.total ?? '—' }}</span>
               </div>
               <div class="att-row">
                 <span class="lb">抽字段</span>
                 <a-progress :percent="pctOf(attOf(data)?.ext.extracted, attOf(data)?.ext.eligible)"
                   :show-info="false" size="small" stroke-color="#52c41a" />
-                <span class="val">{{ attOf(data)?.ext.extracted ?? '—' }}/{{ attOf(data)?.ext.eligible ?? '—' }}</span>
+                <span class="val">已抽 {{ attOf(data)?.ext.extracted ?? '—' }}/{{ attOf(data)?.ext.eligible ?? '—' }}</span>
               </div>
               <div class="att-mini">
                 <div><b>{{ callsOf(data) }}</b><span>模型调用</span></div>
